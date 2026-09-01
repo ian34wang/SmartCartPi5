@@ -8,13 +8,20 @@ SAM-IoT Wx v2 (SAMD21) 的 UART 遙測封包接收器，正式專案版本。
 本模組是「生產者」，把驗證過 checksum 的合法封包丟進 queue.Queue，core/odometry_engine.py
 等消費者從 queue 裡取資料，兩者之間不直接呼叫，避免阻塞。
 
-封包格式（已定案，MCU 端 20Hz 固定送出，沒有新資料就重送上一次的值）：
-    $SDK,<dx>,<dy>,<yaw_deg>,<pitch_deg>,<roll_deg>,<hx711_raw>*<CS>\\r\\n
+封包格式 v2（2026-09-01 起，MCU 端 20Hz 固定送出，沒有新資料就重送上一次的值；
+新增了 squal 欄位，原本 7 個欄位變成 8 個）：
+    $SDK,<dx>,<dy>,<squal>,<yaw_deg>,<pitch_deg>,<roll_deg>,<hx711_raw>*<CS>\\r\\n
 
     dx, dy       int    PMW3901 相對位移（不是累積值）
+    squal        int    PMW3901 SQUAL（0-255），這筆 dx/dy 的追蹤信心值，越高越可信；
+                         PMW3901 讀取失敗那一輪會跟 yaw/pitch/roll 一樣重送上一次的值。
     yaw/pitch/roll  float  BNO080 四元數轉換後的角度，1位小數
     hx711_raw    int32  未校正的原始 ADC 值（Offset/Scale 校正在 Pi 端做，見 config.json）
     CS           hex    2 位十六進位，$ 和 * 之間所有字元的 XOR（NMEA 算法）
+
+    注意：這個格式跟舊版（7 欄位、沒有 squal）不相容。用舊版接收端接新版
+    MCU 送出的封包會被判定成「欄位數量不符」而整包丟棄，不是靜默解析錯誤
+    ——如果之前部署的是舊版接收端，這就是它突然收不到資料的原因。
 
 重要：config.json 的 serial.port 必須是實測驗證過的裝置節點（本專案是
 /dev/ttyAMA0），不要相信 /dev/serial0 這個別名——Pi 5 (RP1) 上它可能指向
@@ -50,6 +57,7 @@ _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 class UartPacket:
     dx: int
     dy: int
+    squal: int  # PMW3901 SQUAL(0-255)，這筆 dx/dy 的追蹤信心值，越高越可信
     yaw_deg: float
     pitch_deg: float
     roll_deg: float
@@ -57,8 +65,8 @@ class UartPacket:
     timestamp: float  # time.time()，收到這個封包當下的本機時間戳記
 
     def to_csv_row(self) -> list:
-        return [self.timestamp, self.dx, self.dy, self.yaw_deg, self.pitch_deg,
-                self.roll_deg, self.hx711_raw]
+        return [self.timestamp, self.dx, self.dy, self.squal, self.yaw_deg,
+                self.pitch_deg, self.roll_deg, self.hx711_raw]
 
 
 # ----------------------------------------------------------------------
@@ -96,18 +104,24 @@ def parse_packet(line: str, timestamp: Optional[float] = None) -> Optional[UartP
         return None
 
     fields = body.split(",")
-    if len(fields) != 7 or fields[0] != "SDK":
-        logger.warning("欄位數量或 ID 不符，捨棄此封包: %r", line)
+    if len(fields) != 8 or fields[0] != "SDK":
+        logger.warning(
+            "欄位數量或 ID 不符，捨棄此封包（收到 %d 欄，v2 格式應該是 8 欄，"
+            "含 squal——如果每包都在這裡被丟棄，檢查一下 MCU 韌體是不是還在送"
+            "舊版 7 欄位格式）: %r",
+            len(fields), line,
+        )
         return None
 
     try:
         return UartPacket(
             dx=int(fields[1]),
             dy=int(fields[2]),
-            yaw_deg=float(fields[3]),
-            pitch_deg=float(fields[4]),
-            roll_deg=float(fields[5]),
-            hx711_raw=int(fields[6]),
+            squal=int(fields[3]),
+            yaw_deg=float(fields[4]),
+            pitch_deg=float(fields[5]),
+            roll_deg=float(fields[6]),
+            hx711_raw=int(fields[7]),
             timestamp=timestamp if timestamp is not None else time.time(),
         )
     except ValueError:
@@ -128,7 +142,7 @@ class _CsvLogger:
         self._writer = csv.writer(self._file)
         if self._file.tell() == 0:
             self._writer.writerow(
-                ["timestamp", "dx", "dy", "yaw_deg", "pitch_deg", "roll_deg", "hx711_raw"]
+                ["timestamp", "dx", "dy", "squal", "yaw_deg", "pitch_deg", "roll_deg", "hx711_raw"]
             )
         self._flush_every = flush_every_n_rows
         self._rows_since_flush = 0
@@ -345,7 +359,7 @@ def _main() -> None:
                     print("[warn] 已超過 stale timeout 沒收到新封包", file=sys.stderr)
                 continue
             print(
-                f"dx={packet.dx:+d} dy={packet.dy:+d}  "
+                f"dx={packet.dx:+d} dy={packet.dy:+d} squal={packet.squal:3d}  "
                 f"yaw={packet.yaw_deg:+6.1f} pitch={packet.pitch_deg:+6.1f} "
                 f"roll={packet.roll_deg:+6.1f}  hx711={packet.hx711_raw}"
             )

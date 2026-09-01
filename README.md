@@ -305,6 +305,40 @@ offset/scale 換算成公克 → 輸入實際重量（可留空跳過）→ 印�
    `csv_logger.enabled`），要收集 Phase 6 訓練資料時再開。
 3. **本次範圍**：只做 Phase 1 + Phase 2，Phase 3（定位融合）起下次再繼續。
 
+## UART 封包格式 v2（2026-09-01，新增 squal 欄位）
+
+MCU 端封包格式改版，新增 `squal`（PMW3901 SQUAL，0-255，這筆 `dx`/`dy` 的
+追蹤信心值），欄位數從 7 個變成 8 個：
+
+```
+$SDK,<dx>,<dy>,<squal>,<yaw_deg>,<pitch_deg>,<roll_deg>,<hx711_raw>*<CS>\r\n
+```
+
+**跟舊版不相容**：舊版（7 欄位、沒有 squal）接收端收到新版封包，或新版接收端
+收到舊版封包，都會被判定成「欄位數量不符」直接整包丟棄，不是靜默解析錯誤——
+如果封包每包都被丟、log 一直印「欄位數量或 ID 不符」，先確認 Pi 端與 MCU 端
+的封包格式版本是不是對不起來。
+
+已經跟著改版的地方（都已用假資料/mock 驗證過，含端對端 mock generator ->
+真的 UartReceiver 的整合測試）：
+
+- `drivers/uart_receiver.py`：`UartPacket` 加了 `squal` 欄位、`parse_packet()`
+  改成驗證 8 欄位、CSV logger 表頭與 `to_csv_row()` 都加了 `squal`、獨立測試
+  模式（`python3 -m drivers.uart_receiver`）印出的內容也加了 `squal`。
+- `tools/mock_uart_generator.py`：`build_packet()` 與 `_run_loop()` 都改成送
+  8 欄位封包，`squal` 用隨機值模擬正常追蹤信心（60~255）。
+- `config.json`：`uart_protocol.field_order` 加了 `squal`。
+- `tools/calibrate_weight.py`、`tools/calibrate_optical_flow.py`、
+  `tools/verify_weight.py`、`tools/verify_optical_flow.py`：這幾支都是透過
+  `packet.dx`／`packet.hx711_raw` 等屬性存取，不是照欄位順序取值，所以
+  `UartPacket` 多一個欄位不會讓它們壞掉，邏輯測試也重新跑過確認沒問題。
+
+**還沒做，但值得考慮的後續**：光流校正工具目前的離群值過濾用的是統計方法
+（MAD，見上面「校正工具」小節），這是因為原本封包沒有信心值可以參考，只能
+事後用統計猜。現在有了 `squal`，理論上可以直接用「這筆信心值太低就丟掉」
+取代/輔助統計濾波，會比較準——不過這牽涉到要不要改校正工具的過濾邏輯，
+我還沒動，等你想清楚要不要採用再說。
+
 ## 待確認事項（尚未決定，需要你確認）
 
 - `config.json` 裡標記 `CALIBRATE_ME` 的數值（`odometry.optical_flow_px_to_mm`、
@@ -316,6 +350,12 @@ offset/scale 換算成公克 → 輸入實際重量（可留空跳過）→ 印�
   工具」小節的指令正式跑一次填入正確值（相機的內參校正已經完成，跟這幾個是
   不同的校正項目）。
 - PMW3901 SPI 若需要降時脈，記得先在 MCC GUI 端改。
+- **MCU 端已知修正**：PMW3901 之前發現會有休眠現象，導致那段時間的
+  `dx`/`dy` 遺失或不準；下位機已經加上看門狗重置修正，目前光流資料不會
+  再遺失。這是韌體端的修正，Pi 端不用改，但代表這個修正之前如果有跑過
+  `calibrate_optical_flow.py` / `verify_optical_flow.py`，那些結果可能
+  受過休眠影響、不完全準，建議修正後找時間重新跑一次流程試跑
+  （`--dry-run`）確認資料收集正常、數字合理。
 
 ## 已在硬體上驗證過的部分
 

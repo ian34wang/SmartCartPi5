@@ -45,8 +45,8 @@ def _checksum_hex(payload: str) -> str:
     return f"{cs:02X}"
 
 
-def build_packet(dx: int, dy: int, yaw: float, pitch: float, roll: float, hx711_raw: int) -> str:
-    body = f"SDK,{dx},{dy},{yaw:.1f},{pitch:.1f},{roll:.1f},{hx711_raw}"
+def build_packet(dx: int, dy: int, squal: int, yaw: float, pitch: float, roll: float, hx711_raw: int) -> str:
+    body = f"SDK,{dx},{dy},{squal},{yaw:.1f},{pitch:.1f},{roll:.1f},{hx711_raw}"
     return f"${body}*{_checksum_hex(body)}\r\n"
 
 
@@ -111,6 +111,7 @@ class MockUartGenerator:
         while not self._stop_event.is_set():
             dx = random.randint(-3, 3)
             dy = random.randint(-1, 1)
+            squal = random.randint(60, 255)  # 模擬正常追蹤信心值；偶爾也可以自己改低模擬追蹤不良
             yaw = self.scenario.base_yaw + 5.0 * (t % 10 - 5) / 5.0
             pitch = random.uniform(-1.0, 1.0)
             roll = random.uniform(-1.0, 1.0)
@@ -118,10 +119,10 @@ class MockUartGenerator:
 
             if self.inject_errors and random.random() < self.error_rate:
                 # 故意送一個 checksum 錯誤的封包，測試接收端的容錯行為
-                body = f"SDK,{dx},{dy},{yaw:.1f},{pitch:.1f},{roll:.1f},{hx711_raw}"
+                body = f"SDK,{dx},{dy},{squal},{yaw:.1f},{pitch:.1f},{roll:.1f},{hx711_raw}"
                 line = f"${body}*FF\r\n"
             else:
-                line = build_packet(dx, dy, yaw, pitch, roll, hx711_raw)
+                line = build_packet(dx, dy, squal, yaw, pitch, roll, hx711_raw)
 
             try:
                 os.write(self._master_fd, line.encode())
