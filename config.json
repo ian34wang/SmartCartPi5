@@ -46,10 +46,10 @@
     "_vision_yaw_fusion_weight_comment": "Phase 3 視覺融合權重（0=完全信任IMU，1=完全信任視覺），Phase 1+2 階段先保持 0，尚未啟用視覺校正。"
   },
   "weight": {
-    "hx711_offset": 0,
-    "_hx711_offset_comment": "CALIBRATE_ME：空秤時 hx711_raw 的讀數（零點偏移）。開機讀取數次原始值取平均得出。",
-    "hx711_scale": 1.0,
-    "_hx711_scale_comment": "CALIBRATE_ME：(加已知砝碼後讀數 - offset) / 已知砝碼重量(g)，用來把 ADC 差值換算成公克。",
+    "hx711_offset": -331777.7,
+    "_hx711_offset_comment": "已於 2026-09-01 20:14:45 用 tools/calibrate_weight.py 實測校正（空秤平均值）。",
+    "hx711_scale": 367.5161044176707,
+    "_hx711_scale_comment": "已於 2026-09-01 20:14:45 用 tools/calibrate_weight.py 實測校正（(加砝碼平均值 - offset) / 已知砝碼重量(g)）。",
     "weight_match_timeout_sec": 5.0,
     "_weight_match_timeout_comment": "掃碼後等待重量變化比對的逾時秒數，超過視為 ERROR_WEIGHT_MISMATCH。"
   },
