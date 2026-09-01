@@ -22,8 +22,10 @@ SmartCart_Pi5/
 ├── tools/
 │   ├── mock_uart_generator.py     # CI / 無硬體測試輔助工具（非正式流程必要步驟）
 │   ├── mock_barcode_input.py      # 同上
-│   ├── calibrate_weight.py        # HX711 重量校正互動工具（邏輯已驗證，待硬體到位實測）
-│   └── calibrate_optical_flow.py  # PMW3901 光流位移校正互動工具（同上）
+│   ├── calibrate_weight.py        # HX711 重量校正互動工具：算 offset/scale 並寫回 config.json
+│   ├── calibrate_optical_flow.py  # PMW3901 光流位移校正互動工具：算 px_to_mm 並寫回 config.json
+│   ├── verify_weight.py           # 重量校正「驗證」工具：只讀 config.json 現有值，實測比對，不寫回
+│   └── verify_optical_flow.py     # 光流校正「驗證」工具：同上
 ├── core/, ai/, ui/          # 目前只有 __init__.py，Phase 3 起才會實作
 ```
 
@@ -211,10 +213,12 @@ python3 -m database.db_manager --list
 ### 校正工具（`odometry.optical_flow_px_to_mm`、`weight.hx711_offset`/`hx711_scale`）
 
 這兩個是 `config.json` 裡剩下標記 `CALIBRATE_ME` 的數值，跟秤重機構、光流感測器
-安裝方式有關，沒辦法用理論公式算出來，需要在硬體上實測。**目前購物車結構還在
-調整中，這兩支工具還沒有在真實硬體上實際跑過**——先把互動流程與計算邏輯做好、
-用假資料驗證過核心邏輯正確，等結構穩定之後就能直接接上真的 UART 跑一次，不用
-臨時現寫。
+安裝方式有關，沒辦法用理論公式算出來，需要在硬體上實測。硬體（HX711、PMW3901、
+UART）本身都是接好、可以跑的，**只是購物車的機構（秤台安裝方式、PMW3901 離地
+高度）還在調整中**——現在跑出來的 offset/scale/px_to_mm 只對「當下這個安裝方式」
+準，機構之後再調整，這些值很可能就要重新校正一次，不算是最終定案的數字。所以
+現在可以照下面指令實際跑跑看（建議先用 `--dry-run` 只看數字、不寫回
+`config.json`），等機構真正定案後，再正式跑一次把結果寫回 `config.json`。
 
 **重量校正 `tools/calibrate_weight.py`**：
 
@@ -230,24 +234,69 @@ python3 -m tools.calibrate_weight --samples 50 --timeout 10
 `config.json`（`y` 才寫，其餘任何輸入都不動檔案），寫回時只會更新 `weight`
 區塊，其他欄位與註解不受影響。
 
-**光流校正 `tools/calibrate_optical_flow.py`**：
+**光流校正 `tools/calibrate_optical_flow.py`**（v2，流程改過一輪，見下方說明）：
 
 ```bash
 python3 -m tools.calibrate_optical_flow
 python3 -m tools.calibrate_optical_flow --dry-run
-python3 -m tools.calibrate_optical_flow --duration 5 --countdown 3
+python3 -m tools.calibrate_optical_flow --countdown 5      # 開始記錄前的大倒數秒數
+python3 -m tools.calibrate_optical_flow --no-filter        # 關掉離群值過濾
 ```
 
-流程：等 UART 有資料流進來 → 輸入地板上事先量好的實際距離（公分）→ 倒數
-（預設 3 秒）結束後開始一個固定時間窗（預設 5 秒）自動收集 PMW3901 的
-`dx`/`dy` 累積量（因為推車當下沒辦法同時打字，用時間窗取代 Enter 鍵手動
-標記起訖）→ 算 `px_to_mm = 實際距離(mm) / sqrt(sum_dx² + sum_dy²)`。同樣
-算完會問要不要寫回 `config.json`（只更新 `odometry` 區塊）。
+流程（v2）：等 UART 有資料流進來 → 按 Enter 開始一個全螢幕大字體倒數（預設
+5 秒，純視覺提示，讓你有時間準備）→ 倒數結束就開始記錄，**沒有固定時間窗**，
+你按自己的步調把車推過去，推完再按一次 Enter 停止記錄 → 這時候才輸入這段
+實際推了多遠（公分，先量好或推完才量都可以）→ 算
+`px_to_mm = 實際距離(mm) / sqrt(sum_dx² + sum_dy²)`。同樣算完會問要不要寫回
+`config.json`（只更新 `odometry` 區塊）。
 
-兩支工具的核心邏輯（樣本收集、平均值、offset/scale/px_to_mm 計算、config.json
-讀寫）都已經用假資料（合成的 `UartPacket`、預先塞好的 `queue.Queue`）驗證過，
-包含正常情況、逾時只收到部分樣本、除以零等邊界情況；還沒驗證的只有「跟真實
-HX711/PMW3901 接在一起實際跑一次」這部分，等硬體到位後照著上面指令跑就行。
+> **v1 → v2 的改動原因**：v1 是「倒數 + 固定時間窗自動收集」，實測發現人手
+> 沒辦法剛好在固定秒數內推完固定距離，不是太快就是太慢，體驗很差。v2 拿掉
+> 了固定時間窗，只留一個純視覺的大倒數當「準備」緩衝，記錄的起訖完全由你
+> 自己按 Enter 控制，多久都行，推完再回頭量/報距離就好。
+>
+> **積分方式**：每一筆封包的 `dx`/`dy` 本身就是「這個取樣週期的相對位移」
+> （不是累積值），所以直接把記錄期間收到的所有封包的 `dx`/`dy` 加總，就是
+> 離散版的積分（黎曼和），不需要再乘取樣間隔或做其他處理。
+>
+> **離群值過濾**：預設會用中位數絕對偏差（MAD）過濾掉位移量明顯異常大的
+> 樣本再加總——PMW3901 追蹤不穩、光線不足、離地高度不對時偶爾會吐出離譜的
+> 單筆數值，這種尖峰不會像雜訊一樣互相抵銷，會直接偏移整段加總，所以有濾掉
+> 的必要；樣本數太少（<5）或彼此差異太小（沒有明顯離群值可判斷）時就不濾，
+> 避免正常推車動作被誤判。不想濾可以加 `--no-filter`，想調嚴格程度可以用
+> `--mad-multiplier`（預設 6.0，越小濾得越兇）。
+
+兩支工具的核心邏輯（樣本收集、平均值、offset/scale/px_to_mm 計算、離群值
+過濾、config.json 讀寫）都已經用假資料（合成的 `UartPacket`、預先塞好的
+`queue.Queue`、模擬按鍵觸發的執行緒）驗證過，包含正常情況、逾時只收到部分
+樣本、除以零、離群值濾除等邊界情況。硬體是接著的，隨時都能實際跑一次看
+流程與計算對不對；只是機構還沒定案前跑出來的值只能當「流程試跑」用，不
+建議直接寫回 `config.json` 當正式值——等機構定案後再跑一次正式的。
+
+**驗證工具 `tools/verify_weight.py` / `tools/verify_optical_flow.py`**：
+
+校正跟驗證是兩件事——`calibrate_*.py` 是「算出新值寫回 config.json」，
+`verify_*.py` 是「config.json 裡現有的值到底準不準」，只會讀取、不會修改
+`config.json`，適合校正完之後，或懷疑機構鬆動、感測器飄移時拿來抽查。
+
+```bash
+python3 -m tools.verify_weight              # 用 config.json 現有的 hx711_offset/scale
+python3 -m tools.verify_weight --samples 30 --timeout 10
+
+python3 -m tools.verify_optical_flow         # 用 config.json 現有的 optical_flow_px_to_mm
+python3 -m tools.verify_optical_flow --countdown 5
+```
+
+`verify_weight.py`：秤台放上一個你知道實際重量的物品 → 收集樣本、用現有
+offset/scale 換算成公克 → 輸入實際重量（可留空跳過）→ 印出誤差百分比。
+可以連續測多個物品，`q` 結束。
+
+`verify_optical_flow.py`：跟校正工具一樣的「大倒數 → 自己步調推車 → Enter
+停止」流程（沒有固定時間窗），差別是拿現有的 px_to_mm 把累積像素位移換算回
+推測距離 → 輸入實際距離（可留空跳過）→ 印出誤差百分比。可以連續測多段距離，
+`q` 結束。
+
+兩支驗證工具的換算與誤差計算邏輯也都用假資料驗證過。
 
 ## 這次開發過程中做的決定（依你的回覆）
 
@@ -261,9 +310,11 @@ HX711/PMW3901 接在一起實際跑一次」這部分，等硬體到位後照著
 - `config.json` 裡標記 `CALIBRATE_ME` 的數值（`odometry.optical_flow_px_to_mm`、
   `weight.hx711_offset` / `hx711_scale`）都還是佔位值。校正工具
   （`tools/calibrate_weight.py`、`tools/calibrate_optical_flow.py`）已經做好、
-  邏輯也驗證過，但因為購物車秤重機構與光流感測器安裝位置還在調整中，還沒辦法
-  實際跑一次拿到真正的數字——等硬體結構穩定後，照上面「校正工具」小節的指令
-  跑一次就能填入正確值（相機的內參校正已經完成，跟這幾個是不同的校正項目）。
+  邏輯也驗證過，硬體也是接著的，隨時可以跑；只是購物車秤重機構與光流感測器
+  安裝位置還在調整中，現在跑出來的值只對「當下的安裝方式」準，機構定案前先跑
+  只能當流程試跑，不建議直接當正式值寫回——等機構真正定案後，照上面「校正
+  工具」小節的指令正式跑一次填入正確值（相機的內參校正已經完成，跟這幾個是
+  不同的校正項目）。
 - PMW3901 SPI 若需要降時脈，記得先在 MCC GUI 端改。
 
 ## 已在硬體上驗證過的部分
