@@ -1,7 +1,10 @@
-# SmartCart_Pi5 — Phase 1 + 2 開發紀錄
+# SmartCart_Pi5 — 開發紀錄
 
-這次先完成《SmartCart_Pi5_開發總表_v2.docx》裡 Phase 1（環境建置與硬體可靠度驗證）
-與 Phase 2（資料擷取驅動層）。Phase 3 起（定位融合、商業邏輯、UI、AI）留待下次。
+Phase 1（環境建置與硬體可靠度驗證）、Phase 2（資料擷取驅動層）已完成。
+Phase 3（定位積分與視覺融合）進行中，目前完成第一步「純 UART 版本的基礎
+里程計」（`core/odometry_engine.py`），視覺校正（`vanishing_point.py`）、
+數據融合、視覺光流備援（`floor_optical_flow.py`）留待下次。Phase 4 起
+（商業邏輯、UI、AI）也留待之後。
 
 以下內容已經在實體 Pi 5（YichaoPi5）+ 真實硬體上跑過、修過踩到的坑，不是紙上規劃。
 
@@ -26,7 +29,9 @@ SmartCart_Pi5/
 │   ├── calibrate_optical_flow.py  # PMW3901 光流位移校正互動工具：算 px_to_mm 並寫回 config.json
 │   ├── verify_weight.py           # 重量校正「驗證」工具：只讀 config.json 現有值，實測比對，不寫回
 │   └── verify_optical_flow.py     # 光流校正「驗證」工具：同上
-├── core/, ai/, ui/          # 目前只有 __init__.py，Phase 3 起才會實作
+├── core/
+│   └── odometry_engine.py   # Phase 3 基礎里程計：純 UART dead-reckoning，含 squal 過濾
+├── ai/, ui/                 # 目前只有 __init__.py，Phase 4 起才會實作
 ```
 
 ## Pi 5 上要做的事（依順序）
@@ -210,6 +215,45 @@ python3 -m database.db_manager --init    # 建表 + 寫入 5 筆測試商品
 python3 -m database.db_manager --list
 ```
 
+### Phase 3：基礎里程計（`core/odometry_engine.py`）
+
+按開發總表的順序要求，先做「純 UART 版本」並實際走一段固定距離驗證誤差量級，
+確認邏輯沒問題之後才進行下一步的視覺融合（`vanishing_point.py`，還沒開始寫）。
+
+作法：拿 `UartReceiver` 收到的 PMW3901 `dx`/`dy`（乘上 `optical_flow_px_to_mm`
+換算成公釐）跟 BNO080 的 `yaw_deg`，套標準 2D 旋轉矩陣把「車身局部座標系」的
+位移轉成「全域座標系」的位移再累加，得到全域 `(X, Y)`。新增的 `squal` 欄位
+也用上了——信心值低於門檻的那一筆位移不計入累積位置（但 yaw 還是照樣更新，
+因為 yaw 是 BNO080 給的，跟光流追蹤品質無關）。
+
+```bash
+python3 -m core.odometry_engine                    # 用 config.json 的 serial/odometry 設定即時監看
+python3 -m core.odometry_engine --min-squal 30      # 過濾掉信心值低於 30 的光流樣本
+python3 -m core.odometry_engine --px-to-mm 1.42     # 手動覆蓋 px_to_mm（還沒校正時暫時測試用）
+```
+
+執行時會每收到約 20 筆封包（預設，`--print-every` 可調）印一次目前的
+`X`/`Y`/距原點距離/`yaw`/已跳過的低信心筆數，方便你「歸零 → 推一段量好的
+距離 → 比對印出的距離跟捲尺量到的差多少」這種驗證方式。因為
+`optical_flow_px_to_mm` 目前還是 `config.json` 裡的 `CALIBRATE_ME` 佔位值
+（`1.0`），程式啟動時會印警告——這代表現在算出來的 (X, Y) 只能看趨勢（有沒有
+往對的方向走、旋轉有沒有轉對），還不是真實的公釐數，等 `calibrate_optical_flow.py`
+正式校正過（機構定案後）數字才會準。
+
+核心邏輯（`rotate_local_to_global()` 的旋轉矩陣、`process_packet()` 的位置
+累積、squal 過濾、`reset()`）都用假資料驗證過，包含：朝不同方向移動時全域
+座標的正負號對不對、轉向後再移動的方向有沒有跟著轉對、低信心封包確實不影響
+位置但仍更新 yaw、`reset()` 正確歸零位置並保留 yaw、`distance_from_origin_mm()`
+的畢氏定理結果，以及背景執行緒版本（`start()`/`stop()`）搭配真的
+`queue.Queue` 生產者的整合測試。另外也做了完整鏈路的端對端測試：
+`mock_uart_generator.py` 送假封包 → 真的 `UartReceiver` 解析 → 真的
+`OdometryEngine` 累積位置，全部串起來能正常運作。
+
+還沒做、還沒驗證的部分：這支還沒有在真實硬體上實際推車測試過（邏輯用假資料
+驗證，硬體本身接著、隨時可以跑，只是我還沒有實機數據可以核對），也還沒有
+視覺校正（yaw 目前完全信任 IMU，`config.json` 的 `vision_yaw_fusion_weight`
+還是 0，等 `vanishing_point.py` 做出來才會啟用）。
+
 ### 校正工具（`odometry.optical_flow_px_to_mm`、`weight.hx711_offset`/`hx711_scale`）
 
 這兩個是 `config.json` 裡剩下標記 `CALIBRATE_ME` 的數值，跟秤重機構、光流感測器
@@ -371,3 +415,9 @@ $SDK,<dx>,<dy>,<squal>,<yaw_deg>,<pitch_deg>,<roll_deg>,<hx711_raw>*<CS>\r\n
 - Phase 3 起 `vision/` 底下的模組如果要用到顏色資訊（不只是灰階角點偵測），
   記得先確認過 `camera_stream.py` 的色彩通道假設在當下硬體/picamera2 版本上
   依然成立（用 `--color-test` 驗證），不要直接沿用假設。
+- `core/odometry_engine.py` 目前只用假資料驗證過核心邏輯，還沒有在真實硬體上
+  實際推車測試過（累積誤差量級、旋轉方向對不對這些都要實測才能確認）；而且
+  `optical_flow_px_to_mm` 還是 `CALIBRATE_ME` 佔位值，算出來的距離現在還不
+  是真實公釐數。`--min-squal` 的門檻值也還沒有實測資料可以參考該設多少，
+  目前預設 0（不過濾），有實機 squal 數據之後再回頭調。yaw 目前完全信任
+  IMU，還沒有視覺校正（`vanishing_point.py` 待寫）。

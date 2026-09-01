@@ -1,6 +1,5 @@
 {
   "_comment": "SmartCart_Pi5 系統全域參數設定檔。所有標註 CALIBRATE_ME 的數值都是佔位值，正式使用前必須依實測結果校正。",
-
   "serial": {
     "port": "/dev/ttyAMA0",
     "_port_comment": "務必是 /dev/ttyAMA0，不是 /dev/serial0！Pi 5 (RP1) 上 /dev/serial0 指向 ttyAMA10，跟 GPIO14/15 實體接腳無關。部署到新的 Pi 前，先用 GPIO14-15 loopback 測試重新確認過一次，不要假設別名正確。",
@@ -12,19 +11,25 @@
     "_timeout_comment": "pyserial 的 read timeout，不是封包逾時；封包本身 20Hz 送出，正常間隔約 50ms。",
     "reconnect_backoff_sec": 2.0
   },
-
   "uart_protocol": {
     "packet_prefix": "$SDK,",
     "packet_terminator": "\r\n",
     "checksum_delimiter_start": "$",
     "checksum_delimiter_end": "*",
-    "field_order": ["dx", "dy", "squal", "yaw_deg", "pitch_deg", "roll_deg", "hx711_raw"],
+    "field_order": [
+      "dx",
+      "dy",
+      "squal",
+      "yaw_deg",
+      "pitch_deg",
+      "roll_deg",
+      "hx711_raw"
+    ],
     "_field_order_comment": "2026-09-01 協定改版：新增 squal（PMW3901 追蹤信心值，0-255），原本 7 欄變 8 欄，跟舊版不相容。",
     "expected_rate_hz": 20,
     "stale_data_timeout_sec": 0.5,
     "_stale_comment": "超過這個時間沒收到合法封包，視為 UART 連線異常（MCU 端每輪固定送包，正常不該斷）。"
   },
-
   "csv_logger": {
     "enabled": false,
     "_comment": "Phase 6 異常偵測模型的訓練資料來源。預設關閉，避免一般開發時洗爆磁碟；需要及早收集資料時再開啟。",
@@ -32,16 +37,14 @@
     "filename_pattern": "uart_%Y%m%d_%H%M%S.csv",
     "flush_every_n_rows": 20
   },
-
   "odometry": {
-    "optical_flow_px_to_mm": 1.0,
-    "_optical_flow_comment": "CALIBRATE_ME：PMW3901 每 count 位移對應實際地面移動的公釐數，跟安裝高度、感測器解析度(CPI)有關，需要用已知距離的拖曳測試實測校正。",
+    "optical_flow_px_to_mm": 3.080556265604841,
+    "_optical_flow_comment": "已於 2026-09-01 20:08:39 用 tools/calibrate_optical_flow.py 實測校正（實測距離(mm) / 拖曳期間累積像素位移）。安裝高度或感測器有更動時需要重新校正。",
     "optical_flow_sample_rate_hz": 20,
     "yaw_source": "bno080",
     "vision_yaw_fusion_weight": 0.0,
     "_vision_yaw_fusion_weight_comment": "Phase 3 視覺融合權重（0=完全信任IMU，1=完全信任視覺），Phase 1+2 階段先保持 0，尚未啟用視覺校正。"
   },
-
   "weight": {
     "hx711_offset": 0,
     "_hx711_offset_comment": "CALIBRATE_ME：空秤時 hx711_raw 的讀數（零點偏移）。開機讀取數次原始值取平均得出。",
@@ -50,23 +53,26 @@
     "weight_match_timeout_sec": 5.0,
     "_weight_match_timeout_comment": "掃碼後等待重量變化比對的逾時秒數，超過視為 ERROR_WEIGHT_MISMATCH。"
   },
-
   "camera": {
     "backend": "picamera2",
     "_backend_comment": "Pi 5 用 libcamera 堆疊，官方廣角相機走 MIPI CSI，請用 picamera2 取得影格，不要單純用 cv2.VideoCapture()。",
-    "resolution": [1280, 720],
+    "resolution": [
+      1280,
+      720
+    ],
     "format": "RGB888",
     "framerate": 30,
     "calibration_file": "vision/camera_calibration.npz",
     "_calibration_comment": "棋盤格內參校正結果（camera_matrix, dist_coeffs），由校正腳本產生後填入此路徑。"
   },
-
   "display": {
-    "resolution": [720, 1280],
+    "resolution": [
+      720,
+      1280
+    ],
     "orientation": "portrait",
     "_comment": "官方 7 吋觸控螢幕，直向使用，720x1280 (寬x高)。"
   },
-
   "barcode_scanner": {
     "input_method": "evdev",
     "device_name_hint": "USBKey",
@@ -74,11 +80,9 @@
     "key_timeout_sec": 0.1,
     "_key_timeout_comment": "USB 掃描器灌鍵盤事件的間隔通常很短，超過這個間隔沒有新按鍵視為一次掃碼結束。"
   },
-
   "database": {
     "path": "database/inventory.db"
   },
-
   "app": {
     "log_level": "INFO"
   }
