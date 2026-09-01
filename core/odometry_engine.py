@@ -43,10 +43,14 @@ import logging
 import math
 import threading
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from core.position_types import (
+    POSITION_SOURCE_OPTICAL_FLOW,
+    YAW_SOURCE_IMU_ONLY,
+    PositionEstimate,
+)
 from drivers.uart_receiver import UartPacket, UartReceiver
 
 logger = logging.getLogger(__name__)
@@ -57,21 +61,6 @@ _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 # ----------------------------------------------------------------------
 # 純邏輯部分（可離線用假資料測試，不需要真的 UART/硬體）
 # ----------------------------------------------------------------------
-@dataclass
-class OdometryState:
-    """某一個時間點的里程計快照，唯讀用途（外部不應該直接改它的欄位）。"""
-
-    x_mm: float = 0.0
-    y_mm: float = 0.0
-    yaw_deg: float = 0.0
-    packet_count: int = 0
-    skipped_low_squal_count: int = 0
-    last_update_timestamp: Optional[float] = None
-
-    def distance_from_origin_mm(self) -> float:
-        return math.hypot(self.x_mm, self.y_mm)
-
-
 def rotate_local_to_global(dx_mm: float, dy_mm: float, yaw_deg: float) -> tuple:
     """把 sensor 局部座標系的位移向量 (dx_mm, dy_mm)，依目前航向角 yaw_deg
     轉成全域座標系的位移向量 (dX_mm, dY_mm)。標準 2D 旋轉矩陣，逆時針為正：
@@ -106,19 +95,27 @@ class OdometryEngine:
         self._in_queue = in_queue
 
         self._lock = threading.Lock()
-        self._state = OdometryState()
+        # position_source/yaw_source 目前是常數：這支引擎本身就只做純 UART
+        # 光流 + 純 IMU yaw，還沒有 floor_optical_flow 備援、也還沒有視覺
+        # 融合，所以永遠回報 "optical_flow" / "imu"。等之後真的接上那兩個
+        # 模組，這裡才會依實際使用的資料源動態改變這兩個欄位的值——下游
+        # （UI/AI/商業邏輯）現在就可以直接讀這兩個欄位，不用等那天才改。
+        self._state = PositionEstimate(
+            position_source=POSITION_SOURCE_OPTICAL_FLOW,
+            yaw_source=YAW_SOURCE_IMU_ONLY,
+        )
 
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
     # ------------------------------------------------------------------
-    def process_packet(self, packet: UartPacket) -> OdometryState:
+    def process_packet(self, packet: UartPacket) -> PositionEstimate:
         """處理一筆封包，回傳更新後的狀態快照（thread-safe）。"""
         with self._lock:
             if packet.squal < self.min_squal:
                 # 這筆光流讀數信心不足，位置不累加，但 yaw 是 BNO080 給的，
                 # 跟 PMW3901 追蹤品質無關，還是照樣更新，避免朝向卡住不動。
-                self._state.skipped_low_squal_count += 1
+                self._state.skipped_low_confidence_count += 1
                 self._state.yaw_deg = packet.yaw_deg
             else:
                 dx_mm = packet.dx * self.px_to_mm
@@ -128,12 +125,12 @@ class OdometryEngine:
                 self._state.y_mm += dY
                 self._state.yaw_deg = packet.yaw_deg
 
-            self._state.packet_count += 1
-            self._state.last_update_timestamp = packet.timestamp
+            self._state.sample_count += 1
+            self._state.timestamp = packet.timestamp
 
             return self._snapshot_locked()
 
-    def get_state(self) -> OdometryState:
+    def get_state(self) -> PositionEstimate:
         with self._lock:
             return self._snapshot_locked()
 
@@ -143,17 +140,23 @@ class OdometryEngine:
         距離量誤差）通常會在開始前呼叫這個。"""
         with self._lock:
             current_yaw = self._state.yaw_deg
-            self._state = OdometryState(yaw_deg=current_yaw)
+            self._state = PositionEstimate(
+                yaw_deg=current_yaw,
+                position_source=POSITION_SOURCE_OPTICAL_FLOW,
+                yaw_source=YAW_SOURCE_IMU_ONLY,
+            )
 
-    def _snapshot_locked(self) -> OdometryState:
+    def _snapshot_locked(self) -> PositionEstimate:
         s = self._state
-        return OdometryState(
+        return PositionEstimate(
             x_mm=s.x_mm,
             y_mm=s.y_mm,
             yaw_deg=s.yaw_deg,
-            packet_count=s.packet_count,
-            skipped_low_squal_count=s.skipped_low_squal_count,
-            last_update_timestamp=s.last_update_timestamp,
+            position_source=s.position_source,
+            yaw_source=s.yaw_source,
+            sample_count=s.sample_count,
+            skipped_low_confidence_count=s.skipped_low_confidence_count,
+            timestamp=s.timestamp,
         )
 
     # ------------------------------------------------------------------
@@ -236,16 +239,17 @@ def _main() -> int:
         while True:
             time.sleep(0.05)
             state = engine.get_state()
-            # 用「還沒印過的封包數是否達到門檻」判斷，而不是直接對 packet_count
+            # 用「還沒印過的樣本數是否達到門檻」判斷，而不是直接對 sample_count
             # 取餘數判斷是否為 0——如果封包暫停（例如車子沒動），count 會卡在
             # 同一個數字不動，用取餘數會導致每 50ms 就重複印一次同一筆狀態。
-            if state.packet_count - last_printed_count >= args.print_every:
-                last_printed_count = state.packet_count
+            if state.sample_count - last_printed_count >= args.print_every:
+                last_printed_count = state.sample_count
                 print(
                     f"X={state.x_mm:8.1f}mm  Y={state.y_mm:8.1f}mm  "
                     f"距原點={state.distance_from_origin_mm():7.1f}mm  "
-                    f"yaw={state.yaw_deg:+6.1f}  封包數={state.packet_count}  "
-                    f"低信心跳過={state.skipped_low_squal_count}"
+                    f"yaw={state.yaw_deg:+6.1f}  樣本數={state.sample_count}  "
+                    f"低信心跳過={state.skipped_low_confidence_count}  "
+                    f"來源={state.position_source}/{state.yaw_source}"
                 )
     except KeyboardInterrupt:
         print("\n結束中...")

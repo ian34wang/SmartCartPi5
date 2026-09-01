@@ -30,6 +30,7 @@ SmartCart_Pi5/
 │   ├── verify_weight.py           # 重量校正「驗證」工具：只讀 config.json 現有值，實測比對，不寫回
 │   └── verify_optical_flow.py     # 光流校正「驗證」工具：同上
 ├── core/
+│   ├── position_types.py    # Phase 3 定位系統最終輸出格式（PositionEstimate），UI/AI 可直接針對這個開發
 │   └── odometry_engine.py   # Phase 3 基礎里程計：純 UART dead-reckoning，含 squal 過濾
 ├── ai/, ui/                 # 目前只有 __init__.py，Phase 4 起才會實作
 ```
@@ -215,6 +216,48 @@ python3 -m database.db_manager --init    # 建表 + 寫入 5 筆測試商品
 python3 -m database.db_manager --list
 ```
 
+### Phase 3：定位系統的最終輸出格式（`core/position_types.py`）
+
+因為裝置暫時沒電、購物車也還沒組裝完成（延伸線材下週才會到），沒辦法繼續做
+需要實機測試的中間步驟（`vanishing_point.py` 視覺校正、`floor_optical_flow.py`
+視覺備援），所以先把 Phase 3「最終要交給 UI/AI/商業邏輯的東西長什麼樣子」這件
+不需要硬體的事確定下來，讓 Phase 4/5/6 可以先針對這個穩定格式開發，不用等中間
+那兩個模組做完。
+
+`PositionEstimate` 這個 dataclass 就是這個「輸出契約」，欄位不會因為底層是
+純 UART 算的、還是之後接了視覺融合/備援而改變：
+
+```python
+@dataclass
+class PositionEstimate:
+    x_mm: float                    # 全域座標系位置，公釐
+    y_mm: float
+    yaw_deg: float                 # 全域座標系航向角，度，逆時針為正
+    position_source: str           # "optical_flow" 或（之後）"floor_optical_flow_fallback"
+    yaw_source: str                # "imu" 或（之後）"imu+vision"
+    sample_count: int              # 累計處理過的樣本數（除錯用）
+    skipped_low_confidence_count: int  # 累計因信心值太低而跳過的樣本數（除錯用）
+    timestamp: Optional[float]     # 最後一次更新的時間戳記
+```
+
+設計上確認過的兩個決定：
+
+1. **座標系原點**：程式啟動（或呼叫 `reset()`）當下車子的位置與朝向，不是
+   店面地圖上的固定座標。畫的是「這台車今天這趟的軌跡」，不是對應賣場實體
+   地圖座標——如果之後要對齊店面地圖，需要另外做開機時的初始定位機制（例如
+   掃描入口的固定標記），目前沒有這個機制，先不做。
+2. **信心值/來源欄位**：`position_source`、`yaw_source` 這兩個字串欄位，加上
+   `is_best_effort_estimate()` 方法，讓下游（UI 可以顯示「定位精準度較低」的
+   提示、AI 的 prompt 可以附註目前定位可信度）不用自己去猜測底層是哪個模組
+   算出來的。現階段因為視覺融合還沒做，`is_best_effort_estimate()` 會一直
+   回傳 `True`，這是如實反映現況，不是 bug。
+
+`core/odometry_engine.py` 是目前唯一一個會產生 `PositionEstimate` 的來源，
+往後 `floor_optical_flow.py`、視覺融合邏輯接上時，改的是這兩個來源欄位的
+「值」，欄位「形狀」不會變——這樣 Phase 4/5/6 現在就可以直接針對
+`core/position_types.py` 開發，等真正的視覺模組做出來直接接上，UI/AI 端的
+程式碼完全不用改。
+
 ### Phase 3：基礎里程計（`core/odometry_engine.py`）
 
 按開發總表的順序要求，先做「純 UART 版本」並實際走一段固定距離驗證誤差量級，
@@ -224,7 +267,9 @@ python3 -m database.db_manager --list
 換算成公釐）跟 BNO080 的 `yaw_deg`，套標準 2D 旋轉矩陣把「車身局部座標系」的
 位移轉成「全域座標系」的位移再累加，得到全域 `(X, Y)`。新增的 `squal` 欄位
 也用上了——信心值低於門檻的那一筆位移不計入累積位置（但 yaw 還是照樣更新，
-因為 yaw 是 BNO080 給的，跟光流追蹤品質無關）。
+因為 yaw 是 BNO080 給的，跟光流追蹤品質無關）。這支引擎目前回報的
+`position_source`/`yaw_source` 永遠是 `"optical_flow"`/`"imu"`（見上一節），
+因為還沒有備援/視覺融合可以切換。
 
 ```bash
 python3 -m core.odometry_engine                    # 用 config.json 的 serial/odometry 設定即時監看
@@ -232,22 +277,25 @@ python3 -m core.odometry_engine --min-squal 30      # 過濾掉信心值低於 3
 python3 -m core.odometry_engine --px-to-mm 1.42     # 手動覆蓋 px_to_mm（還沒校正時暫時測試用）
 ```
 
-執行時會每收到約 20 筆封包（預設，`--print-every` 可調）印一次目前的
-`X`/`Y`/距原點距離/`yaw`/已跳過的低信心筆數，方便你「歸零 → 推一段量好的
-距離 → 比對印出的距離跟捲尺量到的差多少」這種驗證方式。因為
-`optical_flow_px_to_mm` 目前還是 `config.json` 裡的 `CALIBRATE_ME` 佔位值
-（`1.0`），程式啟動時會印警告——這代表現在算出來的 (X, Y) 只能看趨勢（有沒有
-往對的方向走、旋轉有沒有轉對），還不是真實的公釐數，等 `calibrate_optical_flow.py`
-正式校正過（機構定案後）數字才會準。
+執行時會每收到約 20 筆樣本（預設，`--print-every` 可調）印一次目前的
+`X`/`Y`/距原點距離/`yaw`/樣本數/已跳過的低信心筆數/`position_source`與
+`yaw_source`，方便你「歸零 → 推一段量好的距離 → 比對印出的距離跟捲尺量到的
+差多少」這種驗證方式。因為 `optical_flow_px_to_mm` 目前還是 `config.json`
+裡的 `CALIBRATE_ME` 佔位值（`1.0`），程式啟動時會印警告——這代表現在算出來
+的 (X, Y) 只能看趨勢（有沒有往對的方向走、旋轉有沒有轉對），還不是真實的
+公釐數，等 `calibrate_optical_flow.py` 正式校正過（機構定案後）數字才會準。
 
 核心邏輯（`rotate_local_to_global()` 的旋轉矩陣、`process_packet()` 的位置
-累積、squal 過濾、`reset()`）都用假資料驗證過，包含：朝不同方向移動時全域
-座標的正負號對不對、轉向後再移動的方向有沒有跟著轉對、低信心封包確實不影響
-位置但仍更新 yaw、`reset()` 正確歸零位置並保留 yaw、`distance_from_origin_mm()`
-的畢氏定理結果，以及背景執行緒版本（`start()`/`stop()`）搭配真的
-`queue.Queue` 生產者的整合測試。另外也做了完整鏈路的端對端測試：
-`mock_uart_generator.py` 送假封包 → 真的 `UartReceiver` 解析 → 真的
-`OdometryEngine` 累積位置，全部串起來能正常運作。
+累積、squal 過濾、`reset()`、`PositionEstimate` 的 `is_best_effort_estimate()`）
+都用假資料驗證過，包含：朝不同方向移動時全域座標的正負號對不對、轉向後再
+移動的方向有沒有跟著轉對、低信心封包確實不影響位置但仍更新 yaw、`reset()`
+正確歸零位置並保留 yaw 與來源欄位、`distance_from_origin_mm()` 的畢氏定理
+結果、背景執行緒版本（`start()`/`stop()`）搭配真的 `queue.Queue` 生產者的
+整合測試，以及模擬「之後接上視覺融合/備援」時 `position_source`/`yaw_source`
+換成不同值，確認 `is_best_effort_estimate()` 會正確跟著反應（提前驗證這個
+輸出契約設計本身合理，不用等真的做出視覺模組才知道好不好用）。另外也做了
+完整鏈路的端對端測試：`mock_uart_generator.py` 送假封包 → 真的
+`UartReceiver` 解析 → 真的 `OdometryEngine` 累積位置，全部串起來能正常運作。
 
 還沒做、還沒驗證的部分：這支還沒有在真實硬體上實際推車測試過（邏輯用假資料
 驗證，硬體本身接著、隨時可以跑，只是我還沒有實機數據可以核對），也還沒有
