@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+venv/
+database/inventory.db
+logs/
+vision/camera_calibration.npz
+color_test.png
