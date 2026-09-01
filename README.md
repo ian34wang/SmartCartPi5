@@ -19,9 +19,11 @@ SmartCart_Pi5/
 │   └── db_manager.py        # SQLite CRUD，含 5 筆測試商品資料 seed
 ├── vision/
 │   └── camera_calibration.npz  # 相機內參校正結果（已產生，reprojection error 0.2026）
-├── tools/                   # CI / 無硬體測試輔助工具（非正式流程必要步驟）
-│   ├── mock_uart_generator.py
-│   └── mock_barcode_input.py
+├── tools/
+│   ├── mock_uart_generator.py     # CI / 無硬體測試輔助工具（非正式流程必要步驟）
+│   ├── mock_barcode_input.py      # 同上
+│   ├── calibrate_weight.py        # HX711 重量校正互動工具（邏輯已驗證，待硬體到位實測）
+│   └── calibrate_optical_flow.py  # PMW3901 光流位移校正互動工具（同上）
 ├── core/, ai/, ui/          # 目前只有 __init__.py，Phase 3 起才會實作
 ```
 
@@ -206,6 +208,47 @@ python3 -m database.db_manager --init    # 建表 + 寫入 5 筆測試商品
 python3 -m database.db_manager --list
 ```
 
+### 校正工具（`odometry.optical_flow_px_to_mm`、`weight.hx711_offset`/`hx711_scale`）
+
+這兩個是 `config.json` 裡剩下標記 `CALIBRATE_ME` 的數值，跟秤重機構、光流感測器
+安裝方式有關，沒辦法用理論公式算出來，需要在硬體上實測。**目前購物車結構還在
+調整中，這兩支工具還沒有在真實硬體上實際跑過**——先把互動流程與計算邏輯做好、
+用假資料驗證過核心邏輯正確，等結構穩定之後就能直接接上真的 UART 跑一次，不用
+臨時現寫。
+
+**重量校正 `tools/calibrate_weight.py`**：
+
+```bash
+python3 -m tools.calibrate_weight              # 用 config.json 的 serial 設定
+python3 -m tools.calibrate_weight --dry-run     # 只算數值印出來，不寫回 config.json
+python3 -m tools.calibrate_weight --samples 50 --timeout 10
+```
+
+流程：等 UART 有資料流進來 → 提示「秤台淨空」→ 收集一批 `hx711_raw` 樣本算平均
+當 `offset` → 輸入已知砝碼重量（公克）→ 提示「放上砝碼」→ 再收集一批樣本算
+`scale = (加砝碼平均值 - offset) / 已知砝碼重量`。算完會問要不要寫回
+`config.json`（`y` 才寫，其餘任何輸入都不動檔案），寫回時只會更新 `weight`
+區塊，其他欄位與註解不受影響。
+
+**光流校正 `tools/calibrate_optical_flow.py`**：
+
+```bash
+python3 -m tools.calibrate_optical_flow
+python3 -m tools.calibrate_optical_flow --dry-run
+python3 -m tools.calibrate_optical_flow --duration 5 --countdown 3
+```
+
+流程：等 UART 有資料流進來 → 輸入地板上事先量好的實際距離（公分）→ 倒數
+（預設 3 秒）結束後開始一個固定時間窗（預設 5 秒）自動收集 PMW3901 的
+`dx`/`dy` 累積量（因為推車當下沒辦法同時打字，用時間窗取代 Enter 鍵手動
+標記起訖）→ 算 `px_to_mm = 實際距離(mm) / sqrt(sum_dx² + sum_dy²)`。同樣
+算完會問要不要寫回 `config.json`（只更新 `odometry` 區塊）。
+
+兩支工具的核心邏輯（樣本收集、平均值、offset/scale/px_to_mm 計算、config.json
+讀寫）都已經用假資料（合成的 `UartPacket`、預先塞好的 `queue.Queue`）驗證過，
+包含正常情況、逾時只收到部分樣本、除以零等邊界情況；還沒驗證的只有「跟真實
+HX711/PMW3901 接在一起實際跑一次」這部分，等硬體到位後照著上面指令跑就行。
+
 ## 這次開發過程中做的決定（依你的回覆）
 
 1. **Mock 開發路線**：保留，放在 `tools/`，當 CI/無硬體測試輔助工具，不擋在正式流程前面。
@@ -216,9 +259,11 @@ python3 -m database.db_manager --list
 ## 待確認事項（尚未決定，需要你確認）
 
 - `config.json` 裡標記 `CALIBRATE_ME` 的數值（`odometry.optical_flow_px_to_mm`、
-  `weight.hx711_offset` / `hx711_scale`）都還是佔位值，需要你在真實硬體上跑
-  校正流程才能填入正確數字——這部分我還沒做校正腳本，Phase 3 開始處理里程計時
-  會需要（相機的內參校正已經完成，跟這幾個是不同的校正項目）。
+  `weight.hx711_offset` / `hx711_scale`）都還是佔位值。校正工具
+  （`tools/calibrate_weight.py`、`tools/calibrate_optical_flow.py`）已經做好、
+  邏輯也驗證過，但因為購物車秤重機構與光流感測器安裝位置還在調整中，還沒辦法
+  實際跑一次拿到真正的數字——等硬體結構穩定後，照上面「校正工具」小節的指令
+  跑一次就能填入正確值（相機的內參校正已經完成，跟這幾個是不同的校正項目）。
 - PMW3901 SPI 若需要降時脈，記得先在 MCC GUI 端改。
 
 ## 已在硬體上驗證過的部分
