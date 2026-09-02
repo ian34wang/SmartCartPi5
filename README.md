@@ -485,6 +485,88 @@ Beacon 可以測之後再做。`GateCrossingDetector` 判定出 `entering`/`exit
 `gate_sensor.py` 一樣：牽涉多執行緒整合，跟這支邏輯本身的正確性是分開的
 兩件事）。Beacon 的絕對座標也還是佔位值，等實際安裝位置量測後才準確。
 
+**Beacon 硬體選型建議**：因為 BLE RSSI 判斷本身有前面說的物理侷限性（訊
+號是全向性的，晃近但沒真的通過也會有相似的訊號曲線），選 Beacon 硬體時
+不需要、也不建議選發射功率大、涵蓋範圍遠的產品——功率越小越好，讓有效偵
+測範圍本來就侷限在門口附近幾十公分到一兩公尺內，等於用硬體本身幫軟體判
+斷分擔一部分工作，跟 `config.json` 裡 `gate_min_crossing_rssi_dbm` 這類
+絕對訊號門檻是互相配合、不是取代關係。便宜、低功率的方案就夠用：拿一顆
+ESP32（用 BLE 廣播模式模擬 iBeacon/Eddystone，網路上很多現成範例）、或甚
+至一支不用的舊手機（開熱點/BLE 廣播 App）當 Beacon 都可以，不需要買訂製
+的商用 Beacon 產品。
+
+### 實機整合測試（`tools/run_real_hardware_flow.py`）——Phase 3 之後第一次接上真實資料流
+
+Phase 3 的里程計、Phase 4 的狀態機截至目前都只用合成資料測過（`--simulate`
+或單元測試），沒有實際在推車上跑過完整流程。這支工具把「已經有真實硬體」
+的部分接起來，讓秤重比對邏輯、登入/商品掃碼分類邏輯第一次真的吃到硬體資
+料，不用等閘門硬體或 Phase 5 的觸控 UI 做出來才能測：
+
+- **真的接上硬體**：`drivers.uart_receiver.UartReceiver`（BNO080 yaw +
+  PMW3901 光流 + HX711 秤重，走真實 UART）同時餵給
+  `core.odometry_engine.OdometryEngine`（可以順便看 Phase 3 定位現在準不
+  準）和 `core.cart_state_machine.CartStateMachine` 的
+  `WeightSampleReceived`；`drivers.barcode_scanner.BarcodeScanner`（真的
+  USB 掃描器）掃到的條碼依 `config.json` 的
+  `state_machine.login_barcode_prefix` 自動分類成登入或商品掃碼，餵進狀態
+  機。
+- **還沒有硬體的部分，用終端機打字模擬**：管制區閘門進/出、鎖定結帳、付
+  款完成、登出——跟 `core.cart_state_machine --simulate` 同一套事件，只是
+  跟真實資料流同時跑，輸入單一字元即可（不用整行指令，方便站在推車旁邊操
+  作）：
+
+  ```
+  e = 模擬進入管制區          x = 模擬走出管制區
+  m = 切換掃碼模式（加入/移除）  l = 鎖定結帳
+  p = 確認付款完成            o = 登出
+  f = 強制登出（工作人員）      s = 印出目前完整狀態
+  r = 秤重異常時重試比對        v = 秤重異常時放棄該筆商品
+  q = 結束
+  ```
+
+**用法**：
+
+```bash
+python3 -m tools.run_real_hardware_flow
+python3 -m tools.run_real_hardware_flow --port /dev/ttyAMA0 --barcode-hint USBKey
+```
+
+啟動後會先檢查 `optical_flow_px_to_mm`、`weight.hx711_scale` 是不是還是
+`CALIBRATE_ME` 佔位值，是的話會印警告（流程還是能測，只是數字本身不準）。
+真的登入/商品掃碼直接刷條碼即可；秤重比對是背景自動用真實 HX711 數據跑
+的，不用手動觸發；每次掃碼或輸入指令後都會印出目前狀態機狀態、購物清單、
+最近警告、以及 Phase 3 定位座標。
+
+**建議的測試順序**（回答「怎麼測試實機流程順不順」）：
+
+1. 確認 UART 接線與條碼掃描器都接好（沿用「各驅動模組怎麼單獨測試」那節
+   的個別驗證方式，先確保兩邊硬體本身沒問題，再跑整合測試比較好抓錯在哪）。
+2. 執行 `python3 -m tools.run_real_hardware_flow`，觀察開機訊息：UART 有
+   沒有連上、掃描器有沒有抓到裝置。
+3. 刷一張會員條碼（`MEMBER-` 開頭），確認狀態機從未登入轉成「等待進入管
+   制區」。
+4. 輸入 `e` 模擬進入管制區，狀態轉成購物中。
+5. 刷一個商品條碼，觀察秤重比對：把對應重量的東西放上推車（或直接改變秤
+   重感測器上的重量），看狀態機是不是正確判定「比對成功」；也可以刻意不
+   放東西、或放錯重量，驗證 `WEIGHT_MATCH_TIMEOUT`/`WEIGHT_MISMATCH` 這類
+   警告會不會如預期跳出來（這是它第一次吃真實秤重雜訊，訊噪比可能跟合成
+   測試時的假設不同，需要實測才知道 `weight_match_timeout_sec` 或
+   `weight_tolerance_g` 是否要調整）。
+6. 輸入 `l` 鎖定結帳、`p` 確認付款、`x` 模擬走出管制區、`o` 登出，確認整
+   條流程能順利跑完一輪，且每一步的中斷/異常（例如中途拔掉 UART 排線模擬
+   斷線、輸入 `f` 強制登出）都有對應警告或提示，而不是卡住或裝作沒事。
+7. 全程留意終端機印出的 `[警告]`（佔位校正值）與狀態機的 `recent_alerts`
+   ——這支工具本身不會幫你校正 `hx711_scale`/`optical_flow_px_to_mm`，發
+   現數字不對時回去用「校正工具」那節的腳本重新校正。
+
+**還沒測的部分**：目前沒有真實硬體可用的沙盒環境裡，只驗證了純邏輯
+（`classify_barcode()`）跟用 `tools/mock_uart_generator.py` 假封包跑通
+「UART → 里程計 → 狀態機秤重事件」這條資料流（含斷線/重連判斷），確認元
+件之間真的接得起來、不會在型別或介面上炸掉；`BarcodeScanner` 那一側因為
+需要真的 evdev 裝置，這裡沒辦法測，用法跟介面沿用已經在硬體上驗證過的
+`drivers/barcode_scanner.py`。第一次在真推車上完整跑過這支工具之前，仍然
+不能保證秤重比對的時間/誤差門檻在真實雜訊下是合適的。
+
 ### 校正工具（`odometry.optical_flow_px_to_mm`、`weight.hx711_offset`/`hx711_scale`）
 
 這兩個是 `config.json` 裡剩下標記 `CALIBRATE_ME` 的數值，跟秤重機構、光流感測器
