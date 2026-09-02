@@ -2,9 +2,14 @@
 
 Phase 1（環境建置與硬體可靠度驗證）、Phase 2（資料擷取驅動層）已完成。
 Phase 3（定位積分與視覺融合）進行中，目前完成第一步「純 UART 版本的基礎
-里程計」（`core/odometry_engine.py`），視覺校正（`vanishing_point.py`）、
-數據融合、視覺光流備援（`floor_optical_flow.py`）留待下次。Phase 4 起
-（商業邏輯、UI、AI）也留待之後。
+里程計」（`core/odometry_engine.py`），也完成了 BLE 地標校正的軟體邏輯
+（`core/landmark_correction.py`，同時解決 Phase 4 的門口偵測跟 Phase 7 的
+地圖對齊，見對應章節）；視覺校正（`vanishing_point.py`）、視覺光流備援
+（`floor_optical_flow.py`）、真正的 BLE 掃描硬體整合留待下次（等硬體組裝、
+延長線到貨、有真的 Beacon 可以測）。Phase 4（商業邏輯與狀態機）已開始：
+整套「登入->進管制區->購物->鎖定結帳->付款->出管制區->登出」流程的狀態機
+（`core/cart_state_machine.py`）、購物清單資料結構（`core/cart_manager.py`）
+都已完成並邏輯測試過。Phase 5 起（UI、系統整合、AI）留待之後。
 
 以下內容已經在實體 Pi 5（YichaoPi5）+ 真實硬體上跑過、修過踩到的坑，不是紙上規劃。
 
@@ -19,7 +24,7 @@ SmartCart_Pi5/
 │   ├── barcode_scanner.py   # evdev 攔截 USB 條碼掃描器，含 --debug 診斷模式
 │   └── camera_stream.py     # picamera2 影像擷取 + 棋盤格畸變校正 + --color-test 診斷工具
 ├── database/
-│   └── db_manager.py        # SQLite CRUD，含 5 筆測試商品資料 seed
+│   └── db_manager.py        # SQLite CRUD，商品(products)+會員(members)兩張表，含測試資料 seed
 ├── vision/
 │   └── camera_calibration.npz  # 相機內參校正結果（已產生，reprojection error 0.2026）
 ├── tools/
@@ -31,8 +36,12 @@ SmartCart_Pi5/
 │   └── verify_optical_flow.py     # 光流校正「驗證」工具：同上
 ├── core/
 │   ├── position_types.py    # Phase 3 定位系統最終輸出格式（PositionEstimate），UI/AI 可直接針對這個開發
-│   └── odometry_engine.py   # Phase 3 基礎里程計：純 UART dead-reckoning，含 squal 過濾
-├── ai/, ui/                 # 目前只有 __init__.py，Phase 4 起才會實作
+│   ├── odometry_engine.py   # Phase 3 基礎里程計：純 UART dead-reckoning，含 squal 過濾
+│   ├── weight_convert.py    # HX711 raw -> 公克換算公式（校正/驗證/狀態機共用）
+│   ├── cart_manager.py      # Phase 4 購物清單資料結構（清單、數量、金額）
+│   ├── cart_state_machine.py # Phase 4 購物流程狀態機（登入~登出整趟流程的正確性保障）
+│   └── landmark_correction.py # Phase 3/7 BLE 地標校正：門口偵測 + 地圖對齊，同一套邏輯
+├── ai/, ui/                 # 目前只有 __init__.py，Phase 5/6 起才會實作
 ```
 
 ## Pi 5 上要做的事（依順序）
@@ -212,9 +221,85 @@ python3 -m drivers.camera_stream --preview
 ### 資料庫
 
 ```bash
-python3 -m database.db_manager --init    # 建表 + 寫入 5 筆測試商品
+python3 -m database.db_manager --init    # 建表 + 寫入測試商品(products)與測試會員(members)
 python3 -m database.db_manager --list
 ```
+
+### Phase 4：購物流程狀態機（`core/cart_state_machine.py`、`core/cart_manager.py`）
+
+涵蓋的完整流程：**登入帳號 -> 進入管制區 -> 購物（掃碼加入/移除+秤重比對）
+-> 鎖定結帳 -> 付款 -> 走出管制區 -> 登出帳號**，這條路上每一步可能遇到的
+問題都設計了對應的處理方式——見下面「狀態與警告一覽」。這支是「底層架構的
+支持」（Phase 4 的定位，見「前身專題功能取捨」章節），只管流程本身正不正
+確，不含 LLM 推薦、預算分析這類進階功能（那些排 Phase 6）。
+
+跟目前硬體現況的對應（決定了這支怎麼設計）：
+
+- **登入**：目前硬體只有 USB 條碼掃描器，所以是「掃會員條碼/QR code」
+  （不是密碼、不是 RFID），會員代碼查 `database/db_manager.py` 新增的
+  `members` 表。條碼格式用 `config.json` 的
+  `state_machine.login_barcode_prefix`（預設 `"MEMBER-"`）跟商品條碼區分，
+  避免誤掃。
+- **進入/走出管制區**：確定的方向是 BLE Beacon 雙標籤差分（見下面
+  `core/landmark_correction.py` 章節），不經過已經滿載的 MCU、直接用 Pi5
+  內建藍牙，成本接近零。狀態機這邊先假設事件會以 `GateEntryDetected`/
+  `GateExitDetected` 的形式餵進來；真正把 `GateCrossingDetector` 判定出的
+  `entering`/`exiting` 組成這兩個事件、串接真實 BLE 掃描（`bleak`）的
+  `drivers/ble_beacon_scanner.py`，還沒寫，狀態機邏輯本身不用因此改。
+- **鎖定結帳**：純軟體狀態鎖（`LOCKED_FOR_CHECKOUT`），沒有實體鎖車機構，
+  UI 進到這個狀態要自己擋掉繼續增減商品的操作。
+- **同一會員是否已經在別台購物車登入**：單機沒辦法知道其他購物車狀態，
+  這需要中央伺服器/共用資料庫才能做，目前架構沒有這塊，暫不處理跨購物車
+  重複登入偵測（見 `database/db_manager.py` 開頭的說明）。
+
+**狀態一覽**：`UNAUTHENTICATED`（未登入）→ `LOGGED_IN_OUTSIDE_ZONE`（已登入
+未進管制區）→ `SHOPPING`（購物中）↔ `AWAITING_WEIGHT_INCREASE`/
+`AWAITING_WEIGHT_DECREASE`（掃碼後等秤重比對）↔ `WEIGHT_MISMATCH_ERROR`
+（秤重異常，需要重試或放棄該筆）→ `LOCKED_FOR_CHECKOUT`（鎖定結帳）→
+`AWAITING_EXIT`（付款完成，等走出管制區）→ `SESSION_CLOSED`（已結束，可登
+出回到 `UNAUTHENTICATED`）。
+
+**秤重比對邏輯**：掃碼當下記錄目前重量當基準值，之後每筆新秤重讀數跟基準
+值的差，拿去跟這個商品在 `database` 登記的 `standard_weight_g`（加入為
+正、移除為負）±`weight_tolerance_g` 比對——在容差內視為成功；方向相反且
+超出容差直接判定「方向不符」（可能有其他商品同時被拿動）；方向對但超出容
+差上限判定「重量不符」（可能拿了不只一件）；方向對且還沒超標則視為還在放
+/拿的過程中，繼續等到成功或等到 `weight.weight_match_timeout_sec` 逾時。
+
+**遇到問題的處理方式**：分兩種——(a) 軟體層能擋下來/引導重試的（條碼查無
+資料、秤重沒對上、逾時、感測器斷線……），狀態機會擋下錯誤動作、發出對應
+的 `CartAlert`（含 `severity`：`info`/`warning`/`critical`），並提供
+`RetryWeightCheckRequested`（重試）/`VoidPendingItemRequested`（放棄這筆）
+的路徑；(b) 沒辦法只靠軟體解決、代表可能有防損疑慮的（例如結帳前就走出管
+制區、強制登出時清單裡還有商品），狀態機**不會**假裝沒事發生、自己把狀態
+轉成正常結束，只會發出最高等級（`critical`）的警告，交給上層（UI、警報硬
+體、店員）處理——這是軟體邊界，狀態機本身沒辦法真的攔住一個人。
+
+完整的警告代碼列在 `core/cart_state_machine.py` 開頭的 `ALERT_*` 常數，每個
+代碼對應流程裡一個具體的問題點（例如 `zone_entry_without_login`、
+`exit_without_checkout`、`weight_direction_mismatch`……），設計成之後
+Phase 6 的 `anomaly_detector.py` 可以直接依代碼分類統計，不用解析訊息文字。
+
+**互動模擬（不需要真實硬體）**：
+
+```bash
+python3 -m core.cart_state_machine --simulate
+```
+
+用數字選單手動觸發每一種事件（登入、進管制區、掃碼、回報秤重、快轉時間
+檢查逾時、鎖定、付款、出管制區、登出、強制登出、感測器斷線/恢復），每次
+操作後印出目前狀態、購物清單、總價、最近警告——測試資料用
+`--db` 預設的 `database/inventory.db`（含測試商品與測試會員 `MEMBER-0001`/
+`MEMBER-0002`）。已經照這個流程寫過完整的邏輯測試（正常全流程 + 17 種錯
+誤情境：查無會員、未登入闖入、查無商品、秤重逾時/方向不符/超出容差、移除
+不存在的商品、鎖定中掃碼、結帳前走出管制區、登出前未結案、強制登出殘留商
+品、感測器斷線恢復、鎖定中秤重比對未完成……），全部通過。
+
+**尚未接上真實硬體整合**：目前只有 `--simulate` 互動模擬，真正把
+`barcode_scanner.py`、`uart_receiver.py` 換算出的重量、之後的
+`gate_sensor.py` 產生的事件即時餵進 `CartStateMachine.process_event()`（背
+景執行緒 + 主迴圈整合），這件事留給 Phase 5 的 `main.py` 做，因為那牽涉到
+多個 driver 執行緒協調，跟這支狀態機本身的邏輯正確性是分開的兩件事。
 
 ### Phase 3：定位系統的最終輸出格式（`core/position_types.py`）
 
@@ -301,6 +386,104 @@ python3 -m core.odometry_engine --px-to-mm 1.42     # 手動覆蓋 px_to_mm（�
 驗證，硬體本身接著、隨時可以跑，只是我還沒有實機數據可以核對），也還沒有
 視覺校正（yaw 目前完全信任 IMU，`config.json` 的 `vision_yaw_fusion_weight`
 還是 0，等 `vanishing_point.py` 做出來才會啟用）。
+
+### Phase 3/7：BLE 地標校正（`core/landmark_correction.py`）——同時解決門口偵測與地圖對齊
+
+背景：跟你討論另一份 Gemini 對話紀錄（賣場防盜門與標籤技術解析）後定案的
+方向，用低成本 BLE Beacon 同時解決兩個原本分開卡住的問題——Phase 4
+`GateEntryDetected`/`GateExitDetected` 沒有硬體來源、Phase 7 室內導航卡在
+「浮動座標系怎麼對齊店面地圖」沒有機制。兩個問題本質上是同一種問題：都需
+要「已知絕對座標的地標點」讓車子經過時把座標釘回去，只是門口多需要一個
+「方向」。
+
+**關鍵設計原則**（跟討論紀錄的結論一致）：不要用 RSSI 算連續座標——室內多
+路徑反射環境下 RSSI 抖動可達 ±10~15 dBm，換算距離誤差 2~4 公尺，比沒校正
+的 IMU 漂移還糟。改成把訊號峰值當「離散觸發點」，車子經過已知座標的
+Beacon 附近時，觸發一次校正，把 dead-reckoning 累積誤差拉回去——兩次校正
+之間的位置完全還是靠 `core/odometry_engine.py` 的積分撐著，這不是取代主要
+定位來源，是跟 squal 過濾、（還沒寫的）`vanishing_point.py` 同一種「離散/
+局部修正」的設計哲學。
+
+**兩種偵測器**：
+
+- `RssiPeakDetector`——給一般地標點用（走道轉角、貨架節點……Phase 7 之後
+  要擴充），只需要知道「經過了」，不需要方向。持續餵平滑後的 RSSI，偵測
+  訊號「從上升轉為下降」的瞬間（局部極大值），觸發一次校正，同一個峰值只
+  觸發一次（`min_rise_dbm` 門檻避免雜訊誤判）。
+- `GateCrossingDetector`——管制區門口專用，需要方向（決定要不要觸發防損
+  警報，信心要求比一般地標點高）。門內門外各放一顆 Beacon（約 1.5~2 公
+  尺），比較兩者訊號的「相對大小」而不是絕對值（可以抵消車體金屬造成的
+  固定衰減），哪邊持續佔優勢翻轉到另一邊就是一次穿越，回傳 `entering`／
+  `exiting`。`hysteresis_dbm` 避免兩者訊號接近時（例如車子剛好停在門口正
+  中間）反覆誤判方向。
+
+兩者都靠 `smooth_rssi()`（移動中位數平滑，消除單筆突波）打底。
+
+**修正過一個設計漏洞**（你發現的，記在這裡避免以後又犯）：第一版只看「訊
+號有沒有先升後降」，這抓不住「車子只是在 Beacon 附近晃過、根本沒有真的靠
+近/穿越」的情況——晃近一點點一樣會有升降曲線，形狀上跟真的經過沒有差別。
+修正方式是加一道**絕對訊號強度門檻**，不只看「有沒有相對上升」，還要求峰
+值本身（或門口判定當下佔優勢那邊的訊號）夠強，代表車子當下真的夠靠近：
+
+- `RssiPeakDetector` 加了 `min_peak_rssi_dbm`：峰值沒有強到這個門檻，就當
+  作沒發生，不觸發校正。
+- `GateCrossingDetector` 加了 `min_crossing_rssi_dbm`（同樣邏輯，門口這裡
+  代價更高所以更重要）跟 `min_confirm_samples`（要求新的優勢方連續出現
+  N 筆才算數，過濾單一雜訊樣本造成的瞬間翻轉，門口預設調到 3）。
+- 新增 `is_heading_consistent()` 工具函式——這是討論紀錄裡 Gemini 自己也
+  強調的「關鍵」步驟，第一版漏掉了：BLE 訊號本身沒有方向性，量不到「有沒
+  有真的通過那個實體開口」，所以門口的穿越判定除了 BLE 差分之外，理論上
+  還需要拿 IMU 的航向角做交叉驗證（車子朝向要跟「真的在穿越門口」該有的
+  朝向大致一致）。這個函式本身寫好測過了，但「把 BLE 判定跟 IMU 朝向兩個
+  獨立訊號 AND 起來才採信」這個組合邏輯，要等接上 `main.py`（Phase 5）整
+  合真實資料流時才能真正發揮作用——`GateCrossingDetector` 本身只管 BLE 這
+  一半，這是刻意的分工，不是漏做。
+
+**誠實講這個限制到底能不能完全解決**：這三層防護（絕對門檻、連續樣本、朝
+向交叉驗證）能大幅降低「晃過但沒真的穿越」的誤判機率，但沒辦法做到理論上
+的零誤判——BLE RSSI 本身是全向、無方向性的訊號強弱量測，物理上量不到「有
+沒有真的通過那個實體開口」，這跟光電閘門、地埋迴路線這種「物理上一定要真
+的通過某個窄通道才會觸發」的機制比起來，先天就有模糊地帶。額外能做、但這
+支程式碼本身做不到的事：**部署時把 Beacon 發射功率調低**，讓兩顆門口
+Beacon 的有效偵測範圍實際侷限在門口通道附近，店裡其他地方訊號弱到連
+`hysteresis_dbm` 都過不了——軟體門檻要跟這個實體佈署互相配合，單靠其中
+一邊都不夠穩。
+
+**跟 `core/odometry_engine.py` 的整合**：新增 `apply_landmark_correction(x_mm, y_mm, timestamp, landmark_id, blend_weight=1.0)` 方法，收到校正事件時把累積座標拉向地標的已知座標——`blend_weight=1.0`（預設）是直接強制重置，對應討論紀錄的建議；小於 1.0 是加權融合，留給以後需要更平滑校正時調整，目前不需要。`core/position_types.py` 的 `PositionEstimate` 也加了 `last_landmark_id`/`last_landmark_correction_at` 兩個欄位記錄最近一次校正，純除錯/UI 顯示用，不影響定位邏輯本身。
+
+**地標座標設定**：`config.json` 新增 `landmarks` 區塊——`points`（每個 Beacon
+的 `beacon_id`/絕對座標/`label`，目前是 `CALIBRATE_ME` 佔位資料，等安裝位
+置定案實測填入）、`gate_beacon_pair`（門口那組的內外側 Beacon ID）、平滑/
+偵測參數（`rssi_smoothing_window`、`peak_min_rise_dbm`、`peak_min_rssi_dbm`、
+`gate_hysteresis_dbm`、`gate_min_crossing_rssi_dbm`、`gate_min_confirm_samples`、
+`gate_exit_yaw_deg`、`gate_heading_tolerance_deg`）。之後 Phase 7 要擴充走
+道地標點，就是往 `points` 陣列繼續加。
+
+**互動模擬（不需要真實硬體）**：
+
+```bash
+python3 -m core.landmark_correction --simulate peak   # 模擬推車經過一般地標點
+python3 -m core.landmark_correction --simulate gate    # 模擬推車通過門口（輸入 A、B 兩顆 Beacon 的 RSSI）
+```
+
+邏輯測試涵蓋：平滑函式的中位數計算、單一峰值正確偵測且只觸發一次、小幅雜
+訊不誤判成峰值、兩次獨立經過偵測成兩個峰值、門口進/出兩種方向都正確判
+定、遲滯門檻確實避免訊號接近時反覆誤判、`apply_landmark_correction()` 的
+強制重置與加權融合都正確、`blend_weight` 超出範圍正確擋下——以及這次補強
+的：**只是晃近（峰值不夠強）不會誤觸發地標校正、晃近但沒真的到門口附近不
+會誤觸發門口穿越、單一雜訊樣本的瞬間翻轉不會被 `min_confirm_samples` 誤
+判成穿越、加了絕對門檻後真正靠近的情況仍然正常觸發（沒有把真的訊號也一起
+擋掉）、`is_heading_consistent()` 的角度容許範圍與 ±180 度邊界換算都正
+確**，全部通過；也用 CLI 手動模擬過完整流程。
+
+**還沒做的部分**：這裡全部是純邏輯，真正掃描 BLE 廣播、把原始 RSSI 讀數餵
+進來的 `drivers/ble_beacon_scanner.py`（背景執行緒 + `bleak` 套件）還沒
+寫——這個環境沒有 BLE 硬體/Beacon 可以測，等邏輯定案（現在）、真的有
+Beacon 可以測之後再做。`GateCrossingDetector` 判定出 `entering`/`exiting`
+之後，要怎麼組成 `GateEntryDetected`/`GateExitDetected` 事件餵進
+`core/cart_state_machine.py`，這個串接也留給 Phase 5 的 `main.py`（原因跟
+`gate_sensor.py` 一樣：牽涉多執行緒整合，跟這支邏輯本身的正確性是分開的
+兩件事）。Beacon 的絕對座標也還是佔位值，等實際安裝位置量測後才準確。
 
 ### 校正工具（`odometry.optical_flow_px_to_mm`、`weight.hx711_offset`/`hx711_scale`）
 
@@ -431,6 +614,50 @@ $SDK,<dx>,<dy>,<squal>,<yaw_deg>,<pitch_deg>,<roll_deg>,<hx711_raw>*<CS>\r\n
 取代/輔助統計濾波，會比較準——不過這牽涉到要不要改校正工具的過濾邏輯，
 我還沒動，等你想清楚要不要採用再說。
 
+## 前身專題（大四專題.pdf）功能取捨與 Phase 7 定位
+
+專案前身是另一份大四專題提案（YOLOv8 + 雙鏡頭 + Hailo-8L NPU 的視覺辨識路線）。
+現在的 SmartCart_Pi5 已經在底層方向上跟那份提案分道揚鑣了——原因是：需要重新
+蒐集/訓練視覺模型的成本、開發時程難以配合、YOLOv8 在 Pi5 上可能跑不動。所以
+定位（改用 PMW3901 光流 dead-reckoning，見 `core/odometry_engine.py`）和防損
+驗證（改用「掃碼 + 秤重比對」而非視覺辨識）的底層結構都已經是全新設計，不是
+沿用前身文件的做法。但前身文件第一頁列的四個前端旗艦功能——**室內導航**、
+**錢包管家**、**健康護照**、**即時優惠**——使用者希望盡量保留，這幾個功能在
+現在的 `SmartCart_Pi5_開發總表_v2.docx`（Phase 1~6）裡完全沒有出現，是額外要
+排進來的範圍，目前討論結果：
+
+- **錢包管家 / 健康護照 / 即時優惠**：這三個不依賴視覺或定位，可以獨立於
+  Phase 3（定位）的進度往前做，但範圍/資料表結構/UI 呈現方式的細節還沒討論定
+  案，先不動工。**這三個明確不放進 Phase 4**——使用者的定位是：Phase 4 只做
+  「底層架構的支持」，也就是開發總表原定的 `state_machine.py`（狀態機：
+  IDLE/SCANNED_WAIT_WEIGHT/ERROR_WEIGHT_MISMATCH 等）跟 `cart_manager.py`
+  （購物清單/總價這種基礎資料結構與存取，不含進階邏輯），是掃碼、秤重比對這
+  類「保障購物流程正確性」的基礎設施。錢包管家/健康護照/即時優惠則是**建立在
+  Phase 4 這層基礎設施之上、要融合 LLM 的進階功能**——例如 LLM 推薦後一鍵把
+  商品加入購物清單、根據目前購物清單做預算分析與建議，這類「推薦 + 決策輔助」
+  的邏輯天生就跟 Phase 6 的 `llm_agent.py`（Context Builder：組裝 (X,Y) +
+  購物清單餵給 LLM，回傳結構化 JSON 給 UI 用）更接近，所以目前傾向排進
+  **Phase 6**（或 Phase 6 之後另開一個小 Phase），而不是 Phase 4。等這三個功
+  能的範圍/資料表/UI 細節聊清楚後再正式排定。
+- **室內導航（含大地圖設計建置）**：正式列為 **Phase 7**，開發本身仍然擱置
+  （硬體還沒組裝），但原本卡住的「浮動座標系怎麼跟店面地圖對齊」這個問題，
+  現在有具體的候選機制了——`core/landmark_correction.py`（BLE Beacon 地標
+  校正，見上面對應章節）：每個 Beacon 有寫死的絕對座標，車子經過時把
+  dead-reckoning 的累積座標校正/融合回那個座標，等於是分散在店裡多個點的
+  「初始定位」機制，而不只是開機時一次性對齊。這個機制的軟體邏輯已經做完
+  並測試過，但還沒有真的 BLE 硬體/Beacon 可以實測，也還沒有店面地圖本身
+  （貨架圖節點、A* 尋路）的設計——要真正啟動 Phase 7，除了地標校正機制本
+  身要實機驗證過，還需要另外設計店面地圖的資料結構跟尋路演算法，這些都還
+  沒開始。
+
+跟前身文件另外幾個路線差異，記錄在這裡備查：前身用 YOLOv8 雙鏡頭視覺辨識做
+「先視覺確認、後重量驗證」的防損邏輯，現在用「掃碼 + HX711 秤重比對」取代
+（不需要訓練/佈署視覺辨識模型）；前身的室內導航用 A* 路徑規劃 + 貨架格狀障礙
+物地圖，這部分如果 Phase 7 真的要做，會是全新設計，不會直接沿用前身的路徑規
+劃演算法本身（因為地圖對齊機制不同了，但 A* 這類演算法本身之後仍可能重用）；
+前身的 mmWave 分層喚醒、太陽能輔助充電、YOLOv8+Hailo-8L NPU 硬體等，目前的開
+發總表裡沒有對應項目，暫不在範圍內，之後如果要考慮省電/續航再另外討論。
+
 ## 待確認事項（尚未決定，需要你確認）
 
 - `config.json` 裡標記 `CALIBRATE_ME` 的數值（`odometry.optical_flow_px_to_mm`、
@@ -469,3 +696,20 @@ $SDK,<dx>,<dy>,<squal>,<yaw_deg>,<pitch_deg>,<roll_deg>,<hx711_raw>*<CS>\r\n
   是真實公釐數。`--min-squal` 的門檻值也還沒有實測資料可以參考該設多少，
   目前預設 0（不過濾），有實機 squal 數據之後再回頭調。yaw 目前完全信任
   IMU，還沒有視覺校正（`vanishing_point.py` 待寫）。
+- `core/cart_state_machine.py`／`core/cart_manager.py` 目前只用假資料/假事件
+  邏輯測試過（含互動模擬 `--simulate`），還沒有接上真實的
+  `barcode_scanner.py`／`uart_receiver.py` 秤重資料流即時驗證過。
+  `GateEntryDetected`/`GateExitDetected` 的來源方向已經確定是
+  `core/landmark_correction.py` 的 BLE 雙 Beacon 差分（見對應章節），但真正
+  掃描 BLE 硬體的 `drivers/ble_beacon_scanner.py` 還沒寫、也沒有真的 Beacon
+  可以測，現在只能靠這兩個事件手動/程式模擬觸發。秤重比對用的
+  `standard_weight_g`/`weight_tolerance_g` 是 `database/db_manager.py` 裡的
+  測試資料，跟 `weight.hx711_offset`/`hx711_scale` 一樣，都要等秤重機構定
+  案、真的校正過才是準確值。members 表的登入條碼前綴（`MEMBER-`）也是先
+  假設的格式，等真正的會員卡/App 設計出來要跟著調整。
+- `core/landmark_correction.py` 的 `RssiPeakDetector`/`GateCrossingDetector`
+  只用合成的 RSSI 數列驗證過峰值偵測與雙 Beacon 方向判定的邏輯本身（包含
+  CLI 互動模擬），還沒有真實 BLE 環境的訊號特性可以核對——`min_rise_dbm`／
+  `gate_hysteresis_dbm`／`rssi_smoothing_window` 這幾個參數都是先給合理預設
+  值，等真的有 Beacon 跟 Pi5 藍牙可以測，量到真實 RSSI 抖動的量級後要回頭
+  調整。`config.json` 的 `landmarks.points` 座標也是佔位值。

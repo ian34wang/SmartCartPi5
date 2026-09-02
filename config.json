@@ -1,5 +1,6 @@
 {
   "_comment": "SmartCart_Pi5 系統全域參數設定檔。所有標註 CALIBRATE_ME 的數值都是佔位值，正式使用前必須依實測結果校正。",
+
   "serial": {
     "port": "/dev/ttyAMA0",
     "_port_comment": "務必是 /dev/ttyAMA0，不是 /dev/serial0！Pi 5 (RP1) 上 /dev/serial0 指向 ttyAMA10，跟 GPIO14/15 實體接腳無關。部署到新的 Pi 前，先用 GPIO14-15 loopback 測試重新確認過一次，不要假設別名正確。",
@@ -11,25 +12,19 @@
     "_timeout_comment": "pyserial 的 read timeout，不是封包逾時；封包本身 20Hz 送出，正常間隔約 50ms。",
     "reconnect_backoff_sec": 2.0
   },
+
   "uart_protocol": {
     "packet_prefix": "$SDK,",
     "packet_terminator": "\r\n",
     "checksum_delimiter_start": "$",
     "checksum_delimiter_end": "*",
-    "field_order": [
-      "dx",
-      "dy",
-      "squal",
-      "yaw_deg",
-      "pitch_deg",
-      "roll_deg",
-      "hx711_raw"
-    ],
+    "field_order": ["dx", "dy", "squal", "yaw_deg", "pitch_deg", "roll_deg", "hx711_raw"],
     "_field_order_comment": "2026-09-01 協定改版：新增 squal（PMW3901 追蹤信心值，0-255），原本 7 欄變 8 欄，跟舊版不相容。",
     "expected_rate_hz": 20,
     "stale_data_timeout_sec": 0.5,
     "_stale_comment": "超過這個時間沒收到合法封包，視為 UART 連線異常（MCU 端每輪固定送包，正常不該斷）。"
   },
+
   "csv_logger": {
     "enabled": false,
     "_comment": "Phase 6 異常偵測模型的訓練資料來源。預設關閉，避免一般開發時洗爆磁碟；需要及早收集資料時再開啟。",
@@ -37,42 +32,77 @@
     "filename_pattern": "uart_%Y%m%d_%H%M%S.csv",
     "flush_every_n_rows": 20
   },
+
   "odometry": {
-    "optical_flow_px_to_mm": 3.080556265604841,
-    "_optical_flow_comment": "已於 2026-09-01 20:08:39 用 tools/calibrate_optical_flow.py 實測校正（實測距離(mm) / 拖曳期間累積像素位移）。安裝高度或感測器有更動時需要重新校正。",
+    "optical_flow_px_to_mm": 1.0,
+    "_optical_flow_comment": "CALIBRATE_ME：PMW3901 每 count 位移對應實際地面移動的公釐數，跟安裝高度、感測器解析度(CPI)有關，需要用已知距離的拖曳測試實測校正。",
     "optical_flow_sample_rate_hz": 20,
     "yaw_source": "bno080",
     "vision_yaw_fusion_weight": 0.0,
     "_vision_yaw_fusion_weight_comment": "Phase 3 視覺融合權重（0=完全信任IMU，1=完全信任視覺），Phase 1+2 階段先保持 0，尚未啟用視覺校正。"
   },
+
   "weight": {
-    "hx711_offset": -331777.7,
-    "_hx711_offset_comment": "已於 2026-09-01 20:14:45 用 tools/calibrate_weight.py 實測校正（空秤平均值）。",
-    "hx711_scale": 367.5161044176707,
-    "_hx711_scale_comment": "已於 2026-09-01 20:14:45 用 tools/calibrate_weight.py 實測校正（(加砝碼平均值 - offset) / 已知砝碼重量(g)）。",
+    "hx711_offset": 0,
+    "_hx711_offset_comment": "CALIBRATE_ME：空秤時 hx711_raw 的讀數（零點偏移）。開機讀取數次原始值取平均得出。",
+    "hx711_scale": 1.0,
+    "_hx711_scale_comment": "CALIBRATE_ME：(加已知砝碼後讀數 - offset) / 已知砝碼重量(g)，用來把 ADC 差值換算成公克。",
     "weight_match_timeout_sec": 5.0,
-    "_weight_match_timeout_comment": "掃碼後等待重量變化比對的逾時秒數，超過視為 ERROR_WEIGHT_MISMATCH。"
+    "_weight_match_timeout_comment": "掃碼後等待重量變化比對的逾時秒數，超過視為 WEIGHT_MISMATCH_ERROR（core/cart_state_machine.py 的 ALERT_WEIGHT_MATCH_TIMEOUT）。"
   },
+
+  "landmarks": {
+    "rssi_smoothing_window": 5,
+    "_rssi_smoothing_window_comment": "core/landmark_correction.py 的移動中位數平滑窗口大小（筆數），用來消除 BLE RSSI 單筆突波（多路徑反射造成的瞬間跳動）。",
+    "peak_min_rise_dbm": 3.0,
+    "_peak_min_rise_dbm_comment": "一般地標點的峰值偵測（RssiPeakDetector）：上升幅度至少要超過這個值(dBm)才算數，避免雜訊誤判成峰值。",
+    "peak_min_rssi_dbm": -70.0,
+    "_peak_min_rssi_dbm_comment": "峰值本身的絕對訊號強度門檻(dBm)：只有相對上升幅度不夠——車子只是在 Beacon 附近晃過、沒有真的靠近，也會有『先升後降』的曲線，只看相對上升幅度會被誤判成經過。這個值要等實測 Beacon 在多遠距離大概是多少 dBm 才能校準，先給 -70 這個常見『數公尺內』的量級當預設，之後要調。設成 null 可以關閉這層檢查（不建議）。",
+    "gate_hysteresis_dbm": 2.0,
+    "_gate_hysteresis_dbm_comment": "管制區門口雙 Beacon 差分判定（GateCrossingDetector）的遲滯門檻(dBm)，避免兩顆訊號接近時（例如車子剛好停在門口正中間）反覆誤判方向。",
+    "gate_min_crossing_rssi_dbm": -65.0,
+    "_gate_min_crossing_rssi_dbm_comment": "門口穿越判定的絕對訊號強度門檻(dBm)：跟 peak_min_rssi_dbm 是同一種防護，理由更重要——門口誤判直接觸發防損警報/鎖輪，代價比一般地標點高。只有『目前佔優勢的那顆 Beacon 訊號本身也夠強』才採信，避免『在店裡別處剛好比較靠近門內 Beacon』被誤判成在門口附近。要比 peak_min_rssi_dbm 更嚴格（數值更大/更接近0），因為門口這兩顆 Beacon 建議實體佈署時就調低發射功率、讓有效範圍侷限在門口通道，兩者互相配合。",
+    "gate_min_confirm_samples": 3,
+    "_gate_min_confirm_samples_comment": "門口穿越判定要求新的優勢方連續出現這麼多筆平滑後樣本才算數，用來過濾單一雜訊樣本造成的瞬間翻轉。1 代表不啟用（跟一般地標點一樣寬鬆），門口這裡預設調高到 3。",
+    "gate_exit_yaw_deg": 0.0,
+    "_gate_exit_yaw_deg_comment": "CALIBRATE_ME：車子『正朝門外方向穿越』時，yaw_deg 理論上該是多少度（用 is_heading_consistent() 交叉驗證 BLE 判定用），跟門的實際安裝方向與 core/position_types.py 的座標系有關，要看現場安裝方向實測填入，這裡先放 0 當佔位值。",
+    "gate_heading_tolerance_deg": 45.0,
+    "_gate_heading_tolerance_deg_comment": "is_heading_consistent() 容許的航向角誤差(度)，車子不會完全垂直對準門口走，先給 45 度寬容範圍。",
+    "points": [
+      {"beacon_id": "GATE-INSIDE", "x_mm": 0.0, "y_mm": 0.0, "label": "管制區門口（門內側）"},
+      {"beacon_id": "GATE-OUTSIDE", "x_mm": 0.0, "y_mm": -1500.0, "label": "管制區門口（門外側）"}
+    ],
+    "gate_beacon_pair": {"inside_id": "GATE-INSIDE", "outside_id": "GATE-OUTSIDE"},
+    "_points_comment": "CALIBRATE_ME：每個 Beacon 的絕對座標是實測值，這裡是佔位資料，等 Beacon 實際安裝位置定案、實測後才能填準確值——跟 weight/odometry 那幾個 CALIBRATE_ME 是同一種性質。座標系跟 core/position_types.py 一致（公釐），這裡先假設門內 Beacon 座標是程式原點 (0,0)、門外 Beacon 在車頭正前方軸的 -1500mm，實際要看安裝位置調整。之後 Phase 7 要擴充走道地標點，就是往這個 points 陣列繼續加。"
+  },
+
+  "state_machine": {
+    "login_barcode_prefix": "MEMBER-",
+    "_login_barcode_prefix_comment": "會員條碼/QR code 的識別前綴，用來跟商品的 EAN-13 純數字條碼區分，避免掃到商品時誤判成登入。實際會員卡/App 上的條碼格式定案後要改成對應的值；如果不需要前綴檢查，設成空字串即可。",
+    "zone_entry_timeout_sec": 120.0,
+    "_zone_entry_timeout_comment": "登入後多久沒偵測到進入管制區閘門事件就發出提醒（只警示一次，不會自動登出）。閘門硬體本身還沒有，這個值先預留給之後接上時用。",
+    "shopping_idle_timeout_sec": 600.0,
+    "_shopping_idle_timeout_comment": "購物中（SHOPPING 狀態）多久沒有任何動作（掃碼/秤重比對成功）就視為閒置並提醒，之後持續閒置每隔這麼久會再提醒一次。",
+    "exit_timeout_after_checkout_sec": 180.0,
+    "_exit_timeout_comment": "付款完成、狀態轉成 AWAITING_EXIT 後，多久沒偵測到走出管制區閘門事件就發出提醒。"
+  },
+
   "camera": {
     "backend": "picamera2",
     "_backend_comment": "Pi 5 用 libcamera 堆疊，官方廣角相機走 MIPI CSI，請用 picamera2 取得影格，不要單純用 cv2.VideoCapture()。",
-    "resolution": [
-      1280,
-      720
-    ],
+    "resolution": [1280, 720],
     "format": "RGB888",
     "framerate": 30,
     "calibration_file": "vision/camera_calibration.npz",
     "_calibration_comment": "棋盤格內參校正結果（camera_matrix, dist_coeffs），由校正腳本產生後填入此路徑。"
   },
+
   "display": {
-    "resolution": [
-      720,
-      1280
-    ],
+    "resolution": [720, 1280],
     "orientation": "portrait",
     "_comment": "官方 7 吋觸控螢幕，直向使用，720x1280 (寬x高)。"
   },
+
   "barcode_scanner": {
     "input_method": "evdev",
     "device_name_hint": "USBKey",
@@ -80,9 +110,11 @@
     "key_timeout_sec": 0.1,
     "_key_timeout_comment": "USB 掃描器灌鍵盤事件的間隔通常很短，超過這個間隔沒有新按鍵視為一次掃碼結束。"
   },
+
   "database": {
     "path": "database/inventory.db"
   },
+
   "app": {
     "log_level": "INFO"
   }

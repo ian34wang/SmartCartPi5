@@ -33,6 +33,7 @@ from typing import List, Optional
 
 import queue
 
+from core.weight_convert import raw_to_grams
 from drivers.uart_receiver import UartPacket, UartReceiver
 from tools.calibrate_weight import collect_hx711_samples
 
@@ -44,10 +45,9 @@ _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 # ----------------------------------------------------------------------
 # 純邏輯部分（可離線用假資料測試）
 # ----------------------------------------------------------------------
-def raw_to_grams(raw_mean: float, offset: float, scale: float) -> float:
-    if scale == 0:
-        raise ValueError("scale 不能是 0（config.json 裡的 weight.hx711_scale 還沒校正過嗎？）")
-    return (raw_mean - offset) / scale
+# raw_to_grams 已搬到 core/weight_convert.py（Phase 4 的 cart_state_machine.py
+# 也需要用同一個換算公式），這裡改成 import，保留同樣的函式名稱，呼叫方式
+# 不用改。
 
 
 def compute_error_pct(measured_g: float, actual_g: float) -> float:

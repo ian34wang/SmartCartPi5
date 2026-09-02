@@ -18,12 +18,21 @@ floor_optical_flow.py（視覺光流備援）這些還沒寫的模組完成。
 
 座標系與單位（開發時已跟你確認過）：
     - 原點：程式啟動/呼叫 reset() 那一刻，車子當下的位置與朝向。不是店面
-      地圖上的固定座標——如果之後需要對齊店面地圖，需要另外做一個「初始
-      定位」機制（例如開機時掃描入口的固定標記），目前系統沒有這個機制。
+      地圖上的固定座標。
     - x_mm / y_mm：全域座標系下的位置，單位公釐，原點為上述定義。
     - yaw_deg：全域座標系下的航向角，單位度，遵循數學慣例逆時針為正
       （跟 BNO080 韌體端的正負號約定是否一致，需要實機驗證，見
       odometry_engine.py 的說明）。
+
+地標校正（`core/landmark_correction.py`，跟這份型別同一批加上去的）：原本
+「浮動座標系怎麼對齊店面地圖」完全沒有機制，現在有了——用低成本 BLE
+Beacon 當離散地標點（同時也用來做 Phase 4 的門口進出偵測），車子經過已知
+絕對座標的 Beacon 附近時，把 x_mm/y_mm 校正/融合回那個座標。
+`last_landmark_id`/`last_landmark_correction_at` 這兩個欄位就是記錄「最近一
+次校正發生在哪個地標、什麼時候」，方便除錯跟 UI 顯示（例如「上次校正：
+管制區門口，12 秒前」）。這不是取代 dead-reckoning，兩次校正之間的位置還
+是完全靠 odometry_engine.py 積分，地標校正只是定期把累積誤差拉回去——精度
+量級是「數十公分」，不是連續公分級定位，這點要老實反映給下游知道。
 """
 
 from __future__ import annotations
@@ -64,6 +73,13 @@ class PositionEstimate:
     sample_count: int = 0
     skipped_low_confidence_count: int = 0
     timestamp: Optional[float] = None
+
+    # 最近一次地標校正（core/landmark_correction.py）發生的地標 ID 與時間，
+    # 沒發生過校正時是 None。純粹是除錯/UI 顯示用的紀錄欄位，不影響
+    # x_mm/y_mm 本身怎麼算（校正邏輯本身在 odometry_engine.py 的
+    # apply_landmark_correction()）。
+    last_landmark_id: Optional[str] = None
+    last_landmark_correction_at: Optional[float] = None
 
     def distance_from_origin_mm(self) -> float:
         return math.hypot(self.x_mm, self.y_mm)

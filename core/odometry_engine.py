@@ -17,6 +17,12 @@ Phase 3 第一步：純 UART 版本的基礎里程計（dead-reckoning）。
 加權融合）留給下一步再接，現在 yaw 就是單純採信 IMU（跟 config.json 裡
 vision_yaw_fusion_weight 目前是 0 一致）。
 
+地標校正（core/landmark_correction.py，BLE Beacon 峰值偵測/門口雙 Beacon
+方向判定）是另一條獨立的修正來源，修正的是 (X, Y) 而不是 yaw，透過
+apply_landmark_correction() 這個方法接進來——不是持續運作的東西，是離散地
+「車子經過某個已知座標的地標時校正一次」，兩次校正之間的位置完全靠這支
+檔案的 dead-reckoning 積分撐著。
+
 squal 過濾：協定 v2 新增的 squal（PMW3901 追蹤信心值，0-255）用在這裡最
 合適——信心值太低的那一筆 dx/dy 不可信，直接跳過不要累加進位置（但 yaw
 還是照樣更新，因為 yaw 是 BNO080 的資料，跟 squal 無關）。
@@ -134,6 +140,39 @@ class OdometryEngine:
         with self._lock:
             return self._snapshot_locked()
 
+    def apply_landmark_correction(
+        self,
+        x_mm: float,
+        y_mm: float,
+        timestamp: float,
+        landmark_id: Optional[str] = None,
+        blend_weight: float = 1.0,
+    ) -> PositionEstimate:
+        """收到一次地標校正（core/landmark_correction.py 的 RssiPeakDetector
+        偵測到峰值、或 GateCrossingDetector 確認一次門口穿越）時呼叫，把累
+        積座標往這個已知地標的絕對座標 (x_mm, y_mm) 校正。
+
+        blend_weight：1.0（預設）代表直接強制重置成地標座標——這是目前採用
+        的做法，對應討論紀錄裡『強制 Reset』的建議，簡單、而且跟這個專題現
+        階段要求的精度量級（數十公分）相符。小於 1.0 則是跟目前估計值做加
+        權融合（簡易互補濾波，例如 0.3 代表只把 30% 的差距拉過去），這是留
+        給以後如果發現地標觸發時機本身不夠穩、需要更平滑校正時的調整空間，
+        目前預設值仍是直接 Reset，不需要現在就用。
+
+        注意：這裡不會動 yaw_deg——地標校正解決的是 (X, Y) 的漂移，yaw 的
+        校正是 vanishing_point.py（視覺）的責任，兩者是分開的修正來源，正
+        如這支檔案開頭說明的融合策略。
+        """
+        if not (0.0 < blend_weight <= 1.0):
+            raise ValueError("blend_weight 必須在 (0, 1] 範圍內")
+        with self._lock:
+            s = self._state
+            s.x_mm = s.x_mm + (x_mm - s.x_mm) * blend_weight
+            s.y_mm = s.y_mm + (y_mm - s.y_mm) * blend_weight
+            s.last_landmark_id = landmark_id
+            s.last_landmark_correction_at = timestamp
+            return self._snapshot_locked()
+
     def reset(self) -> None:
         """歸零累積位置（yaw 保留目前值，因為那是感測器當下的實際朝向，
         不是「已走的距離」，歸零沒有意義）。校正/驗證流程（例如走一段固定
@@ -157,6 +196,8 @@ class OdometryEngine:
             sample_count=s.sample_count,
             skipped_low_confidence_count=s.skipped_low_confidence_count,
             timestamp=s.timestamp,
+            last_landmark_id=s.last_landmark_id,
+            last_landmark_correction_at=s.last_landmark_correction_at,
         )
 
     # ------------------------------------------------------------------
