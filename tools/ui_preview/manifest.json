@@ -1,0 +1,54 @@
+[
+  {
+    "file": "Main.html",
+    "title": "① 待機／喚醒"
+  },
+  {
+    "file": "Login.html",
+    "title": "② 會員登入"
+  },
+  {
+    "file": "LoadingProfile.html",
+    "title": "③ 載入會員資料"
+  },
+  {
+    "file": "Allergens.html",
+    "title": "④ 偏好設定 1/3：過敏原"
+  },
+  {
+    "file": "Diet.html",
+    "title": "⑤ 偏好設定 2/3：葷素習慣"
+  },
+  {
+    "file": "Religion.html",
+    "title": "⑥ 偏好設定 3/3：宗教飲食"
+  },
+  {
+    "file": "Budget.html",
+    "title": "⑦ 本次購物預算"
+  },
+  {
+    "file": "Shopping.html",
+    "title": "⑧ 購物主畫面"
+  },
+  {
+    "file": "Navigation.html",
+    "title": "⑨ 導航尋物"
+  },
+  {
+    "file": "Promotions.html",
+    "title": "⑩ 優惠推播"
+  },
+  {
+    "file": "WeightAlert.html",
+    "title": "⑪ 重量異常防損"
+  },
+  {
+    "file": "Checkout.html",
+    "title": "⑫ 自助結帳"
+  },
+  {
+    "file": "ExitConfirm.html",
+    "title": "⑬ 出場確認"
+  }
+]

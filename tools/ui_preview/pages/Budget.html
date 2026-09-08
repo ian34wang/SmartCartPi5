@@ -1,0 +1,100 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>⑦ 本次購物預算</title>
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap');
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .sysbar { display:flex; align-items:center; justify-content:space-between; padding:10px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+    .sysbar .row { display:flex; align-items:center; gap:8px; }
+
+    .wizard-head { padding:18px 22px 14px; border-bottom:2px dashed #1a1a1a; }
+    .wizard-title { font-size:26px; font-weight:700; margin-bottom:6px; }
+    .step-label { font-size:16px; color:#777; }
+
+    .content { flex:1; min-height:0; padding:26px 22px; overflow:auto; }
+    .content-sub { font-size:18px; color:#666; margin-bottom:18px; line-height:1.6; }
+    .grid2 { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:18px; }
+    .opt { border:2.5px solid #1a1a1a; border-radius:12px; padding:34px 10px; font-size:28px; text-align:center; }
+    .opt-selected { background:#1a1a1a; color:#fff; }
+    .custom-row { margin-top:18px; display:flex; align-items:center; gap:10px; font-size:21px; }
+    .custom-input { flex:1; border:2px dashed #1a1a1a; border-radius:8px; padding:14px; text-align:center; }
+
+    .footer-cta { padding:20px 22px; border-top:2px dashed #1a1a1a; display:flex; gap:12px; }
+    .btn { flex:1; border:2.5px solid #1a1a1a; border-radius:10px; padding:18px; font-size:24px; font-family:inherit; text-align:center; }
+    .btn-primary { background:#1a1a1a; color:#fff; }
+  </style>
+</head>
+<body>
+<div class="sysbar">
+  <div class="row">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 100%</span></div>
+</div>
+
+<div class="wizard-head">
+  <div class="wizard-title">錢包管家：本次購物預算</div>
+  <div class="step-label">每次購物都可重新設定，不影響已儲存的過敏原／飲食設定</div>
+</div>
+
+<div class="content">
+  <div class="content-sub">購物中會即時顯示消費進度；超過上限不會鎖卡，僅提醒（進階花費分析與建議屬於之後的 AI 功能）</div>
+  <div class="grid2">
+    <div class="opt">$500</div>
+    <div class="opt opt-selected">$1000</div>
+    <div class="opt">$1500</div>
+    <div class="opt">自由消費（不限）</div>
+  </div>
+  <div class="custom-row">
+    <span>或自訂金額</span>
+    <div class="custom-input">$ ____</div>
+  </div>
+</div>
+
+<div class="footer-cta">
+  <div class="btn">上一步</div>
+  <div class="btn btn-primary">開始購物 →</div>
+</div>
+
+<style>
+  #__preview_nav {
+    position: fixed; top: 0; left: 0; width: 100%;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 2px 6px; box-sizing: border-box; z-index: 999999;
+    pointer-events: none;
+  }
+  #__preview_nav button {
+    pointer-events: auto;
+    width: 34px; height: 34px; border-radius: 50%;
+    border: 2px solid rgba(26,26,26,0.35);
+    background: rgba(253,252,249,0.55);
+    color: rgba(26,26,26,0.55);
+    font-size: 16px; font-family: sans-serif; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #__preview_nav button:active { background: rgba(26,26,26,0.15); }
+  #__preview_nav .label {
+    pointer-events: auto;
+    font-size: 10px; font-family: sans-serif; color: rgba(26,26,26,0.45);
+    background: rgba(253,252,249,0.55); border-radius: 8px;
+    padding: 3px 8px; max-width: 55%; text-align: center;
+  }
+</style>
+<div id="__preview_nav">
+  <button onclick="window.pywebview && window.pywebview.api.go(-1)">‹</button>
+  <div class="label">⑦ 本次購物預算（7/13，點兩側圓鈕切換畫面）</div>
+  <button onclick="window.pywebview && window.pywebview.api.go(1)">›</button>
+</div>
+
+</body>
+</html>

@@ -34,17 +34,37 @@ Phase 4：購物流程狀態機——「底層架構的支持」，負責保障�
       態，這件事需要中央伺服器/共用資料庫才能做，目前架構沒有這塊，所以這
       支不處理跨購物車重複登入偵測（見 database/db_manager.py 開頭的說明）。
 
-跟秤重比對相關的核心邏輯（AWAITING_WEIGHT_INCREASE / _DECREASE 這兩個狀態）：
-    掃碼當下記錄「目前重量」當基準值（pending_item_baseline_g），之後每收到
-    一筆新的秤重讀數（WeightSampleReceived，換算好的公克數，換算公式見
-    core/weight_convert.py），就算跟基準值的差 delta，拿去跟這個商品在
-    database 裡登記的 standard_weight_g（預期變化量，加入是正、移除是負）±
-    weight_tolerance_g（每個商品自己的容差，見 database/db_manager.py 的
-    Product schema）比對：
+加入／移除不是使用者手動切換模式決定的，是系統依照「秤碼跟掃碼誰先發生」
+自動判斷（跟真實購物動作的先後順序一致）：
+    - 加入：先掃碼、再把商品放進籃子——掃碼當下重量還沒變，跟原本的邏輯一
+      樣，直接進 AWAITING_WEIGHT_INCREASE 等重量增加。
+    - 移除：先把商品從籃子拿出來、再掃碼——重量在掃碼「之前」就已經變化，
+      掃碼是回頭指認剛才拿走的是哪一件。這種情況會先經過一個新狀態
+      AWAITING_ITEM_SCAN（見下方），等到真的掃碼那一刻，才用『掃碼前』就
+      記錄好的基準值跟方向去判斷是加入還是移除。
+
+跟秤重比對相關的核心邏輯：
+    STATE_SHOPPING 狀態下，狀態機會持續拿每一筆秤重讀數跟「目前穩定重量」
+    （stable_weight_g）比較，變化在雜訊門檻（weight.unscanned_change_threshold_g）
+    以內就當雜訊，順便更新 stable_weight_g；一旦變化超過門檻，代表使用者已
+    經動了籃子裡的東西但還沒掃碼，轉進 AWAITING_ITEM_SCAN，記錄變化前的基
+    準值（unscanned_baseline_g）跟開始時間，發出 WARNING 等級的
+    ALERT_UNSCANNED_WEIGHT_CHANGE（不鎖定，只是提醒）。這個狀態如果重量自
+    己又回到基準值附近（例如只是手滑碰到籃子），會自動判定成虛驚一場，回到
+    SHOPPING，不用使用者介入；如果一直等到逾時
+    （weight.unscanned_change_timeout_sec）都沒有掃碼，才真的升級成
+    WEIGHT_MISMATCH_ERROR 鎖定，發 ALERT_UNSCANNED_WEIGHT_TIMEOUT。
+
+    不管是「先掃碼」（STATE_SHOPPING 直接掃）還是「先變重量」
+    （AWAITING_ITEM_SCAN 狀態下才掃），一旦掃到碼，都會決定好基準值
+    （pending_item_baseline_g）、預期變化量跟方向，進入
+    AWAITING_WEIGHT_INCREASE / _DECREASE，後續每收到一筆新的秤重讀數，就算
+    跟基準值的差 delta，拿去跟這個商品在 database 裡登記的
+    standard_weight_g（加入是正、移除是負）± weight_tolerance_g 比對：
         - 差在容差範圍內 -> 比對成功，商品正式加入/移出購物清單
           （CartManager.add_item/remove_item），回到 SHOPPING。
-        - 方向反過來（該增加卻減少，或反之）且超出容差 -> 直接判定
-          WEIGHT_DIRECTION_MISMATCH（可能有其他商品同時被拿動），不用等逾時。
+        - 方向反過來且超出容差 -> 直接判定 WEIGHT_DIRECTION_MISMATCH（可能
+          有其他商品同時被拿動），不用等逾時。
         - 方向對，但差值已經超出容差上限（可能拿了不只一件、或拿錯商品）
           -> WEIGHT_MISMATCH，一樣不用等逾時。
         - 還在容差範圍外但方向對、量也還沒超標 -> 視為「還在放/拿的過程
@@ -82,6 +102,7 @@ _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 STATE_UNAUTHENTICATED = "unauthenticated"
 STATE_LOGGED_IN_OUTSIDE_ZONE = "logged_in_outside_zone"
 STATE_SHOPPING = "shopping"
+STATE_AWAITING_ITEM_SCAN = "awaiting_item_scan"  # 重量已變化，等使用者掃碼指認是哪個商品
 STATE_AWAITING_WEIGHT_INCREASE = "awaiting_weight_increase"
 STATE_AWAITING_WEIGHT_DECREASE = "awaiting_weight_decrease"
 STATE_WEIGHT_MISMATCH_ERROR = "weight_mismatch_error"
@@ -90,6 +111,11 @@ STATE_AWAITING_EXIT = "awaiting_exit"
 STATE_SESSION_CLOSED = "session_closed"
 
 _AWAITING_WEIGHT_STATES = (STATE_AWAITING_WEIGHT_INCREASE, STATE_AWAITING_WEIGHT_DECREASE)
+# 上面那組是「已經掃碼、正在等重量比對」；這組多包含 AWAITING_ITEM_SCAN
+# （「重量已變化、還在等掃碼」），兩者都代表秤重相關流程正在進行中，鎖定
+# 結帳跟感測器斷線這類判斷需要涵蓋兩者，但「能不能掃碼」的判斷不能涵蓋
+# AWAITING_ITEM_SCAN（那個狀態正是在等掃碼），所以分成兩組常數。
+_WEIGHT_IN_PROGRESS_STATES = _AWAITING_WEIGHT_STATES + (STATE_AWAITING_ITEM_SCAN,)
 
 ITEM_SCAN_MODE_ADD = "add"
 ITEM_SCAN_MODE_REMOVE = "remove"
@@ -118,6 +144,9 @@ ALERT_ITEM_NOT_IN_CART = "item_not_in_cart"
 ALERT_WEIGHT_MATCH_TIMEOUT = "weight_match_timeout"
 ALERT_WEIGHT_MISMATCH = "weight_mismatch"
 ALERT_WEIGHT_DIRECTION_MISMATCH = "weight_direction_mismatch"
+ALERT_UNSCANNED_WEIGHT_CHANGE = "unscanned_weight_change"
+ALERT_UNSCANNED_WEIGHT_TIMEOUT = "unscanned_weight_timeout"
+ALERT_UNSCANNED_WEIGHT_AUTO_RESOLVED = "unscanned_weight_auto_resolved"
 ALERT_SENSOR_DISCONNECTED = "sensor_disconnected"
 ALERT_SENSOR_RECONNECTED = "sensor_reconnected"
 ALERT_SCAN_WHILE_LOCKED = "scan_while_locked"
@@ -155,9 +184,12 @@ class GateExitDetected:
 
 @dataclass
 class ItemScanned:
+    """單純代表『掃到一個條碼』這件事，不帶模式——加入還是移除由狀態機自己
+    依照秤重跟掃碼的先後順序判斷（見檔案開頭說明），呼叫方（drivers/
+    barcode_scanner.py 那層）不需要也不應該幫忙決定模式。
+    """
+
     barcode: str
-    mode: str  # ITEM_SCAN_MODE_ADD / ITEM_SCAN_MODE_REMOVE，由 UI 的「加入/移除」
-    # 模式切換決定，這支狀態機本身不判斷使用者想加入還是移除。
     timestamp: float
 
 
@@ -279,6 +311,14 @@ class CartSession:
     sensor_connected: bool = True
     current_weight_g: Optional[float] = None
 
+    # STATE_SHOPPING 底下持續追蹤的「目前穩定重量」，用來偵測掃碼前就發生的
+    # 未解釋重量變化（見 AWAITING_ITEM_SCAN）。
+    stable_weight_g: Optional[float] = None
+    # 偵測到未解釋的重量變化、還在等掃碼指認時的基準值與起始時間
+    # （沒有在等待時是 None）。
+    unscanned_baseline_g: Optional[float] = None
+    unscanned_change_started_at: Optional[float] = None
+
     # 目前正在等待秤重比對的那一筆掃碼（沒有在等待時全部是 None）
     pending_item_barcode: Optional[str] = None
     pending_item_mode: Optional[str] = None
@@ -371,6 +411,8 @@ class CartStateMachine:
         s.pending_item_tolerance_g = None
         s.pending_item_baseline_g = None
         s.weight_check_started_at = None
+        s.unscanned_baseline_g = None
+        s.unscanned_change_started_at = None
 
     # ------------------------------------------------------------------
     # 登入
@@ -485,7 +527,7 @@ class CartStateMachine:
             )
             return
 
-        if s.state != STATE_SHOPPING:
+        if s.state not in (STATE_SHOPPING, STATE_AWAITING_ITEM_SCAN):
             self._alert(
                 SEVERITY_INFO, ALERT_UNEXPECTED_EVENT,
                 f"狀態 {s.state} 不允許掃碼商品，忽略（條碼 {event.barcode}）",
@@ -503,7 +545,23 @@ class CartStateMachine:
             )
             return
 
-        if event.mode == ITEM_SCAN_MODE_ADD:
+        # 判斷加入還是移除：
+        #   - STATE_SHOPPING：標準流程，先掃碼、重量還沒變 -> 一律當「加入」，
+        #     基準值就是掃碼當下的目前重量。
+        #   - STATE_AWAITING_ITEM_SCAN：重量在掃碼前就已經變化過，用當時記錄
+        #     的方向（比 unscanned_baseline_g 增加還是減少）決定，基準值也要
+        #     用『變化前』那個 unscanned_baseline_g，不是掃碼當下的目前重量
+        #     （目前重量已經是變化後的數字了）。
+        if s.state == STATE_AWAITING_ITEM_SCAN:
+            baseline = s.unscanned_baseline_g
+            mode = ITEM_SCAN_MODE_REMOVE if s.current_weight_g < baseline else ITEM_SCAN_MODE_ADD
+            s.unscanned_baseline_g = None
+            s.unscanned_change_started_at = None
+        else:
+            baseline = s.current_weight_g
+            mode = ITEM_SCAN_MODE_ADD
+
+        if mode == ITEM_SCAN_MODE_ADD:
             product = self.db.get_product(event.barcode)
             if product is None:
                 self._alert(
@@ -515,11 +573,12 @@ class CartStateMachine:
             expected_delta = product.standard_weight_g
             tolerance = product.weight_tolerance_g
             next_state = STATE_AWAITING_WEIGHT_INCREASE
-        elif event.mode == ITEM_SCAN_MODE_REMOVE:
+        else:
             if not self.cart.has_item(event.barcode):
                 self._alert(
                     SEVERITY_WARNING, ALERT_ITEM_NOT_IN_CART,
-                    f"購物清單裡沒有條碼 {event.barcode}，無法移除",
+                    f"偵測到重量減少後掃到條碼 {event.barcode}，但購物清單裡沒有這項商品，"
+                    f"無法判定為移除（可能拿錯了商品，或掃到別的東西）",
                     event.timestamp,
                 )
                 return
@@ -536,15 +595,13 @@ class CartStateMachine:
             expected_delta = -product.standard_weight_g
             tolerance = product.weight_tolerance_g
             next_state = STATE_AWAITING_WEIGHT_DECREASE
-        else:
-            raise ValueError(f"ItemScanned.mode 必須是 '{ITEM_SCAN_MODE_ADD}' 或 '{ITEM_SCAN_MODE_REMOVE}'，收到 {event.mode!r}")
 
         s.state = next_state
         s.pending_item_barcode = event.barcode
-        s.pending_item_mode = event.mode
+        s.pending_item_mode = mode
         s.pending_item_expected_delta_g = expected_delta
         s.pending_item_tolerance_g = tolerance
-        s.pending_item_baseline_g = s.current_weight_g
+        s.pending_item_baseline_g = baseline
         s.weight_check_started_at = event.timestamp
         s.last_activity_at = event.timestamp
 
@@ -555,9 +612,17 @@ class CartStateMachine:
         s = self._session
         s.current_weight_g = event.grams
 
+        if s.state == STATE_SHOPPING:
+            self._track_unscanned_drift(event)
+            return
+
+        if s.state == STATE_AWAITING_ITEM_SCAN:
+            self._check_unscanned_drift_resolved(event)
+            return
+
         if s.state not in _AWAITING_WEIGHT_STATES:
-            # 平常購物中（SHOPPING）或其他狀態，只更新目前重量供下次掃碼當
-            # 基準值用，不做比對判斷。
+            # 其他狀態（鎖定中、已經在秤重異常鎖定等）只更新目前重量，不做
+            # 比對判斷。
             return
 
         baseline = s.pending_item_baseline_g
@@ -574,6 +639,7 @@ class CartStateMachine:
             self._commit_pending_item()
             self._clear_pending()
             s.state = STATE_SHOPPING
+            s.stable_weight_g = event.grams
             s.last_activity_at = event.timestamp
             return
 
@@ -612,6 +678,54 @@ class CartStateMachine:
             self.cart.remove_item(product.barcode)
 
     # ------------------------------------------------------------------
+    # 掃碼前就發生的重量變化（先拿取/放入，還沒掃碼）
+    # ------------------------------------------------------------------
+    def _track_unscanned_drift(self, event: WeightSampleReceived) -> None:
+        """STATE_SHOPPING 底下持續呼叫，偵測『重量已經變了但還沒掃碼』。"""
+        s = self._session
+        threshold = self.cfg.get("unscanned_change_threshold_g", 20.0)
+
+        if s.stable_weight_g is None:
+            s.stable_weight_g = event.grams
+            return
+
+        delta = event.grams - s.stable_weight_g
+        if abs(delta) < threshold:
+            # 雜訊範圍內，順便讓穩定值跟上小幅漂移，避免長期累積誤判。
+            s.stable_weight_g = event.grams
+            return
+
+        s.state = STATE_AWAITING_ITEM_SCAN
+        s.unscanned_baseline_g = s.stable_weight_g
+        s.unscanned_change_started_at = event.timestamp
+        self._alert(
+            SEVERITY_WARNING, ALERT_UNSCANNED_WEIGHT_CHANGE,
+            f"偵測到重量{'增加' if delta > 0 else '減少'} {abs(delta):.1f}g，"
+            f"但尚未掃描條碼，請掃描剛才拿取／放入的商品",
+            event.timestamp,
+        )
+
+    def _check_unscanned_drift_resolved(self, event: WeightSampleReceived) -> None:
+        """STATE_AWAITING_ITEM_SCAN 底下持續呼叫：重量如果自己又回到變化前
+        的基準值附近（例如手滑碰到籃子），視為虛驚一場，自動回到 SHOPPING，
+        不需要使用者做任何操作；否則就只是更新目前重量，繼續等掃碼或逾時
+        （逾時由 _on_timeout_tick 處理）。
+        """
+        s = self._session
+        threshold = self.cfg.get("unscanned_change_threshold_g", 20.0)
+        baseline = s.unscanned_baseline_g
+        if baseline is not None and abs(event.grams - baseline) < threshold:
+            self._alert(
+                SEVERITY_INFO, ALERT_UNSCANNED_WEIGHT_AUTO_RESOLVED,
+                "先前偵測到的重量變化已經恢復到原本的基準值附近，視為虛驚一場，自動解除",
+                event.timestamp,
+            )
+            s.unscanned_baseline_g = None
+            s.unscanned_change_started_at = None
+            s.stable_weight_g = event.grams
+            s.state = STATE_SHOPPING
+
+    # ------------------------------------------------------------------
     # 秤重異常的重試/取消
     # ------------------------------------------------------------------
     def _on_retry_weight_check(self, event: RetryWeightCheckRequested) -> None:
@@ -629,6 +743,16 @@ class CartStateMachine:
                 "秤重資料還沒恢復，無法重新比對",
                 event.timestamp,
             )
+            return
+        if s.pending_item_barcode is None:
+            # 「只做一半」逾時進來的異常：從頭到尾都還沒掃過碼，沒有
+            # pending_item_mode/baseline 可以比對，重試等於重新開始等使用者
+            # 掃剛才拿取／放入的那件商品——回到 STATE_AWAITING_ITEM_SCAN，
+            # 用現在的重量當新的基準值重新計時。
+            s.unscanned_baseline_g = s.current_weight_g
+            s.unscanned_change_started_at = event.timestamp
+            s.state = STATE_AWAITING_ITEM_SCAN
+            s.last_activity_at = event.timestamp
             return
         s.pending_item_baseline_g = s.current_weight_g
         s.weight_check_started_at = event.timestamp
@@ -648,7 +772,12 @@ class CartStateMachine:
                 event.timestamp,
             )
             return
+        # 「只做一半」逾時進來的異常沒有 pending item 可以放棄，只是把目前
+        # 重量重新當成新的穩定基準值，當作這次的重量變化已經人工確認過了。
+        never_scanned = s.pending_item_barcode is None
         self._clear_pending()
+        if never_scanned:
+            s.stable_weight_g = s.current_weight_g
         s.state = STATE_SHOPPING
         s.last_activity_at = event.timestamp
 
@@ -663,10 +792,12 @@ class CartStateMachine:
             "秤重/UART 感測器資料中斷",
             event.timestamp,
         )
-        if s.state in _AWAITING_WEIGHT_STATES:
+        if s.state in _WEIGHT_IN_PROGRESS_STATES:
             # 斷線期間不能繼續信任逾時計時（不知道是東西沒放好還是感測器本
             # 身沒資料），直接轉成需要人工處理的異常狀態，等重新連線後用
-            # RetryWeightCheckRequested 重新開始比對。
+            # RetryWeightCheckRequested 重新開始比對。這也涵蓋
+            # STATE_AWAITING_ITEM_SCAN：掃碼前的重量變化，斷線期間一樣無法
+            # 信任後續的比對結果。
             s.state = STATE_WEIGHT_MISMATCH_ERROR
 
     def _on_sensor_reconnected(self, event: SensorReconnected) -> None:
@@ -687,10 +818,11 @@ class CartStateMachine:
             s.state = STATE_LOCKED_FOR_CHECKOUT
             s.locked_at = event.timestamp
             s.last_activity_at = event.timestamp
-        elif s.state in _AWAITING_WEIGHT_STATES:
+        elif s.state in _WEIGHT_IN_PROGRESS_STATES:
             self._alert(
                 SEVERITY_WARNING, ALERT_LOCK_REJECTED_PENDING_WEIGHT,
-                "尚有商品秤重比對中，無法鎖定結帳，請先完成或取消這筆",
+                "尚有商品秤重比對中（或偵測到尚未掃碼的重量變化），"
+                "無法鎖定結帳，請先完成掃碼／比對或取消這筆",
                 event.timestamp,
             )
         elif s.state == STATE_WEIGHT_MISMATCH_ERROR:
@@ -768,6 +900,17 @@ class CartStateMachine:
                 )
                 s.state = STATE_WEIGHT_MISMATCH_ERROR
 
+        elif s.state == STATE_AWAITING_ITEM_SCAN:
+            limit = self.cfg.get("unscanned_change_timeout_sec", 8.0)
+            if s.unscanned_change_started_at is not None and (now - s.unscanned_change_started_at) >= limit:
+                self._alert(
+                    SEVERITY_CRITICAL, ALERT_UNSCANNED_WEIGHT_TIMEOUT,
+                    f"偵測到重量變化已超過 {limit:.1f} 秒仍未掃描條碼，"
+                    f"可能拿取／放入商品後忘記掃碼，需要人工核對",
+                    now,
+                )
+                s.state = STATE_WEIGHT_MISMATCH_ERROR
+
         elif s.state == STATE_LOGGED_IN_OUTSIDE_ZONE:
             limit = self.cfg.get("zone_entry_timeout_sec", 120.0)
             if s.session_started_at is not None and (now - s.session_started_at) >= limit:
@@ -814,7 +957,10 @@ def load_state_machine_config() -> dict:
     with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
         raw = json.load(f)
     cfg = dict(raw.get("state_machine", {}))
-    cfg["weight_match_timeout_sec"] = raw.get("weight", {}).get("weight_match_timeout_sec", 5.0)
+    weight_cfg = raw.get("weight", {})
+    cfg["weight_match_timeout_sec"] = weight_cfg.get("weight_match_timeout_sec", 5.0)
+    cfg["unscanned_change_threshold_g"] = weight_cfg.get("unscanned_change_threshold_g", 20.0)
+    cfg["unscanned_change_timeout_sec"] = weight_cfg.get("unscanned_change_timeout_sec", 8.0)
     # 拿掉純註解欄位（前綴底線），避免混進來
     return {k: v for k, v in cfg.items() if not k.startswith("_")}
 
@@ -834,6 +980,11 @@ def _print_session(sm: "CartStateMachine") -> None:
             f"等待比對中：條碼={s.pending_item_barcode} 模式={s.pending_item_mode} "
             f"預期變化={s.pending_item_expected_delta_g:+.1f}±{s.pending_item_tolerance_g:.1f}g "
             f"基準={s.pending_item_baseline_g}"
+        )
+    if s.unscanned_baseline_g is not None:
+        print(
+            f"偵測到尚未掃碼的重量變化：基準={s.unscanned_baseline_g}g　"
+            f"開始時間={s.unscanned_change_started_at}"
         )
     items = sm.cart.list_items()
     if items:
@@ -859,8 +1010,8 @@ def _run_simulation(db_path: Optional[str]) -> None:
 可用指令：
   1  登入（輸入會員代碼，測試資料：MEMBER-0001 / MEMBER-0002）
   2  進入管制區
-  3  掃商品條碼 - 加入（測試資料例如 4710018001234）
-  4  掃商品條碼 - 移除
+  3  掃商品條碼（測試資料例如 4710018001234；加入/移除由系統自動判斷：
+     先掃碼再變重量＝加入，先變重量再掃碼＝移除，不用自己選模式）
   5  回報秤重讀數（輸入目前公克數，模擬 HX711 換算後的值）
   6  快轉時間（檢查逾時，輸入要快轉幾秒）
   7  鎖定結帳
@@ -887,10 +1038,7 @@ def _run_simulation(db_path: Optional[str]) -> None:
             sm.process_event(GateEntryDetected(timestamp=sim_now))
         elif choice == "3":
             barcode = input("條碼：").strip()
-            sm.process_event(ItemScanned(barcode=barcode, mode=ITEM_SCAN_MODE_ADD, timestamp=sim_now))
-        elif choice == "4":
-            barcode = input("條碼：").strip()
-            sm.process_event(ItemScanned(barcode=barcode, mode=ITEM_SCAN_MODE_REMOVE, timestamp=sim_now))
+            sm.process_event(ItemScanned(barcode=barcode, timestamp=sim_now))
         elif choice == "5":
             grams = float(input("目前公克數：").strip())
             sm.process_event(WeightSampleReceived(grams=grams, timestamp=sim_now))

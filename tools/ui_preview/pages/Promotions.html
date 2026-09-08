@@ -1,0 +1,130 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>⑩ 優惠推播</title>
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap');
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .sysbar { display:flex; align-items:center; justify-content:space-between; padding:8px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+    .sysbar .row { display:flex; align-items:center; gap:8px; }
+
+    .statusbar { display:flex; align-items:center; justify-content:space-between; padding:16px 22px; border-bottom:2px dashed #1a1a1a; font-size:25px; font-weight:700; }
+    .back-btn { border:2px dashed #1a1a1a; border-radius:6px; padding:10px 16px; font-size:21px; font-family:inherit; background:#fff; font-weight:400; }
+
+    .cards { flex:1; min-height:0; padding:18px 22px; display:flex; flex-direction:column; gap:14px; overflow:hidden; }
+    .card { border:2.5px solid #1a1a1a; border-radius:10px; padding:16px; }
+    .card-title { font-size:23px; font-weight:700; margin-bottom:9px; display:flex; align-items:center; gap:6px; }
+    .card-body { font-size:18px; line-height:1.6; }
+    .card-cta { margin-top:10px; display:inline-block; border:2px dashed #1a1a1a; border-radius:8px; padding:12px 16px; font-size:21px; }
+    .btn-row { display:flex; gap:10px; margin-top:10px; }
+    .btn { flex:1; border:2px solid #1a1a1a; border-radius:8px; padding:13px; font-size:21px; text-align:center; }
+    .btn-primary { background:#1a1a1a; color:#fff; }
+
+    .bottomnav { display:flex; border-top:2px dashed #1a1a1a; background:#fdfcf9; }
+    .navitem { flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; padding:10px 2px 12px; font-size:18px; color:#777; }
+    .navitem svg { stroke:#777; }
+    .navitem.active { color:#1a1a1a; font-weight:700; }
+    .navitem.active svg { stroke:#1a1a1a; }
+    .nav-badge { position:relative; }
+    .nav-dot { position:absolute; top:-2px; right:-4px; width:8px; height:8px; border-radius:50%; background:#1a1a1a; }
+  </style>
+</head>
+<body>
+<div class="sysbar">
+  <div class="row">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 90%</span></div>
+</div>
+
+<div class="statusbar">
+  <span>即時專屬優惠與綠色惜食推薦</span>
+  <button class="back-btn">← 返回購物車</button>
+</div>
+
+<div class="cards">
+  <div class="card">
+    <div class="card-title">🌱 即期惜食折扣　已為您套用！</div>
+    <div class="card-body">偵測到「即期生鮮沙拉盒」，系統自動帶入綠色減碳 5 折優惠（現省 $20）。</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">多件優惠提醒</div>
+    <div class="card-body">您已拿取「全脂鮮奶 936ml」×1，同品項第 2 件 5 折，尚可現省 $42。</div>
+    <div class="card-cta">導航去貨架再拿一件 →</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">組合商品推薦</div>
+    <div class="card-body">偵測到購物車內有「義大利麵醬」，需不需要搭配「義大利直麵」（特價 $39）？</div>
+    <div class="btn-row">
+      <div class="btn">不用了</div>
+      <div class="btn btn-primary">加入購物車</div>
+    </div>
+  </div>
+</div>
+
+<div class="bottomnav">
+  <div class="navitem">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+    清單
+  </div>
+  <div class="navitem">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s7-7.58 7-12a7 7 0 1 0-14 0c0 4.42 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>
+    找貨
+  </div>
+  <div class="navitem active">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 12 22 2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"/><circle cx="7" cy="7" r="1.4" fill="currentColor" stroke="none"/></svg>
+    優惠
+  </div>
+  <div class="navitem">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>
+    我的
+  </div>
+  <div class="navitem">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/><path d="M3 4h2l2.2 11.2a2 2 0 0 0 2 1.6h7.6a2 2 0 0 0 2-1.6L21 8H6"/></svg>
+    結帳
+  </div>
+</div>
+
+<style>
+  #__preview_nav {
+    position: fixed; top: 0; left: 0; width: 100%;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 2px 6px; box-sizing: border-box; z-index: 999999;
+    pointer-events: none;
+  }
+  #__preview_nav button {
+    pointer-events: auto;
+    width: 34px; height: 34px; border-radius: 50%;
+    border: 2px solid rgba(26,26,26,0.35);
+    background: rgba(253,252,249,0.55);
+    color: rgba(26,26,26,0.55);
+    font-size: 16px; font-family: sans-serif; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #__preview_nav button:active { background: rgba(26,26,26,0.15); }
+  #__preview_nav .label {
+    pointer-events: auto;
+    font-size: 10px; font-family: sans-serif; color: rgba(26,26,26,0.45);
+    background: rgba(253,252,249,0.55); border-radius: 8px;
+    padding: 3px 8px; max-width: 55%; text-align: center;
+  }
+</style>
+<div id="__preview_nav">
+  <button onclick="window.pywebview && window.pywebview.api.go(-1)">‹</button>
+  <div class="label">⑩ 優惠推播（10/13，點兩側圓鈕切換畫面）</div>
+  <button onclick="window.pywebview && window.pywebview.api.go(1)">›</button>
+</div>
+
+</body>
+</html>

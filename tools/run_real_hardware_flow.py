@@ -18,7 +18,10 @@ USB 條碼掃描器）跟「還沒有硬體」的部分（管制區閘門、鎖�
     - `drivers.barcode_scanner.BarcodeScanner`（真的 USB 掃描器）掃到的每
       一組條碼，依 `config.json` 的 `state_machine.login_barcode_prefix`
       自動判斷是「登入」還是「商品掃碼」，餵進狀態機——這也是第一次真的用
-      實體掃描器觸發狀態機，不是打字模擬。
+      實體掃描器觸發狀態機，不是打字模擬。加入/移除不用手動切換模式，狀態
+      機會自動用「掃碼跟重量變化的先後順序」判斷：先掃碼再變重量＝加入
+      （原本就有的流程），先變重量（拿起來/放進去）再掃碼＝移除；如果重
+      量變了卻一直沒補掃碼，狀態機會在逾時後自動報「只做一半」的錯誤。
     - 閘門進出、鎖定結帳、付款完成、登出這幾個目前沒有硬體/UI 來源的事件，
       用終端機打字模擬（跟 `core.cart_state_machine --simulate` 同一套指
       令，只是跟真實資料流同時跑），輸入單一字元就好，不用打整行指令，這
@@ -30,12 +33,13 @@ USB 條碼掃描器）跟「還沒有硬體」的部分（管制區閘門、鎖�
 
 執行中輸入以下單一字元指令（Enter 送出）：
     e = 模擬進入管制區          x = 模擬走出管制區
-    m = 切換掃碼模式（加入/移除）  l = 鎖定結帳
-    p = 確認付款完成            o = 登出
-    f = 強制登出（工作人員）      s = 印出目前完整狀態
-    q = 結束
-真正的登入/商品掃碼直接刷條碼即可，不用打字；秤重比對是背景自動用真實
-HX711 數據跑的，不用手動觸發。
+    l = 鎖定結帳                p = 確認付款完成
+    o = 登出                    f = 強制登出（工作人員）
+    r = 秤重異常時重試比對        v = 秤重異常時放棄這筆商品
+    s = 印出目前完整狀態          q = 結束
+真正的登入/商品掃碼直接刷條碼即可，不用打字，加入/移除也不用切換模式（見
+上方說明，狀態機自動判斷）；秤重比對是背景自動用真實 HX711 數據跑的，不
+用手動觸發。
 """
 
 from __future__ import annotations
@@ -47,7 +51,7 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 from core.cart_manager import CartManager
 from core.cart_state_machine import (
@@ -55,8 +59,6 @@ from core.cart_state_machine import (
     GateEntryDetected,
     GateExitDetected,
     ItemScanned,
-    ITEM_SCAN_MODE_ADD,
-    ITEM_SCAN_MODE_REMOVE,
     LockForCheckoutRequested,
     LoginScanned,
     LogoutRequested,
@@ -85,15 +87,16 @@ _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 # ----------------------------------------------------------------------
 # 純邏輯部分（可離線單元測試，不需要真的硬體）
 # ----------------------------------------------------------------------
-def classify_barcode(code: str, current_mode: str, login_prefix: str) -> Tuple[str, str]:
-    """把一次掃描結果分類成「登入」還是「商品掃碼」。回傳 (kind, mode_or_empty)：
-    kind 是 "login" 或 "item"；是 "item" 時第二個值是目前的加入/移除模式。
+def classify_barcode(code: str, login_prefix: str) -> str:
+    """把一次掃描結果分類成「登入」還是「商品掃碼」，回傳 "login" 或 "item"。
 
-    純函式，不碰狀態機或硬體，方便單獨測試分類邏輯對不對，不用真的刷卡。
+    加入/移除不在這裡判斷——那是 `CartStateMachine` 自己看「掃碼跟重量變化
+    的先後順序」自動推斷的（見檔案開頭說明），這支函式只負責分類條碼本身
+    是登入條碼還是商品條碼。純函式，不碰狀態機或硬體，方便單獨測試。
     """
     if login_prefix and code.startswith(login_prefix):
-        return ("login", "")
-    return ("item", current_mode)
+        return "login"
+    return "item"
 
 
 def uart_stale_timeout_sec(cfg: dict) -> float:
@@ -177,7 +180,6 @@ def _main() -> int:
         print("（如果只是想先測秤重/定位那段，可以先註解掉 scanner 相關部分——但正常應該接得到）")
         return 1
 
-    current_mode = ITEM_SCAN_MODE_ADD
     stop_event = threading.Event()
 
     # ------------------------------------------------------------------
@@ -201,17 +203,16 @@ def _main() -> int:
             sm.process_event(WeightSampleReceived(grams=grams, timestamp=packet.timestamp))
 
     def barcode_consumer() -> None:
-        nonlocal current_mode
         while not stop_event.is_set():
             try:
                 evt: BarcodeEvent = scanner.out_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
-            kind, mode = classify_barcode(evt.code, current_mode, login_prefix)
+            kind = classify_barcode(evt.code, login_prefix)
             if kind == "login":
                 sm.process_event(LoginScanned(member_id=evt.code, timestamp=evt.timestamp))
             else:
-                sm.process_event(ItemScanned(barcode=evt.code, mode=mode, timestamp=evt.timestamp))
+                sm.process_event(ItemScanned(barcode=evt.code, timestamp=evt.timestamp))
             _print_status(sm, odometry)
 
     def timeout_ticker() -> None:
@@ -220,7 +221,6 @@ def _main() -> int:
             sm.process_event(TimeoutTick(now=time.time()))
 
     def command_reader() -> None:
-        nonlocal current_mode
         while not stop_event.is_set():
             try:
                 cmd = input().strip().lower()
@@ -234,9 +234,6 @@ def _main() -> int:
                 sm.process_event(GateEntryDetected(timestamp=now))
             elif cmd == "x":
                 sm.process_event(GateExitDetected(timestamp=now))
-            elif cmd == "m":
-                current_mode = ITEM_SCAN_MODE_REMOVE if current_mode == ITEM_SCAN_MODE_ADD else ITEM_SCAN_MODE_ADD
-                print(f"目前掃碼模式：{current_mode}")
             elif cmd == "l":
                 sm.process_event(LockForCheckoutRequested(timestamp=now))
             elif cmd == "p":

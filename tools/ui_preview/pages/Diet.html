@@ -1,0 +1,114 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>⑤ 偏好設定 2/3：葷素習慣</title>
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap');
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .sysbar { display:flex; align-items:center; justify-content:space-between; padding:10px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+    .sysbar .row { display:flex; align-items:center; gap:8px; }
+
+    .wizard-head { padding:18px 22px 14px; border-bottom:2px dashed #1a1a1a; }
+    .wizard-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+    .wizard-title { font-size:26px; font-weight:700; }
+    .skip-link { font-size:17px; color:#777; border:1.5px dashed #999; border-radius:6px; padding:6px 12px; }
+    .steps { display:flex; gap:8px; }
+    .step-dot { flex:1; height:6px; border-radius:3px; background:#ddd; }
+    .step-dot.done { background:#1a1a1a; }
+    .step-label { font-size:16px; color:#777; margin-top:6px; }
+
+    .content { flex:1; min-height:0; padding:20px 22px; overflow:auto; }
+    .content-sub { font-size:17px; color:#777; margin-bottom:14px; }
+    .radio-list { display:flex; flex-direction:column; gap:14px; }
+    .radio-row { border:2.5px solid #1a1a1a; border-radius:10px; padding:22px 20px; font-size:24px; display:flex; align-items:center; gap:16px; }
+    .radio-row.selected { background:#1a1a1a; color:#fff; }
+    .radio-dot { width:22px; height:22px; border-radius:50%; border:2px solid #1a1a1a; flex-shrink:0; display:flex; align-items:center; justify-content:center; }
+    .radio-row.selected .radio-dot { border-color:#fff; }
+    .radio-dot .fill { width:11px; height:11px; border-radius:50%; background:#fff; }
+    .radio-sub { font-size:16px; opacity:0.75; margin-top:2px; }
+
+    .footer-cta { padding:18px 22px; border-top:2px dashed #1a1a1a; display:flex; gap:12px; }
+    .btn { flex:1; border:2.5px solid #1a1a1a; border-radius:10px; padding:16px; font-size:22px; font-family:inherit; text-align:center; }
+    .btn-primary { background:#1a1a1a; color:#fff; }
+  </style>
+</head>
+<body>
+<div class="sysbar">
+  <div class="row">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 100%</span></div>
+</div>
+
+<div class="wizard-head">
+  <div class="wizard-top">
+    <div class="wizard-title">葷素飲食習慣</div>
+    <div class="skip-link">跳過此步驟</div>
+  </div>
+  <div class="steps">
+    <div class="step-dot done"></div>
+    <div class="step-dot done"></div>
+    <div class="step-dot"></div>
+  </div>
+  <div class="step-label">步驟 2 / 3　·　單選（若不確定分類，可先選最接近的）</div>
+</div>
+
+<div class="content">
+  <div class="content-sub">購物中辨識到不符合的商品成分時，會即時提醒你</div>
+  <div class="radio-list">
+    <div class="radio-row selected"><div class="radio-dot"><div class="fill"></div></div>無特別素食習慣</div>
+    <div class="radio-row"><div class="radio-dot"></div>全素（純素）</div>
+    <div class="radio-row"><div class="radio-dot"></div>蛋奶素</div>
+    <div class="radio-row"><div class="radio-dot"></div>奶素</div>
+    <div class="radio-row"><div class="radio-dot"></div>蛋素</div>
+    <div class="radio-row"><div class="radio-dot"></div>五辛素（植物五辛素）</div>
+    <div class="radio-row"><div class="radio-dot"></div>鍋邊素（可接受海鮮／肉湯）</div>
+  </div>
+</div>
+
+<div class="footer-cta">
+  <div class="btn">上一步</div>
+  <div class="btn btn-primary">下一步：宗教飲食 →</div>
+</div>
+
+<style>
+  #__preview_nav {
+    position: fixed; top: 0; left: 0; width: 100%;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 2px 6px; box-sizing: border-box; z-index: 999999;
+    pointer-events: none;
+  }
+  #__preview_nav button {
+    pointer-events: auto;
+    width: 34px; height: 34px; border-radius: 50%;
+    border: 2px solid rgba(26,26,26,0.35);
+    background: rgba(253,252,249,0.55);
+    color: rgba(26,26,26,0.55);
+    font-size: 16px; font-family: sans-serif; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #__preview_nav button:active { background: rgba(26,26,26,0.15); }
+  #__preview_nav .label {
+    pointer-events: auto;
+    font-size: 10px; font-family: sans-serif; color: rgba(26,26,26,0.45);
+    background: rgba(253,252,249,0.55); border-radius: 8px;
+    padding: 3px 8px; max-width: 55%; text-align: center;
+  }
+</style>
+<div id="__preview_nav">
+  <button onclick="window.pywebview && window.pywebview.api.go(-1)">‹</button>
+  <div class="label">⑤ 偏好設定 2/3：葷素習慣（5/13，點兩側圓鈕切換畫面）</div>
+  <button onclick="window.pywebview && window.pywebview.api.go(1)">›</button>
+</div>
+
+</body>
+</html>

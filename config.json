@@ -48,7 +48,11 @@
     "hx711_scale": 1.0,
     "_hx711_scale_comment": "CALIBRATE_ME：(加已知砝碼後讀數 - offset) / 已知砝碼重量(g)，用來把 ADC 差值換算成公克。",
     "weight_match_timeout_sec": 5.0,
-    "_weight_match_timeout_comment": "掃碼後等待重量變化比對的逾時秒數，超過視為 WEIGHT_MISMATCH_ERROR（core/cart_state_machine.py 的 ALERT_WEIGHT_MATCH_TIMEOUT）。"
+    "_weight_match_timeout_comment": "掃碼後等待重量變化比對的逾時秒數，超過視為 WEIGHT_MISMATCH_ERROR（core/cart_state_machine.py 的 ALERT_WEIGHT_MATCH_TIMEOUT）。",
+    "unscanned_change_threshold_g": 20.0,
+    "_unscanned_change_threshold_comment": "CALIBRATE_ME：購物中（STATE_SHOPPING）沒有待比對商品時，重量變化超過這個門檻(g)才視為『拿取/放入了東西但還沒掃碼』，進入 STATE_AWAITING_ITEM_SCAN；門檻內視為秤重雜訊或碰撞，忽略。應略大於秤重雜訊範圍，並小於最輕商品的重量。",
+    "unscanned_change_timeout_sec": 8.0,
+    "_unscanned_change_timeout_comment": "進入 STATE_AWAITING_ITEM_SCAN 後，等待使用者補掃條碼的逾時秒數，超過視為『只做一半』（拿取/放入後忘記掃碼），升級為 WEIGHT_MISMATCH_ERROR（ALERT_UNSCANNED_WEIGHT_TIMEOUT）。"
   },
 
   "landmarks": {

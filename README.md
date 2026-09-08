@@ -233,6 +233,29 @@ python3 -m database.db_manager --list
 支持」（Phase 4 的定位，見「前身專題功能取捨」章節），只管流程本身正不正
 確，不含 LLM 推薦、預算分析這類進階功能（那些排 Phase 6）。
 
+**加入/移除不是手動切換模式，是自動判斷**（這是設計上特別要注意的一點）：
+兩個方向的實際操作順序本來就不一樣——加入商品是「先掃碼、再把商品放進
+車」；移除商品是「先把商品拿起來（重量先變）、再掃碼」——所以狀態機看的
+不是同一套「先看趨勢再分類」規則，而是分別處理這兩種順序：
+  - 購物中（`SHOPPING`）掃到碼、當下重量還沒變 → 一律當「加入」，基準值
+    是掃碼當下的重量，跟原本設計一樣。
+  - 購物中重量自己先變了（超過 `weight.unscanned_change_threshold_g` 的
+    雜訊門檻）、但還沒掃碼 → 進入新增的 `AWAITING_ITEM_SCAN` 狀態，記錄
+    「變化前」的重量當基準值，並發出 `unscanned_weight_change`
+    （`warning`）提醒使用者補掃條碼；這時候才掃到碼，就用目前重量跟這個
+    基準值的方向（變輕＝移除、變重＝加入）自動推斷模式。
+  - 在 `AWAITING_ITEM_SCAN` 期間，如果重量自己飄回基準值附近（例如手滑
+    碰到籃子），視為虛驚一場，自動解除回 `SHOPPING`（`info` 等級的
+    `unscanned_weight_auto_resolved`），不需要使用者做任何操作。
+  - 如果超過 `weight.unscanned_change_timeout_sec` 都沒有補掃碼——也就是
+    使用者要求的「只做一半」情境——會升級成 `WEIGHT_MISMATCH_ERROR`，發出
+    `critical` 等級的 `unscanned_weight_timeout`；這是舊版邏輯完全偵測不
+    到的漏洞（舊版對「購物中發生了解釋不了的重量變化」是直接忽略，等於
+    防損上的一個洞），新版會攔下來要求人工核對。
+
+這個設計下 `ItemScanned` 事件本身**不再帶 `mode` 欄位**（拿掉了原本外部
+指定加入/移除的參數）——模式永遠是狀態機自己從上面這套邏輯推斷出來的。
+
 跟目前硬體現況的對應（決定了這支怎麼設計）：
 
 - **登入**：目前硬體只有 USB 條碼掃描器，所以是「掃會員條碼/QR code」
@@ -253,11 +276,12 @@ python3 -m database.db_manager --list
   重複登入偵測（見 `database/db_manager.py` 開頭的說明）。
 
 **狀態一覽**：`UNAUTHENTICATED`（未登入）→ `LOGGED_IN_OUTSIDE_ZONE`（已登入
-未進管制區）→ `SHOPPING`（購物中）↔ `AWAITING_WEIGHT_INCREASE`/
-`AWAITING_WEIGHT_DECREASE`（掃碼後等秤重比對）↔ `WEIGHT_MISMATCH_ERROR`
-（秤重異常，需要重試或放棄該筆）→ `LOCKED_FOR_CHECKOUT`（鎖定結帳）→
-`AWAITING_EXIT`（付款完成，等走出管制區）→ `SESSION_CLOSED`（已結束，可登
-出回到 `UNAUTHENTICATED`）。
+未進管制區）→ `SHOPPING`（購物中）↔ `AWAITING_ITEM_SCAN`（重量已變但還沒
+掃碼，等使用者補掃）↔ `AWAITING_WEIGHT_INCREASE`/`AWAITING_WEIGHT_DECREASE`
+（掃碼後等秤重比對）↔ `WEIGHT_MISMATCH_ERROR`（秤重異常或補掃逾時，需要重
+試或放棄該筆）→ `LOCKED_FOR_CHECKOUT`（鎖定結帳）→ `AWAITING_EXIT`（付款
+完成，等走出管制區）→ `SESSION_CLOSED`（已結束，可登出回到
+`UNAUTHENTICATED`）。
 
 **秤重比對邏輯**：掃碼當下記錄目前重量當基準值，之後每筆新秤重讀數跟基準
 值的差，拿去跟這個商品在 `database` 登記的 `standard_weight_g`（加入為
@@ -277,8 +301,10 @@ python3 -m database.db_manager --list
 
 完整的警告代碼列在 `core/cart_state_machine.py` 開頭的 `ALERT_*` 常數，每個
 代碼對應流程裡一個具體的問題點（例如 `zone_entry_without_login`、
-`exit_without_checkout`、`weight_direction_mismatch`……），設計成之後
-Phase 6 的 `anomaly_detector.py` 可以直接依代碼分類統計，不用解析訊息文字。
+`exit_without_checkout`、`weight_direction_mismatch`、
+`unscanned_weight_change`/`unscanned_weight_timeout`/
+`unscanned_weight_auto_resolved`……），設計成之後 Phase 6 的
+`anomaly_detector.py` 可以直接依代碼分類統計，不用解析訊息文字。
 
 **互動模擬（不需要真實硬體）**：
 
@@ -286,14 +312,16 @@ Phase 6 的 `anomaly_detector.py` 可以直接依代碼分類統計，不用解�
 python3 -m core.cart_state_machine --simulate
 ```
 
-用數字選單手動觸發每一種事件（登入、進管制區、掃碼、回報秤重、快轉時間
-檢查逾時、鎖定、付款、出管制區、登出、強制登出、感測器斷線/恢復），每次
-操作後印出目前狀態、購物清單、總價、最近警告——測試資料用
-`--db` 預設的 `database/inventory.db`（含測試商品與測試會員 `MEMBER-0001`/
-`MEMBER-0002`）。已經照這個流程寫過完整的邏輯測試（正常全流程 + 17 種錯
-誤情境：查無會員、未登入闖入、查無商品、秤重逾時/方向不符/超出容差、移除
-不存在的商品、鎖定中掃碼、結帳前走出管制區、登出前未結案、強制登出殘留商
-品、感測器斷線恢復、鎖定中秤重比對未完成……），全部通過。
+用數字選單手動觸發每一種事件（登入、進管制區、掃碼——加入/移除由狀態機自
+動判斷、不用自己選模式、回報秤重、快轉時間檢查逾時、鎖定、付款、出管制
+區、登出、強制登出、感測器斷線/恢復），每次操作後印出目前狀態、購物清
+單、總價、最近警告——測試資料用 `--db` 預設的 `database/inventory.db`
+（含測試商品與測試會員 `MEMBER-0001`/`MEMBER-0002`）。已經照這個流程寫過
+完整的邏輯測試（正常 ADD/REMOVE 全流程、只做一半逾時升級、逾時後重試/放
+棄、重量自動飄回解除、雜訊門檻內忽略，以及既有的 17 種錯誤情境：查無會
+員、未登入闖入、查無商品、秤重逾時/方向不符/超出容差、移除不存在的商
+品、鎖定中掃碼、結帳前走出管制區、登出前未結案、強制登出殘留商品、感測
+器斷線恢復、鎖定中秤重比對未完成……），全部通過。
 
 **尚未接上真實硬體整合**：目前只有 `--simulate` 互動模擬，真正把
 `barcode_scanner.py`、`uart_receiver.py` 換算出的重量、之後的
@@ -509,7 +537,9 @@ Phase 3 的里程計、Phase 4 的狀態機截至目前都只用合成資料測�
   `WeightSampleReceived`；`drivers.barcode_scanner.BarcodeScanner`（真的
   USB 掃描器）掃到的條碼依 `config.json` 的
   `state_machine.login_barcode_prefix` 自動分類成登入或商品掃碼，餵進狀態
-  機。
+  機——加入/移除不用手動切換模式，狀態機自己依「掃碼跟重量變化的先後順
+  序」自動判斷（細節見上面 Phase 4 章節的說明），這是第一次真的用實體掃
+  描器 + 真實秤重數據觸發這套自動判斷邏輯，不是打字模擬。
 - **還沒有硬體的部分，用終端機打字模擬**：管制區閘門進/出、鎖定結帳、付
   款完成、登出——跟 `core.cart_state_machine --simulate` 同一套事件，只是
   跟真實資料流同時跑，輸入單一字元即可（不用整行指令，方便站在推車旁邊操
@@ -517,11 +547,10 @@ Phase 3 的里程計、Phase 4 的狀態機截至目前都只用合成資料測�
 
   ```
   e = 模擬進入管制區          x = 模擬走出管制區
-  m = 切換掃碼模式（加入/移除）  l = 鎖定結帳
-  p = 確認付款完成            o = 登出
-  f = 強制登出（工作人員）      s = 印出目前完整狀態
+  l = 鎖定結帳                p = 確認付款完成
+  o = 登出                    f = 強制登出（工作人員）
   r = 秤重異常時重試比對        v = 秤重異常時放棄該筆商品
-  q = 結束
+  s = 印出目前完整狀態          q = 結束
   ```
 
 **用法**：
@@ -551,7 +580,12 @@ python3 -m tools.run_real_hardware_flow --port /dev/ttyAMA0 --barcode-hint USBKe
    放東西、或放錯重量，驗證 `WEIGHT_MATCH_TIMEOUT`/`WEIGHT_MISMATCH` 這類
    警告會不會如預期跳出來（這是它第一次吃真實秤重雜訊，訊噪比可能跟合成
    測試時的假設不同，需要實測才知道 `weight_match_timeout_sec` 或
-   `weight_tolerance_g` 是否要調整）。
+   `weight_tolerance_g` 是否要調整）。接著反過來測「先拿起來再掃碼」的移
+   除流程，跟「拿起來/放進去之後忘記掃碼」的情境（放著不掃、等
+   `unscanned_change_timeout_sec` 逾時，確認會跳出 `unscanned_weight_
+   timeout` 這個「只做一半」警告，而不是被忽略）——這兩種是新加的自動判斷
+   邏輯，第一次吃真實秤重雜訊，`unscanned_change_threshold_g` 這個雜訊門
+   檻是否要調整也要靠這一步實測才知道。
 6. 輸入 `l` 鎖定結帳、`p` 確認付款、`x` 模擬走出管制區、`o` 登出，確認整
    條流程能順利跑完一輪，且每一步的中斷/異常（例如中途拔掉 UART 排線模擬
    斷線、輸入 `f` 強制登出）都有對應警告或提示，而不是卡住或裝作沒事。

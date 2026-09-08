@@ -1,0 +1,92 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>⑬ 出場確認</title>
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap');
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .statusbar { display:flex; align-items:center; justify-content:space-between; padding:20px 26px; border-bottom:2px dashed #1a1a1a; font-size:22px; }
+    .badge-new { border:2px solid #1a1a1a; border-radius:6px; padding:4px 10px; font-size:16px; font-weight:700; }
+
+    .center-stage { flex:1; min-height:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:26px; padding:0 46px; text-align:center; }
+    .check-circle { width:90px; height:90px; border-radius:50%; border:3px solid #1a1a1a; display:flex; align-items:center; justify-content:center; }
+    .title { font-size:36px; font-weight:700; margin:0; }
+    .amount { font-size:23px; }
+    .timer-box { border:2.5px dashed #1a1a1a; border-radius:10px; padding:18px 26px; font-size:20px; line-height:1.6; }
+    .timer-count { font-size:56px; font-weight:700; }
+    .note { font-size:17px; color:#777; max-width:480px; line-height:1.6; }
+
+    .gate-status { display:flex; align-items:center; justify-content:center; gap:10px; padding:20px; border-top:3px solid #1a1a1a; font-size:23px; font-weight:700; }
+    .footer-alt { padding:16px 26px; text-align:center; }
+    .btn-dashed { border:2px dashed #1a1a1a; border-radius:8px; padding:16px 22px; font-size:21px; font-family:inherit; background:#fff; color:#555; }
+  </style>
+</head>
+<body>
+<div class="statusbar">
+  <span>付款完成</span>
+  <span class="badge-new">NEW · 補齊出場確認</span>
+</div>
+
+<div class="center-stage">
+  <div class="check-circle">
+    <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+  </div>
+  <h1 class="title">感謝您的惠顧！</h1>
+  <div class="amount">應付金額 $380 已成功扣款</div>
+
+  <div class="timer-box">
+    請於倒數時間內推車通過出口閘門
+    <div class="timer-count">02:57</div>
+  </div>
+
+  <div class="note">若通過閘門時系統偵測到重量與結帳清單不符，將再次觸發防損檢查，請配合店員說明。</div>
+</div>
+
+<div class="gate-status">
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6" stroke-width="2.2"/></svg>
+  閘門狀態：已解鎖，請直接推車通過
+</div>
+<div class="footer-alt">
+  <button class="btn-dashed">取消本次結帳／需要協助</button>
+</div>
+
+<style>
+  #__preview_nav {
+    position: fixed; top: 0; left: 0; width: 100%;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 2px 6px; box-sizing: border-box; z-index: 999999;
+    pointer-events: none;
+  }
+  #__preview_nav button {
+    pointer-events: auto;
+    width: 34px; height: 34px; border-radius: 50%;
+    border: 2px solid rgba(26,26,26,0.35);
+    background: rgba(253,252,249,0.55);
+    color: rgba(26,26,26,0.55);
+    font-size: 16px; font-family: sans-serif; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #__preview_nav button:active { background: rgba(26,26,26,0.15); }
+  #__preview_nav .label {
+    pointer-events: auto;
+    font-size: 10px; font-family: sans-serif; color: rgba(26,26,26,0.45);
+    background: rgba(253,252,249,0.55); border-radius: 8px;
+    padding: 3px 8px; max-width: 55%; text-align: center;
+  }
+</style>
+<div id="__preview_nav">
+  <button onclick="window.pywebview && window.pywebview.api.go(-1)">‹</button>
+  <div class="label">⑬ 出場確認（13/13，點兩側圓鈕切換畫面）</div>
+  <button onclick="window.pywebview && window.pywebview.api.go(1)">›</button>
+</div>
+
+</body>
+</html>

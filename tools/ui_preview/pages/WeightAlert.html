@@ -1,0 +1,113 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>⑪ 重量異常防損</title>
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap');
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .sysbar { display:flex; align-items:center; justify-content:space-between; padding:8px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+    .sysbar .row { display:flex; align-items:center; gap:8px; }
+    .titlebar { display:flex; align-items:center; gap:12px; padding:22px 26px; border-bottom:3px solid #1a1a1a; }
+    .titlebar h1 { font-size:34px; margin:0; line-height:1.3; }
+
+    .body-wrap { flex:1; min-height:0; overflow:auto; padding:26px; display:flex; flex-direction:column; gap:20px; }
+    .lead { font-size:24px; font-weight:700; }
+    .facts { border:2.5px solid #1a1a1a; border-radius:10px; padding:18px; font-size:22px; line-height:1.8; }
+    .facts .hl { font-weight:700; }
+    .pending-item { font-size:18px; color:#555; border-top:1.5px dashed #ccc; margin-top:8px; padding-top:8px; }
+
+    .steps { font-size:20px; line-height:1.7; }
+    .steps ol { margin:6px 0 0; padding-left:24px; }
+
+    .btn-row { display:flex; gap:12px; }
+    .btn { flex:1; border:2.5px solid #1a1a1a; border-radius:8px; padding:20px; font-size:24px; font-family:inherit; background:#fff; text-align:center; }
+    .btn-primary { background:#1a1a1a; color:#fff; }
+    .btn-dashed { border-style:dashed; font-size:21px; }
+
+    .footnote { margin-top:auto; padding:16px 26px; border-top:2px dashed #1a1a1a; font-size:17px; color:#777; text-align:center; }
+  </style>
+</head>
+<body>
+<div class="sysbar">
+  <div class="row">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 90%</span></div>
+</div>
+<div class="titlebar">
+  <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3z"/><line x1="12" y1="9" x2="12" y2="14"/><circle cx="12" cy="17.5" r="1" fill="#1a1a1a" stroke="none"/></svg>
+  <h1>重量檢核異常．防損機制啟動</h1>
+</div>
+
+<div class="body-wrap">
+  <div class="lead">系統偵測到購物籃重量不符</div>
+
+  <div class="facts">
+    <div>掃碼前偵測到的重量變化 = <span class="hl">+100g</span></div>
+    <div>掃描商品後應有的變化 = <span class="hl">+480g（±25g）</span></div>
+    <div>狀態判定 = 方向相符但數值不符（誤差 &gt; ±5%），結帳功能暫時鎖定</div>
+    <div class="pending-item">比對中商品：洋芋片（條碼 4710xxxxxxxxx）　自動判定方向：加入</div>
+  </div>
+
+  <div class="steps">
+    請依指示操作：
+    <ol>
+      <li>請確認籃內商品與剛才掃描的是同一件，重新掃描條碼一次</li>
+      <li>若同時放入／取出了不只一件商品，請一件一件分開操作</li>
+      <li>若為隨身私人物品誤放，請直接自籃內移出</li>
+    </ol>
+  </div>
+
+  <div class="btn-row">
+    <button class="btn">重新感應商品</button>
+    <button class="btn btn-primary">放棄此次動作</button>
+  </div>
+  <div class="btn-row">
+    <button class="btn btn-dashed">重新校準歸零</button>
+    <button class="btn btn-dashed">呼叫店員協助</button>
+  </div>
+</div>
+
+<div class="footnote">為保障您與賣場權益，此畫面無法略過，請依指示排除異常</div>
+
+<style>
+  #__preview_nav {
+    position: fixed; top: 0; left: 0; width: 100%;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 2px 6px; box-sizing: border-box; z-index: 999999;
+    pointer-events: none;
+  }
+  #__preview_nav button {
+    pointer-events: auto;
+    width: 34px; height: 34px; border-radius: 50%;
+    border: 2px solid rgba(26,26,26,0.35);
+    background: rgba(253,252,249,0.55);
+    color: rgba(26,26,26,0.55);
+    font-size: 16px; font-family: sans-serif; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #__preview_nav button:active { background: rgba(26,26,26,0.15); }
+  #__preview_nav .label {
+    pointer-events: auto;
+    font-size: 10px; font-family: sans-serif; color: rgba(26,26,26,0.45);
+    background: rgba(253,252,249,0.55); border-radius: 8px;
+    padding: 3px 8px; max-width: 55%; text-align: center;
+  }
+</style>
+<div id="__preview_nav">
+  <button onclick="window.pywebview && window.pywebview.api.go(-1)">‹</button>
+  <div class="label">⑪ 重量異常防損（11/13，點兩側圓鈕切換畫面）</div>
+  <button onclick="window.pywebview && window.pywebview.api.go(1)">›</button>
+</div>
+
+</body>
+</html>

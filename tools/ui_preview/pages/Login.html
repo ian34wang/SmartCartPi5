@@ -1,0 +1,98 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>② 會員登入</title>
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap');
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .sysbar { display:flex; align-items:center; justify-content:space-between; padding:10px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+    .sysbar .row { display:flex; align-items:center; gap:8px; }
+    .titlebar { padding:16px 22px 0; font-size:22px; }
+    .center-stage { flex:1; min-height:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:30px; padding:0 48px; text-align:center; }
+    .title { font-size:38px; font-weight:700; margin:0; }
+    .scan-frame { position:relative; width:340px; height:340px; }
+    .corner { position:absolute; width:44px; height:44px; border:5px solid #1a1a1a; }
+    .tl { top:0; left:0; border-right:none; border-bottom:none; }
+    .tr { top:0; right:0; border-left:none; border-bottom:none; }
+    .bl { bottom:0; left:0; border-right:none; border-top:none; }
+    .br { bottom:0; right:0; border-left:none; border-top:none; }
+    .scan-label { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:23px; color:#666; }
+    .waiting { font-size:23px; color:#555; }
+    .divider-text { display:flex; align-items:center; gap:16px; width:100%; color:#888; font-size:19px; }
+    .divider-text::before, .divider-text::after { content:""; flex:1; border-top:2px dashed #ccc; }
+    .btn-dashed { border:2.5px dashed #1a1a1a; border-radius:8px; padding:16px 28px; font-size:22px; font-family:inherit; background:#fff; }
+    .footnote { max-width:520px; font-size:18px; color:#777; line-height:1.6; }
+  </style>
+</head>
+<body>
+<div class="sysbar">
+  <div class="row">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row">
+    <span>10:25 AM</span>
+    <svg width="26" height="14" viewBox="0 0 30 16"><rect x="1" y="1" width="25" height="14" rx="3" fill="none" stroke="#555" stroke-width="2"/><rect x="27" y="5" width="2.5" height="6" rx="1" fill="#555"/><rect x="3.5" y="3.5" width="20" height="9" fill="#555"/></svg>
+    <span>100%</span>
+  </div>
+</div>
+<div class="titlebar">會員登入</div>
+
+<div class="center-stage">
+  <h1 class="title">請掃描會員條碼／QR Code</h1>
+  <div class="scan-frame">
+    <div class="corner tl"></div><div class="corner tr"></div>
+    <div class="corner bl"></div><div class="corner br"></div>
+    <div class="scan-label">對準掃描窗<br>條碼／QR Code</div>
+  </div>
+  <div class="waiting">● 等待掃描中 ...</div>
+
+  <div class="divider-text">或</div>
+
+  <button class="btn-dashed">以訪客身份繼續（暫不登入）</button>
+  <div class="footnote">
+    訪客模式不會載入任何已儲存的資料，需要重新設定過敏原、飲食習慣與本次預算；
+    會員登入後系統會自動嘗試載入你上次儲存的設定與常購清單。
+  </div>
+</div>
+
+<style>
+  #__preview_nav {
+    position: fixed; top: 0; left: 0; width: 100%;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 2px 6px; box-sizing: border-box; z-index: 999999;
+    pointer-events: none;
+  }
+  #__preview_nav button {
+    pointer-events: auto;
+    width: 34px; height: 34px; border-radius: 50%;
+    border: 2px solid rgba(26,26,26,0.35);
+    background: rgba(253,252,249,0.55);
+    color: rgba(26,26,26,0.55);
+    font-size: 16px; font-family: sans-serif; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #__preview_nav button:active { background: rgba(26,26,26,0.15); }
+  #__preview_nav .label {
+    pointer-events: auto;
+    font-size: 10px; font-family: sans-serif; color: rgba(26,26,26,0.45);
+    background: rgba(253,252,249,0.55); border-radius: 8px;
+    padding: 3px 8px; max-width: 55%; text-align: center;
+  }
+</style>
+<div id="__preview_nav">
+  <button onclick="window.pywebview && window.pywebview.api.go(-1)">‹</button>
+  <div class="label">② 會員登入（2/13，點兩側圓鈕切換畫面）</div>
+  <button onclick="window.pywebview && window.pywebview.api.go(1)">›</button>
+</div>
+
+</body>
+</html>

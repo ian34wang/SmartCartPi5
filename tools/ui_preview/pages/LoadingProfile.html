@@ -1,0 +1,108 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>③ 載入會員資料</title>
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap');
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .sysbar { display:flex; align-items:center; justify-content:space-between; padding:10px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+    .sysbar .row { display:flex; align-items:center; gap:8px; }
+    .badge-new { border:2px solid #1a1a1a; border-radius:6px; padding:3px 9px; font-size:15px; font-weight:700; margin-left:auto; }
+    .titlebar { padding:16px 22px 0; font-size:22px; display:flex; align-items:center; }
+
+    .center-stage { flex:1; min-height:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px; padding:0 46px; }
+    .member-name { font-size:30px; font-weight:700; }
+    .checklist { width:100%; max-width:480px; border:2.5px solid #1a1a1a; border-radius:10px; padding:6px 20px; }
+    .check-row { display:flex; align-items:center; gap:12px; padding:14px 0; font-size:21px; border-bottom:1.5px dashed #ddd; }
+    .check-row:last-child { border-bottom:none; }
+    .check-circle { width:26px; height:26px; border-radius:50%; border:2.5px solid #1a1a1a; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+
+    .branch-wrap { width:100%; max-width:520px; display:flex; flex-direction:column; gap:14px; margin-top:6px; }
+    .branch { border:2px dashed #999; border-radius:10px; padding:14px 18px; font-size:18px; color:#555; }
+    .branch-title { font-weight:700; color:#1a1a1a; margin-bottom:4px; font-size:19px; }
+    .branch-cta { display:inline-block; margin-top:8px; border:2px solid #1a1a1a; border-radius:8px; padding:8px 16px; font-size:18px; color:#1a1a1a; }
+  </style>
+</head>
+<body>
+<div class="sysbar">
+  <div class="row">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 100%</span></div>
+</div>
+<div class="titlebar">載入會員資料
+  <span class="badge-new">NEW · 補齊登入後載入流程</span>
+</div>
+
+<div class="center-stage">
+  <div class="member-name">歡迎回來，王小明</div>
+  <div class="checklist">
+    <div class="check-row">
+      <div class="check-circle"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
+      過敏原與飲食偏好設定
+    </div>
+    <div class="check-row">
+      <div class="check-circle"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
+      常購清單（3 項）
+    </div>
+    <div class="check-row">
+      <div class="check-circle"></div>
+      本次購物預算 …
+    </div>
+  </div>
+
+  <div class="branch-wrap">
+    <div class="branch">
+      <div class="branch-title">情況 A：找到已儲存的過敏原設定／常購清單</div>
+      略過三步驟偏好設定，直接沿用；僅需確認或調整本次預算。
+      <div class="branch-cta">確認並開始購物 →</div>
+    </div>
+    <div class="branch">
+      <div class="branch-title">情況 B：首次使用／查無資料／訪客身份</div>
+      需要完成「過敏原 → 葷素習慣 → 宗教飲食」三步驟設定，再輸入本次預算。
+      <div class="branch-cta">開始設定 →</div>
+    </div>
+  </div>
+</div>
+
+<style>
+  #__preview_nav {
+    position: fixed; top: 0; left: 0; width: 100%;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 2px 6px; box-sizing: border-box; z-index: 999999;
+    pointer-events: none;
+  }
+  #__preview_nav button {
+    pointer-events: auto;
+    width: 34px; height: 34px; border-radius: 50%;
+    border: 2px solid rgba(26,26,26,0.35);
+    background: rgba(253,252,249,0.55);
+    color: rgba(26,26,26,0.55);
+    font-size: 16px; font-family: sans-serif; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #__preview_nav button:active { background: rgba(26,26,26,0.15); }
+  #__preview_nav .label {
+    pointer-events: auto;
+    font-size: 10px; font-family: sans-serif; color: rgba(26,26,26,0.45);
+    background: rgba(253,252,249,0.55); border-radius: 8px;
+    padding: 3px 8px; max-width: 55%; text-align: center;
+  }
+</style>
+<div id="__preview_nav">
+  <button onclick="window.pywebview && window.pywebview.api.go(-1)">‹</button>
+  <div class="label">③ 載入會員資料（3/13，點兩側圓鈕切換畫面）</div>
+  <button onclick="window.pywebview && window.pywebview.api.go(1)">›</button>
+</div>
+
+</body>
+</html>
