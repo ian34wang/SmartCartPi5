@@ -20,8 +20,9 @@
   /* 全域工具列：退出 / 開發測試面板開關，疊在所有畫面最上層 */
   #app-toolbar { position:absolute; top:0; right:0; z-index:100000; display:flex; gap:6px; padding:6px; }
   #app-toolbar button {
-    width:34px; height:34px; border-radius:50%; border:2px solid rgba(26,26,26,0.4);
-    background:rgba(253,252,249,0.6); font-size:16px; font-family:sans-serif; line-height:1;
+    min-width:34px; height:34px; border-radius:17px; border:2px solid rgba(26,26,26,0.4);
+    background:rgba(253,252,249,0.6); font-size:14px; font-family:sans-serif; line-height:1;
+    padding:0 9px; font-weight:700;
   }
   #app-toolbar button:active { background:rgba(26,26,26,0.15); }
 
@@ -53,6 +54,7 @@
   #dev-panel button { border:2px solid #888; border-radius:6px; padding:8px 12px; font:inherit; background:#333; color:#fff; }
   #dev-panel button:active { background:#555; }
   #dev-panel .state-dump { font-size:13px; color:#aaa; white-space:pre-wrap; word-break:break-all; margin-top:12px; }
+  #dev-panel .note { font-size:14px; color:#f4c542; margin:-2px 0 10px; line-height:1.5; }
 
 #screen-main 700&display=swap');
     * { box-sizing: border-box; }
@@ -387,15 +389,29 @@
 #screen-exit_confirm .gate-status { display:flex; align-items:center; justify-content:center; gap:10px; padding:20px; border-top:3px solid #1a1a1a; font-size:23px; font-weight:700; }
 #screen-exit_confirm .footer-alt { padding:16px 26px; text-align:center; }
 #screen-exit_confirm .btn-dashed { border:2px dashed #1a1a1a; border-radius:8px; padding:16px 22px; font-size:21px; font-family:inherit; background:#fff; color:#555; }
+
+  /* ------------------------------------------------------------------
+     這一段必須放在所有 #screen-* 規則「之後」，才蓋得過它們（id 選擇器優先
+     度比 class 高，所以這裡要用 !important）。
+
+     原因：每個畫面的 CSS 是從設計稿的 `body { width:720px; height:1280px }`
+     換算來的，寫死 1280px。但實際視窗的可視高度常常小於 1280（pywebview 的
+     視窗標題列/工作列會吃掉幾十 px），固定高度加上 overflow:hidden 的結果就
+     是最底下的導覽列被裁掉看不到。改成填滿實際可視高度，flex 排版會自動把
+     底部導覽列推到真正的畫面底部。全螢幕 720x1280 時兩者一樣，不影響。
+     ------------------------------------------------------------------ */
+  html, body { width:100%; height:100%; max-width:720px; }
+  .screen { width:100% !important; height:100% !important; }
 </style>
 </head>
 <body>
 
 <div id="f-global-error" hidden></div>
 <div id="f-toast"></div>
-
 <div id="app-toolbar">
-  <button title="開發測試面板" onclick="APP.toggleDevPanel()">🛠</button>
+  <!-- 原本這兩顆用的是 emoji（🛠）。Pi OS 預設沒有裝彩色 emoji 字型，實機上
+       會變成一個看不懂的豆腐方框，找不到開發面板在哪——改用純文字標籤。 -->
+  <button title="開發測試面板" onclick="APP.toggleDevPanel()">DEV</button>
   <button title="退出" onclick="APP.callApi('quit')">✕</button>
 </div>
 
@@ -446,7 +462,7 @@
   </div>
   <div class="waiting">● 等待掃描中 ...</div>
 
-  <div id="f-login-error" style="color:#b00020;font-size:16px;min-height:22px;"></div><div style="display:flex;gap:10px;width:100%;max-width:440px;"><input id="f-login-input" type="text" placeholder="會員代碼，例如 MEMBER-0001" style="flex:1;border:2px solid #1a1a1a;border-radius:8px;padding:14px;font-size:18px;font-family:inherit;text-align:center;background:#fff;color:#1a1a1a;" onkeydown="if(event.key==='Enter')APP.doLogin()"><button class="btn-dashed" style="padding:14px 20px;font-size:18px;" onclick="APP.doLogin()">登入</button></div><div style="font-size:14px;color:#999;">（沒有實體掃描器可用時的開發測試輸入框；真的接上掃描器後，掃碼會直接呼叫同一支 login()）</div><div class="divider-text">或</div>
+  <div id="f-login-error" style="color:#b00020;font-size:16px;min-height:22px;"></div><div class="divider-text">或</div>
 
   <button class="btn-dashed" onclick="APP.callApi('continue_as_guest')">以訪客身份繼續（暫不登入）</button>
   <div class="footnote">
@@ -675,7 +691,7 @@
     <span id="f-shop-header"></span>
     <span class="sensor-chip">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-      感測器正常
+      <span id="f-sensor-text">感測器正常</span>
     </span>
   </div>
   <div class="progress-track"><div class="progress-fill" id="f-progress-fill" style="width:0%;"></div></div>
@@ -979,44 +995,30 @@
 </div>
 
 <div id="dev-panel" hidden>
-  <h2>登入／管制區（硬體還沒有時用這裡模擬）</h2>
-  <div class="row">
-    <button onclick="APP.callApi('go_to_login')">回到登入畫面</button>
-    <button onclick="APP.callApi('simulate_sensor_disconnect')">秤重感測器斷線</button>
-    <button onclick="APP.callApi('simulate_sensor_reconnect')">秤重感測器恢復</button>
+  <!-- 唯讀診斷面板。刻意沒有任何「製造事件」的按鈕：這支程式只走真實硬體，
+       如果這裡能按一下就生出一筆掃碼或秤重，那就等於又多了一條旁路，
+       出問題時又要先搞清楚自己走在哪條路上。 -->
+  <h2>硬體狀態（唯讀）</h2>
+  <div class="note" id="dev-scan-status">最近收到的條碼：（尚未收到任何條碼）</div>
+  <div class="note" id="dev-weight-status">秤重：（尚未收到讀數）</div>
+  <div class="note" id="dev-gate-status">門口 BLE 判定次數：0</div>
+
+  <h2>刷了條碼卻沒反應時，照這個順序看</h2>
+  <div class="note">
+    (1)「最近收到的條碼」有跟著變嗎？<br>
+    &nbsp;&nbsp;&nbsp;沒變 → 條碼根本沒進到程式。掃描器沒接好，或 evdev 抓錯裝置。
+    另開終端機跑 <code>sudo python3 -m drivers.barcode_scanner --list</code> 確認裝置名稱，
+    對照 config.json 的 barcode_scanner.device_name_hint。<br>
+    &nbsp;&nbsp;&nbsp;有變 → 條碼進來了，往下看。<br>
+    (2) 畫面上方有紅色錯誤條嗎？那就是狀態機拒絕的原因，照著處理即可
+    （最常見是「查無商品」＝這個條碼還沒建檔，用 tools/product_admin.py 建）。<br>
+    (3)「秤重」那行有數字而且會跳動嗎？沒有的話 UART 斷了——掃碼會被狀態機
+    擋下來，因為沒有重量就無法驗證掃了什麼。<br>
+    (4) 還在「等待進入管制區」嗎？那時候掃碼本來就會被拒絕，要先推車通過門口
+    讓 BLE 判定進場。
   </div>
 
-  <h2>商品掃碼 / 秤重</h2>
-  <div class="row">
-    <input id="dev-barcode" placeholder="條碼，例如 4710018001234">
-    <button onclick="APP.callApi('simulate_item_scan', document.getElementById('dev-barcode').value)">模擬掃描</button>
-  </div>
-  <div class="row">
-    <input id="dev-weight" type="number" placeholder="目前公克數">
-    <button onclick="APP.callApi('simulate_weight', document.getElementById('dev-weight').value)">送出秤重讀數</button>
-  </div>
-  <div class="row">
-    <button onclick="APP.callApi('simulate_timeout')">手動觸發一次逾時檢查</button>
-  </div>
-
-  <h2>結帳 / 出場</h2>
-  <div class="row">
-    <button onclick="APP.callApi('lock_checkout')">鎖定結帳</button>
-    <button onclick="APP.callApi('confirm_payment')">確認付款</button>
-    <button onclick="APP.callApi('simulate_gate_exit')">模擬走出管制區</button>
-  </div>
-
-  <h2>秤重異常</h2>
-  <div class="row">
-    <button onclick="APP.callApi('retry_weight')">重試比對</button>
-    <button onclick="APP.callApi('void_pending')">放棄這筆</button>
-  </div>
-
-  <h2>強制重置</h2>
-  <div class="row">
-    <button onclick="APP.callApi('force_logout', '開發測試面板手動重置')">強制登出／清空重來</button>
-  </div>
-
+  <h2>目前完整狀態</h2>
   <div class="state-dump" id="dev-state-dump"></div>
 </div>
 
@@ -1075,11 +1077,6 @@
       console.error(err);
       toast("發生錯誤：" + err);
     });
-  }
-
-  function doLogin() {
-    var val = document.getElementById("f-login-input").value;
-    callApi("login", val);
   }
 
   function wizardToggle(kind, name) {
@@ -1188,7 +1185,15 @@
 
     var pendingWrap = document.getElementById("f-pending-box-wrap");
     if (pendingWrap) {
-      if (payload.pending_item_barcode) {
+      if (payload.awaiting_gate_entry) {
+        // 精靈走完了，但 BLE 還沒判定推車通過門口。這時候狀態機還在
+        // 「已登入、未進管制區」，掃碼會被拒絕——所以要明講在等什麼，
+        // 不要讓畫面看起來已經可以開始購物了。
+        pendingWrap.innerHTML =
+          '<div class="pending-box"><div class="mode-badge">等待進入管制區</div>' +
+          '<div class="pending-line">請推車通過管制區入口，系統會自動偵測進場</div>' +
+          '<div class="pulse-row"><div class="pulse-dot"></div>偵測中 ... 進場前掃碼不會被受理</div></div>';
+      } else if (payload.pending_item_barcode) {
         var modeText = payload.pending_item_mode === "remove" ? "移除購物車" : "加入購物車";
         pendingWrap.innerHTML =
           '<div class="pending-box">' +
@@ -1228,6 +1233,34 @@
     var exitTimer = document.getElementById("f-exit-timer");
     if (exitTimer) exitTimer.textContent = payload.exit_countdown || "--:--";
 
+    // 感測器狀態燈號：這一格原本是設計稿裡寫死的「✓ 感測器正常」，不管實際
+    // 上有沒有秤重資料都長一樣——而「完全沒有秤重讀數」正是掃碼會被狀態機
+    // 拒絕的主因（見 CartStateMachine._on_item_scanned 開頭的檢查），畫面卻
+    // 顯示一切正常，等於在誤導人。改成反映真實狀態。
+    var sensorText = document.getElementById("f-sensor-text");
+    if (sensorText) {
+      if (!payload.sensor_connected) sensorText.textContent = "感測器斷線";
+      else if (!payload.has_weight_reading) sensorText.textContent = "無秤重資料";
+      else sensorText.textContent = "感測器正常";
+    }
+
+    // 唯讀診斷面板
+    var scanStatus = document.getElementById("dev-scan-status");
+    if (scanStatus) {
+      scanStatus.textContent = "最近收到的條碼：" + (payload.last_scan || "（尚未收到任何條碼）");
+    }
+    var weightStatus = document.getElementById("dev-weight-status");
+    if (weightStatus) {
+      weightStatus.textContent =
+        "秤重：" + (payload.current_weight_g != null ? payload.current_weight_g.toFixed(1) + " g" : "（尚未收到讀數）") +
+        "　感測器連線 = " + (payload.sensor_connected ? "正常" : "斷線");
+    }
+    var gateStatus = document.getElementById("dev-gate-status");
+    if (gateStatus) {
+      gateStatus.textContent = "門口 BLE 判定次數：" + payload.gate_events +
+        (payload.awaiting_gate_entry ? "　（目前狀態：等待進入管制區）" : "");
+    }
+
     var dump = document.getElementById("dev-state-dump");
     if (dump) dump.textContent = JSON.stringify(payload, null, 1);
   }
@@ -1237,6 +1270,9 @@
     if (nav) showTab(nav.dataset.tab);
   });
 
+  // 條碼由 evdev 直接從 /dev/input/event* 讀取（drivers/barcode_scanner.py），
+  // 完全不經過前端——掃描器的按鍵事件被 grab() 獨佔，這個頁面收不到、也不需要
+  // 收到。所以這裡沒有任何「把按鍵拼成條碼」的邏輯，只留下 Esc 退出。
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") callApi("quit");
   });
@@ -1254,7 +1290,7 @@
 
   window.APP = {
     callApi: callApi, showTab: showTab, toast: toast, toggleDevPanel: toggleDevPanel,
-    doLogin: doLogin, wizardToggle: wizardToggle, wizardSetDiet: wizardSetDiet,
+    wizardToggle: wizardToggle, wizardSetDiet: wizardSetDiet,
     budgetPick: budgetPick, confirmBudget: confirmBudget, selectPay: selectPay,
     render: render,
   };

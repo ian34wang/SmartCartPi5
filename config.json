@@ -56,27 +56,33 @@
   },
 
   "landmarks": {
-    "rssi_smoothing_window": 5,
-    "_rssi_smoothing_window_comment": "core/landmark_correction.py 的移動中位數平滑窗口大小（筆數），用來消除 BLE RSSI 單筆突波（多路徑反射造成的瞬間跳動）。",
+    "rssi_smoothing_sec": 0.4,
+    "_rssi_smoothing_sec_comment": "RSSI 平滑窗口長度（秒）。刻意用『時間』而不是『筆數』：實測兩顆 Beacon 的廣播間隔差了 3 倍，固定筆數會讓慢的那顆涵蓋 3 倍的時間、系統性落後，而落後最嚴重的時候正好是推車穿越門口、訊號快速變化的那幾秒。窗口長度直接等於判定延遲：p75 這類取上包絡線的估計量在訊號下降時會黏在窗口內最強（最舊）的那筆，所以延遲約等於一整個窗口長度，換算成距離就是『推車速度 × 窗口秒數』（1 m/s 配 0.4 秒 = 晚 40 cm）。所以 smoothing_sec ≈ 可接受的判定延遲距離 ÷ 推車速度。縮短窗口的代價是樣本變少、雜訊壓不住，所以廣播間隔一定要先調到 20~30 ms 才撐得住 0.4 秒的窗口——這兩件事綁在一起。",
+    "rssi_estimator": "p75",
+    "_rssi_estimator_comment": "把窗口內的樣本壓成一個代表值的方式。可選 p75（預設）/p90/median/max/mean。2026-09-15 實測發現這裡的雜訊是單邊的——訊號很少變強、但常常因為多路徑破壞性干涉突然變弱 6 dB，所以上包絡線才接近真正的直達路徑。實測殘餘抖動（window=5）：median 2.29 dB（最差，樣本雙峰時會在兩群之間跳）、mean 0.89、p75 0.53、p90 0.46。換算成『需要多大的 ΔRSSI 才可靠』：median 要 7.1 dB、p75 只要 1.6 dB。選 p75 而非 p90/max 是因為它仍用到 1/4 的樣本，單筆異常高讀數不會主導結果。",
+    "rssi_min_samples": 3,
+    "_rssi_min_samples_comment": "時間窗內任一顆 Beacon 的樣本數少於這個值就不做門口判定——樣本太少的平滑值不可信，這在『剛進入偵測範圍』跟『某一顆快要收不到』時都會發生。",
     "peak_min_rise_dbm": 3.0,
     "_peak_min_rise_dbm_comment": "一般地標點的峰值偵測（RssiPeakDetector）：上升幅度至少要超過這個值(dBm)才算數，避免雜訊誤判成峰值。",
     "peak_min_rssi_dbm": -70.0,
     "_peak_min_rssi_dbm_comment": "峰值本身的絕對訊號強度門檻(dBm)：只有相對上升幅度不夠——車子只是在 Beacon 附近晃過、沒有真的靠近，也會有『先升後降』的曲線，只看相對上升幅度會被誤判成經過。這個值要等實測 Beacon 在多遠距離大概是多少 dBm 才能校準，先給 -70 這個常見『數公尺內』的量級當預設，之後要調。設成 null 可以關閉這層檢查（不建議）。",
-    "gate_hysteresis_dbm": 2.0,
-    "_gate_hysteresis_dbm_comment": "管制區門口雙 Beacon 差分判定（GateCrossingDetector）的遲滯門檻(dBm)，避免兩顆訊號接近時（例如車子剛好停在門口正中間）反覆誤判方向。",
-    "gate_min_crossing_rssi_dbm": -65.0,
-    "_gate_min_crossing_rssi_dbm_comment": "門口穿越判定的絕對訊號強度門檻(dBm)：跟 peak_min_rssi_dbm 是同一種防護，理由更重要——門口誤判直接觸發防損警報/鎖輪，代價比一般地標點高。只有『目前佔優勢的那顆 Beacon 訊號本身也夠強』才採信，避免『在店裡別處剛好比較靠近門內 Beacon』被誤判成在門口附近。要比 peak_min_rssi_dbm 更嚴格（數值更大/更接近0），因為門口這兩顆 Beacon 建議實體佈署時就調低發射功率、讓有效範圍侷限在門口通道，兩者互相配合。",
+    "gate_hysteresis_dbm": 4.0,
+    "_gate_hysteresis_dbm_comment": "CALIBRATE_ME：門口雙 Beacon 差分判定的遲滯門檻(dBm)，避免兩顆訊號接近時反覆誤判方向。要蓋得過『平滑後的殘餘雜訊』但不能超過『門檻線附近局部梯度的一半』。2026-09-15 實測：車子完全靜止時單筆 RSSI 峰對峰抖動就有 7 dB；用 p75 估計量 + 0.8 秒窗口之後殘餘約 0.5 dB，所以 4.0 已經很寬鬆。正式值用 tools/calibrate_gate_beacons.py --survey 量出局部梯度後再定。",
+    "gate_min_crossing_rssi_dbm": -60.0,
+    "_gate_min_crossing_rssi_dbm_comment": "CALIBRATE_ME：門口穿越判定的絕對訊號強度門檻(dBm)。只有『目前佔優勢的那顆 Beacon 訊號本身也夠強』才採信，避免『在店裡別處剛好比較靠近某一顆』被誤判成在門口。2026-09-15 實測：距離 Beacon 1.7 公尺時只有約 -70 dBm，所以原本的 -65 等於要求貼著 Beacon 才算數，實務上過不了。這個值必須用 tools/calibrate_gate_beacons.py 在真正的門檻線上量過才有意義——先放 -60 當佔位值，代表『沒校正過就不要相信這個門檻』。",
     "gate_min_confirm_samples": 3,
     "_gate_min_confirm_samples_comment": "門口穿越判定要求新的優勢方連續出現這麼多筆平滑後樣本才算數，用來過濾單一雜訊樣本造成的瞬間翻轉。1 代表不啟用（跟一般地標點一樣寬鬆），門口這裡預設調高到 3。",
-    "gate_exit_yaw_deg": 0.0,
-    "_gate_exit_yaw_deg_comment": "CALIBRATE_ME：車子『正朝門外方向穿越』時，yaw_deg 理論上該是多少度（用 is_heading_consistent() 交叉驗證 BLE 判定用），跟門的實際安裝方向與 core/position_types.py 的座標系有關，要看現場安裝方向實測填入，這裡先放 0 當佔位值。",
+    "gate_exit_yaw_deg": null,
+    "_gate_exit_yaw_deg_comment": "CALIBRATE_ME：車子『正朝門外方向穿越』時，yaw_deg 理論上該是多少度，跟門的實際安裝方向與 core/position_types.py 的座標系有關，要現場實測填入。**null 代表還沒量**，此時 core/gate_monitor.py 的航向交叉驗證會自動不啟用——這是刻意的：拿一個沒校正過的角度去擋，只會把真的穿越也一起擋掉。量到之後填數字進來就會自動生效。",
     "gate_heading_tolerance_deg": 45.0,
     "_gate_heading_tolerance_deg_comment": "is_heading_consistent() 容許的航向角誤差(度)，車子不會完全垂直對準門口走，先給 45 度寬容範圍。",
     "points": [
-      {"beacon_id": "GATE-INSIDE", "x_mm": 0.0, "y_mm": 0.0, "label": "管制區門口（門內側）"},
-      {"beacon_id": "GATE-OUTSIDE", "x_mm": 0.0, "y_mm": -1500.0, "label": "管制區門口（門外側）"}
+      {"beacon_id": "GATE-INSIDE", "address": "AC:A7:04:33:C7:69", "rssi_offset_db": 0.0, "x_mm": 0.0, "y_mm": 0.0, "label": "管制區門口（門內側）"},
+      {"beacon_id": "GATE-OUTSIDE", "address": "F4:2D:C9:A1:8E:FA", "rssi_offset_db": 0.0, "x_mm": 0.0, "y_mm": -1500.0, "label": "管制區門口（門外側）"}
     ],
+    "_rssi_offset_db_comment": "CALIBRATE_ME：每顆 Beacon 的 RSSI 校正偏移量(dB)，比較訊號強弱之前會先加上去。差分判定假設『訊號比較強＝比較近』，但這只有在兩顆的發射功率/天線增益一樣時才成立。2026-09-15 實測（兩顆不同廠牌）：車子離 OUTSIDE 只有 1.7m、離 INSIDE 有 3.6m，照理說 OUTSIDE 應該強 6.5 dB，實測卻是 INSIDE 強 6.0 dB——系統性偏差 12.5 dB、方向完全相反。兩顆都是 0.0 代表還沒校正過，此時出場判定幾乎不可能觸發。用 tools/calibrate_gate_beacons.py 量。",
     "gate_beacon_pair": {"inside_id": "GATE-INSIDE", "outside_id": "GATE-OUTSIDE"},
+    "_address_comment": "每個 Beacon 的 BLE MAC 位址。填了就用位址比對（最可靠）；留空則改用『廣播名稱等於 beacon_id』比對（自己刷 ESP32 當 Beacon 時把廣播名稱設成 GATE-INSIDE / GATE-OUTSIDE 即可，不用填這欄）。用 `python3 -m drivers.ble_beacon_scanner --list` 查實際位址。",
     "_points_comment": "CALIBRATE_ME：每個 Beacon 的絕對座標是實測值，這裡是佔位資料，等 Beacon 實際安裝位置定案、實測後才能填準確值——跟 weight/odometry 那幾個 CALIBRATE_ME 是同一種性質。座標系跟 core/position_types.py 一致（公釐），這裡先假設門內 Beacon 座標是程式原點 (0,0)、門外 Beacon 在車頭正前方軸的 -1500mm，實際要看安裝位置調整。之後 Phase 7 要擴充走道地標點，就是往這個 points 陣列繼續加。"
   },
 

@@ -32,21 +32,23 @@ tools/product_admin.py
 `standard_weight_g`，不用自己拿磅秤讀數再手動打字進去——這樣量到的數字才會
 跟購物車實際秤重比對時用的是同一套校正基準，不會有人工謄寫打錯或校正基準
 兜不起來的問題。容許誤差（`weight_tolerance_g`）預設自動抓量到重量的
-10%，一樣不用手動輸入（要自訂的話可以直接覆蓋，見下方欄位說明）。量不到感
-測器（沒接 UART、或用這支工具的電腦本來就沒接秤）時會自動退回手動輸入公克
-數，不會卡住等不存在的硬體。
+10%，一樣不用手動輸入（要自訂的話可以直接覆蓋，見下方欄位說明）。
+
+**重量沒有手動輸入的退路**：秤連不上時 `add`/`edit` 會直接報錯結束。手打的
+數字跟這台秤在這份校正值下量出來的數字之間差多少沒人知道，用手打的值建檔，
+購物時的秤重比對就注定會偏、而且偏在哪裡完全看不出來。其他不需要重量的指令
+（list/delete/import/export/member-*）沒接秤照樣能用。
 
 用法：
     python3 -m tools.product_admin                        # 互動選單（不熟指令的話用這個）
     python3 -m tools.product_admin list                    # 列出所有商品
     python3 -m tools.product_admin add                     # 互動輸入新增一筆（條碼可直接用掃描器刷）
-    python3 -m tools.product_admin add --barcode 471... --name "..." --price 39 --weight 500
-        # 命令列參數模式：--tolerance 可以不給，不給就自動抓 --weight 的 10%
+    python3 -m tools.product_admin add --barcode 471... --name "..." --price 39
+        # 命令列參數模式：條碼/名稱/單價用參數給，重量一樣要現場量（沒有 --weight）
     python3 -m tools.product_admin edit 4710018001234       # 互動修改一筆（Enter 保留原值）
     python3 -m tools.product_admin delete 4710018001234
     python3 -m tools.product_admin import products.csv       # 從 CSV 批次匯入/更新
     python3 -m tools.product_admin export products_backup.csv
-    python3 -m tools.product_admin add --no-scale            # 不嘗試連秤重感測器，直接手動輸入公克數
 
     全部指令都可以加 --db /path/to/inventory.db 指定資料庫路徑（預設跟
     database/db_manager.py 一樣，是 database/inventory.db）；`add`/`edit`
@@ -81,13 +83,18 @@ from typing import List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from database.db_manager import DBManager, Product  # noqa: E402
+from database.db_manager import DBManager, Member, Product  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 _CSV_FIELDS = ["barcode", "name", "unit_price", "standard_weight_g", "weight_tolerance_g"]
 _AUTO_TOLERANCE_RATIO = 0.10  # 自動容差 = 量到的標準重量 × 這個比例
+
+
+class WeightGaugeUnavailable(RuntimeError):
+    """秤重感測器連不上／量不到讀數。`add`/`edit` 會直接讓這個例外浮上來，
+    不會退回手動輸入公克數（理由見 WeightGauge 的說明）。"""
 
 
 # ----------------------------------------------------------------------
@@ -174,15 +181,18 @@ class WeightGauge:
     工具量出來的數字」跟「購物車實際判定用的數字」兜不起來的問題。
 
     連線是懶惰的（第一次真的呼叫 `measure()` 才會去嘗試連 UART），這樣執行
-    `list`/`delete`/`import`/`export` 這種不需要秤重的指令時，不會平白多等
-    好幾秒的連線逾時。連不上（沒接 UART、沒有感測器、這台電腦本來就不是
-    Pi）就把 `available` 設成 False，呼叫端要自己 fallback 成手動輸入公克
-    數，不能讓整支 CLI 因為秤沒接就用不了。
+    `list`/`delete`/`import`/`export`/`member-*` 這種不需要秤重的指令時，
+    不會平白多等好幾秒的連線逾時，也不會因為沒接秤就用不了。
+
+    但 `add`/`edit` 需要量重量時連不上，就直接拋 `WeightGaugeUnavailable`
+    ——**沒有手動輸入公克數的退路**。重量是秤重比對的基準，手打的數字跟秤
+    出來的數字之間差多少沒人知道，用手打的值建檔，之後購物時的比對就注定
+    會偏；寧可當下講清楚秤沒接，也不要讓一筆不可信的重量混進商品資料庫。
     """
 
     def __init__(self, port: str, baudrate: int, offset: float, scale: float,
                  num_samples: int = 20, sample_timeout_sec: float = 3.0,
-                 connect_timeout_sec: float = 3.0, disabled: bool = False):
+                 connect_timeout_sec: float = 3.0):
         self.port = port
         self.baudrate = baudrate
         self.offset = offset
@@ -190,12 +200,12 @@ class WeightGauge:
         self.num_samples = num_samples
         self.sample_timeout_sec = sample_timeout_sec
         self.connect_timeout_sec = connect_timeout_sec
-        self._disabled = disabled
         self._receiver = None
         self._tried = False
+        self._error: Optional[str] = None
 
     def _ensure_connected(self) -> None:
-        if self._tried or self._disabled:
+        if self._tried:
             return
         self._tried = True
         try:
@@ -211,21 +221,30 @@ class WeightGauge:
                 time.sleep(0.1)
             if not got_packet:
                 receiver.stop()
-                print(f"[警告] 秤重感測器（{self.port}）接上了但沒有收到任何資料，改用手動輸入公克數")
+                self._error = (
+                    f"{self.connect_timeout_sec:.0f} 秒內沒有從 {self.port} 收到任何合法封包"
+                    "（序列埠打不開、下位機沒在送、或封包格式不是 v2；上面幾行 ERROR 會講實際原因）"
+                )
                 return
             self._receiver = receiver
-        except Exception as exc:  # noqa: BLE001 — 連不上秤是可預期狀況，不該讓 CLI 整支掛掉
-            print(f"[警告] 沒有接上秤重感測器（{exc}），改用手動輸入公克數")
+        except Exception as exc:  # noqa: BLE001 — 錯誤訊息留到真的要量重量時才丟出來
+            self._error = str(exc)
 
-    @property
-    def available(self) -> bool:
+    def require(self) -> None:
+        """確認秤真的可用，不可用就拋 WeightGaugeUnavailable。"""
         self._ensure_connected()
-        return self._receiver is not None
+        if self._receiver is None:
+            raise WeightGaugeUnavailable(
+                f"秤重感測器連不上：{self._error or '未知原因'}\n"
+                f"  1) 確認下位機有在送 UART 封包，且 {self.port} 存在、目前使用者有權限"
+                "（通常要在 dialout 群組）\n"
+                "  2) 單獨測一次：python3 -m drivers.uart_receiver --port " + str(self.port) + "\n"
+                "  3) 換一個序列埠：--port /dev/ttyXXX"
+            )
 
-    def measure(self) -> Optional[float]:
-        """回傳這次量到的公克數；沒有連線或沒收到樣本回傳 None。"""
-        if not self.available:
-            return None
+    def measure(self) -> float:
+        """量一次重量，回傳公克數。量不到就拋 WeightGaugeUnavailable。"""
+        self.require()
         from core.weight_convert import raw_to_grams
         from tools.calibrate_weight import collect_hx711_samples
 
@@ -238,7 +257,9 @@ class WeightGauge:
                 break
         samples: List[int] = collect_hx711_samples(self._receiver.out_queue, self.num_samples, self.sample_timeout_sec)
         if not samples:
-            return None
+            raise WeightGaugeUnavailable(
+                f"{self.sample_timeout_sec:.0f} 秒內沒有收到足夠的秤重樣本，UART 可能中途斷了"
+            )
         raw_mean = sum(samples) / len(samples)
         return raw_to_grams(raw_mean, self.offset, self.scale)
 
@@ -260,59 +281,49 @@ def _prompt(label: str, default: Optional[str] = None) -> str:
 
 
 def _prompt_weight_and_tolerance(gauge: WeightGauge, existing: Optional[Product]) -> Optional[tuple[float, float]]:
-    """回傳 (標準重量, 容許誤差)；輸入 q 取消回傳 None。優先走現場量測（把
-    商品放上秤按 Enter），量不到或使用者主動要求才退回手動輸入公克數。
+    """回傳 (標準重量, 容許誤差)；輸入 q 取消回傳 None。
+
+    重量**只能**從秤現場量。沒有手動輸入公克數這個選項——手打的數字跟這台秤
+    在這份校正值下量出來的數字之間差多少沒人知道，用手打的值建檔，購物時的
+    秤重比對就注定會偏掉，而且偏在哪裡完全看不出來。秤連不上就直接報錯。
     """
+    gauge.require()  # 連不上就在這裡拋出來，不要問完一堆欄位才發現量不到
+
     default_w = existing.standard_weight_g if existing else None
     weight: Optional[float] = None
     while weight is None:
-        if gauge.available:
-            hint = "（輸入 m 改手動輸入公克數"
-            hint += f"，k 保留原值 {default_w}g" if default_w is not None else ""
-            hint += "，q 取消）"
-            raw = input(f"把商品放上秤重感應區，穩定後按 Enter 量測重量{hint}：").strip().lower()
-        else:
-            raw = "m"  # 沒有秤重連線，直接走手動輸入，不用每次都問一次
+        hint = f"（Enter 量測，k 保留原值 {default_w}g，q 取消）" if default_w is not None else "（Enter 量測，q 取消）"
+        raw = input(f"把商品放上秤重感應區，穩定後按 Enter 量測重量{hint}：").strip().lower()
         if raw == "q":
             return None
         if raw == "k" and default_w is not None:
             weight = default_w
-        elif raw == "m":
-            manual = _prompt("標準重量（公克，一件商品的重量）", str(default_w) if default_w is not None else None)
-            if manual.lower() == "q":
-                return None
-            try:
-                weight = float(manual)
-            except ValueError:
-                print("[錯誤] 不是有效數字，請重新輸入")
-                continue
         else:
             print("量測中...")
-            measured = gauge.measure()
-            if measured is None:
-                print("[警告] 沒有量到有效讀數（檢查 UART 連線、感應區上是否已經放好商品），請重試，或輸入 m 改手動輸入")
-                continue
-            weight = measured
+            weight = gauge.measure()
             print(f"量到的重量 = {weight:.1f} g")
         if weight is not None and weight <= 0:
-            print("[錯誤] 重量必須大於 0，請重新輸入")
+            print("[錯誤] 量到的重量不大於 0。確認商品真的放在感應區上、秤有歸零過"
+                  "（tools/calibrate_weight.py），然後重試。")
             weight = None
 
     auto_tolerance = round(weight * _AUTO_TOLERANCE_RATIO, 1)
-    tol_raw = input(f"容許誤差（公克，直接按 Enter 用自動值 = 重量的 {_AUTO_TOLERANCE_RATIO*100:.0f}% = {auto_tolerance}g；輸入 q 取消）：").strip()
+    tol_raw = input(
+        f"容許誤差（公克，直接按 Enter 用自動值 = 重量的 {_AUTO_TOLERANCE_RATIO*100:.0f}% "
+        f"= {auto_tolerance}g；輸入 q 取消）："
+    ).strip()
     if tol_raw.lower() == "q":
         return None
     if not tol_raw:
-        tolerance = auto_tolerance
-    else:
-        try:
-            tolerance = float(tol_raw)
-            if tolerance < 0:
-                print("[錯誤] 容許誤差不能是負數，改用自動值")
-                tolerance = auto_tolerance
-        except ValueError:
-            print("[錯誤] 不是有效數字，改用自動值")
-            tolerance = auto_tolerance
+        return weight, auto_tolerance
+    try:
+        tolerance = float(tol_raw)
+    except ValueError:
+        print("[錯誤] 不是有效數字，改用自動值")
+        return weight, auto_tolerance
+    if tolerance < 0:
+        print("[錯誤] 容許誤差不能是負數，改用自動值")
+        return weight, auto_tolerance
     return weight, tolerance
 
 
@@ -367,18 +378,22 @@ def cmd_list(db: DBManager, _args, _gauge: Optional[WeightGauge] = None) -> None
 
 
 def cmd_add(db: DBManager, args, gauge: WeightGauge) -> None:
-    if args.barcode:  # 非互動模式：全部用命令列參數，name/price 一定要給；
-        # weight 也一定要給（現場量測只在互動模式下才有意義），tolerance
-        # 可以不給，不給就自動抓 weight 的 10%（跟互動模式邏輯一致）。
-        missing = [n for n in ("name", "price", "weight") if getattr(args, n) is None]
+    if args.barcode:
+        # 命令列參數模式：條碼/名稱/單價可以先用參數給完，但**重量還是要現場
+        # 量**（沒有 --weight 這個參數）。容差一律自動抓量到重量的 10%。
+        missing = [n for n in ("name", "price") if getattr(args, n) is None]
         if missing:
             print(f"[錯誤] --barcode 有給的話，{missing} 也都要一起給（或乾脆不加 --barcode 走互動輸入）")
             return
-        tolerance = args.tolerance if args.tolerance is not None else round(args.weight * _AUTO_TOLERANCE_RATIO, 1)
+        result = _prompt_weight_and_tolerance(gauge, None)
+        if result is None:
+            print("已取消，沒有新增。")
+            return
+        weight, tolerance = result
         try:
             product = parse_product_row({
                 "barcode": args.barcode, "name": args.name, "unit_price": args.price,
-                "standard_weight_g": args.weight, "weight_tolerance_g": tolerance,
+                "standard_weight_g": weight, "weight_tolerance_g": tolerance,
             })
         except ValueError as exc:
             print(f"[錯誤] {exc}")
@@ -438,6 +453,73 @@ def cmd_export(db: DBManager, args, _gauge: Optional[WeightGauge] = None) -> Non
 
 
 # ----------------------------------------------------------------------
+# 會員
+# ----------------------------------------------------------------------
+# `DBManager` 早就寫好 get_member/list_members/upsert_member/delete_member，
+# 但兩支 CLI（本檔跟 database/db_manager.py）以前都沒有任何指令呼叫得到它們
+# ——結果資料庫裡能存在的會員只有 db_manager.py 裡寫死的兩筆測試會員，要登錄
+# 一張真的會員卡只能改原始碼重建資料庫，或自己開 sqlite3 下 SQL。這一組指令
+# 就是補這個洞。
+def cmd_member_list(db: DBManager, _args, _gauge: Optional[WeightGauge] = None) -> None:
+    members = db.list_members()
+    if not members:
+        print("（資料庫裡目前沒有任何會員）")
+        return
+    print(f"{'會員代碼':<20} 姓名")
+    print("-" * 40)
+    for m in members:
+        print(f"{m.member_id:<20} {m.name}")
+    print(f"\n共 {len(members)} 位會員")
+
+
+def cmd_member_add(db: DBManager, args, _gauge: Optional[WeightGauge] = None) -> None:
+    member_id = args.member_id or input(
+        f"會員代碼（可直接刷會員條碼；要能登入的話必須以 {_login_prefix()!r} 開頭）："
+    ).strip()
+    if not member_id:
+        print("已取消（沒有輸入會員代碼）。")
+        return
+    prefix = _login_prefix()
+    if prefix and not member_id.startswith(prefix):
+        print(
+            f"[警告] 這個代碼沒有 {prefix!r} 前綴，登入時會被狀態機判定成"
+            "「不是會員碼格式」而拒絕（見 core/cart_state_machine.py 的 _on_login）。"
+            "要改的話是改 config.json 的 state_machine.login_barcode_prefix。"
+        )
+    existing = db.get_member(member_id)
+    default_name = existing.name if existing else None
+    name = args.name or _prompt("姓名", default_name)
+    if not name:
+        print("已取消（沒有輸入姓名）。")
+        return
+    db.upsert_member(Member(member_id=member_id, name=name))
+    print(f"{'已更新' if existing else '已新增'}會員：{member_id}　{name}")
+
+
+def cmd_member_delete(db: DBManager, args, _gauge: Optional[WeightGauge] = None) -> None:
+    existing = db.get_member(args.member_id)
+    if existing is None:
+        print(f"[錯誤] 會員代碼 {args.member_id} 不在資料庫裡，沒有東西可以刪")
+        return
+    if not args.yes:
+        confirm = input(f"確定要刪除會員「{existing.name}」（{existing.member_id}）？輸入 y 確認：").strip().lower()
+        if confirm != "y":
+            print("已取消。")
+            return
+    db.delete_member(args.member_id)
+    print(f"已刪除會員：{args.member_id}　{existing.name}")
+
+
+def _login_prefix() -> str:
+    """會員條碼前綴，讀 config.json 的 state_machine.login_barcode_prefix。"""
+    try:
+        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f).get("state_machine", {}).get("login_barcode_prefix", "MEMBER-")
+    except Exception:  # noqa: BLE001 — 讀不到設定不該讓整支工具掛掉
+        return "MEMBER-"
+
+
+# ----------------------------------------------------------------------
 def _run_menu(db: DBManager, gauge: WeightGauge) -> None:
     while True:
         print(
@@ -448,6 +530,10 @@ def _run_menu(db: DBManager, gauge: WeightGauge) -> None:
             "4) 刪除商品\n"
             "5) 從 CSV 匯入\n"
             "6) 匯出成 CSV\n"
+            "--- 會員 ---\n"
+            "7) 列出所有會員\n"
+            "8) 新增／修改會員（會員條碼可直接刷）\n"
+            "9) 刪除會員\n"
             "0) 離開"
         )
         choice = input("請選擇：").strip()
@@ -456,10 +542,16 @@ def _run_menu(db: DBManager, gauge: WeightGauge) -> None:
         elif choice == "1":
             cmd_list(db, None)
         elif choice == "2":
-            cmd_add(db, argparse.Namespace(barcode=None, name=None, price=None, weight=None, tolerance=None), gauge)
+            try:
+                cmd_add(db, argparse.Namespace(barcode=None, name=None, price=None, weight=None, tolerance=None), gauge)
+            except WeightGaugeUnavailable as exc:
+                print(f"\n[錯誤] {exc}\n（其他不需要量重量的選項還是可以用）")
         elif choice == "3":
             barcode = input("要修改哪個條碼：").strip()
-            cmd_edit(db, argparse.Namespace(barcode=barcode), gauge)
+            try:
+                cmd_edit(db, argparse.Namespace(barcode=barcode), gauge)
+            except WeightGaugeUnavailable as exc:
+                print(f"\n[錯誤] {exc}\n（其他不需要量重量的選項還是可以用）")
         elif choice == "4":
             barcode = input("要刪除哪個條碼：").strip()
             cmd_delete(db, argparse.Namespace(barcode=barcode, yes=False))
@@ -469,6 +561,13 @@ def _run_menu(db: DBManager, gauge: WeightGauge) -> None:
         elif choice == "6":
             path = input("要匯出到哪個檔案路徑：").strip()
             cmd_export(db, argparse.Namespace(csv_path=path))
+        elif choice == "7":
+            cmd_member_list(db, None)
+        elif choice == "8":
+            cmd_member_add(db, argparse.Namespace(member_id=None, name=None))
+        elif choice == "9":
+            member_id = input("要刪除哪個會員代碼：").strip()
+            cmd_member_delete(db, argparse.Namespace(member_id=member_id, yes=False))
         else:
             print("看不懂這個選項，請輸入選單裡列出的數字。")
 
@@ -496,7 +595,6 @@ def _main() -> int:
     parser.add_argument("--db", default=None, help="資料庫路徑，預設 database/inventory.db")
     parser.add_argument("--port", default=serial_cfg["port"], help=f"秤重感測器 UART 連接埠（預設讀 config.json，目前是 {serial_cfg['port']!r}）")
     parser.add_argument("--baud", type=int, default=serial_cfg["baudrate"], help="UART 鮑率")
-    parser.add_argument("--no-scale", action="store_true", help="不嘗試連秤重感測器，重量欄位一律手動輸入公克數")
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("list", help="列出所有商品")
@@ -505,8 +603,6 @@ def _main() -> int:
     p_add.add_argument("--barcode")
     p_add.add_argument("--name")
     p_add.add_argument("--price", type=float)
-    p_add.add_argument("--weight", type=float, help="標準重量（公克）")
-    p_add.add_argument("--tolerance", type=float, help=f"容許誤差（公克）；不給的話自動抓 --weight 的 {_AUTO_TOLERANCE_RATIO*100:.0f}%%")
 
     p_edit = sub.add_parser("edit", help="修改一筆商品（互動輸入，Enter 保留原值）")
     p_edit.add_argument("barcode")
@@ -521,25 +617,46 @@ def _main() -> int:
     p_export = sub.add_parser("export", help="匯出成 CSV")
     p_export.add_argument("csv_path")
 
+    sub.add_parser("member-list", help="列出所有會員")
+
+    p_madd = sub.add_parser("member-add", help="新增／修改會員（不加參數走互動輸入，會員條碼可直接刷）")
+    p_madd.add_argument("--member-id")
+    p_madd.add_argument("--name")
+
+    p_mdel = sub.add_parser("member-delete", help="刪除會員")
+    p_mdel.add_argument("member_id")
+    p_mdel.add_argument("-y", "--yes", action="store_true", help="不詢問直接刪除")
+
     args = parser.parse_args()
     db = DBManager(args.db)
-    db.init_db(seed=True)  # 確保表存在；資料庫已經有資料的話 seed 不會覆蓋
+    # seed=False：只建表，不要灌測試資料。這支是「建立正式商品目錄」的後台，
+    # 之前寫 seed=True，結果每次對一個全新的資料庫開這支工具，就會先被塞進
+    # db_manager.py 裡那 5 筆假的測試商品（統一陽光豆漿、多力多滋…），自己加
+    # 的第一筆真商品變成第 6 筆，正式資料跟測試資料混在一起。
+    # 要測試資料的話，明確執行 `python3 -m database.db_manager --init`。
+    db.init_db(seed=False)
 
     gauge = WeightGauge(
         port=args.port, baudrate=args.baud,
         offset=serial_cfg["offset"], scale=serial_cfg["scale"],
-        disabled=args.no_scale,
     )
 
     handlers = {
         "list": cmd_list, "add": cmd_add, "edit": cmd_edit, "delete": cmd_delete,
         "import": cmd_import, "export": cmd_export,
+        "member-list": cmd_member_list, "member-add": cmd_member_add,
+        "member-delete": cmd_member_delete,
     }
     try:
         if args.command is None:
             _run_menu(db, gauge)
         else:
             handlers[args.command](db, args, gauge)
+    except WeightGaugeUnavailable as exc:
+        # 秤連不上是「這次操作做不成」，不是程式壞掉——印乾淨的原因就好，
+        # 不要吐一整串 traceback 讓人以為是 bug。
+        print(f"\n[錯誤] {exc}\n")
+        return 1
     finally:
         gauge.close()
     return 0

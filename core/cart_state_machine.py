@@ -74,12 +74,13 @@ Phase 4：購物流程狀態機——「底層架構的支持」，負責保障�
     真的秤重硬體（跟 core/odometry_engine.py 的測試哲學一致）。
 
 用法（本機互動模擬整套流程，不需要真實硬體）：
-    python3 -m core.cart_state_machine --simulate
+    這支沒有 CLI——它是純邏輯模組，沒有硬體、也沒有互動入口。要在真實硬體上
+    跑完整流程請用 `tools/run_real_hardware_flow.py`（終端機）或
+    `ui/app_gui.py`（觸控畫面）。
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import time
@@ -93,7 +94,6 @@ from core.cart_manager import CartManager
 logger = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
-
 
 # ----------------------------------------------------------------------
 # 狀態常數（沿用專案既有風格：用字串常數而不是 enum.Enum，
@@ -159,7 +159,6 @@ ALERT_LOGOUT_REJECTED_SESSION_NOT_CLOSED = "logout_rejected_session_not_closed"
 ALERT_FORCE_LOGOUT_WITH_ITEMS = "force_logout_with_items_abandoned"
 ALERT_UNEXPECTED_EVENT = "unexpected_event_for_state"
 
-
 # ----------------------------------------------------------------------
 # 事件——每一種外部輸入各自一個 dataclass（不是共用一個 type+payload 的通用
 # event），好處是型別檢查跟可讀性都比較好，跟專案裡 UartPacket/PositionEstimate
@@ -171,16 +170,13 @@ class LoginScanned:
     member_id: str
     timestamp: float
 
-
 @dataclass
 class GateEntryDetected:
     timestamp: float
 
-
 @dataclass
 class GateExitDetected:
     timestamp: float
-
 
 @dataclass
 class ItemScanned:
@@ -192,27 +188,22 @@ class ItemScanned:
     barcode: str
     timestamp: float
 
-
 @dataclass
 class WeightSampleReceived:
     grams: float
     timestamp: float
 
-
 @dataclass
 class SensorDisconnected:
     timestamp: float
-
 
 @dataclass
 class SensorReconnected:
     timestamp: float
 
-
 @dataclass
 class LockForCheckoutRequested:
     timestamp: float
-
 
 @dataclass
 class PaymentConfirmed:
@@ -222,7 +213,6 @@ class PaymentConfirmed:
 
     timestamp: float
 
-
 @dataclass
 class RetryWeightCheckRequested:
     """WEIGHT_MISMATCH_ERROR 狀態下，使用者/店員確認要重新秤一次（例如剛剛
@@ -230,7 +220,6 @@ class RetryWeightCheckRequested:
     """
 
     timestamp: float
-
 
 @dataclass
 class VoidPendingItemRequested:
@@ -240,11 +229,9 @@ class VoidPendingItemRequested:
 
     timestamp: float
 
-
 @dataclass
 class LogoutRequested:
     timestamp: float
-
 
 @dataclass
 class ForceLogoutRequested:
@@ -256,7 +243,6 @@ class ForceLogoutRequested:
     timestamp: float
     reason: str = ""
 
-
 @dataclass
 class TimeoutTick:
     """驅動各種逾時檢查用的『目前時間』事件。不需要幫每個逾時各自開一條計時
@@ -266,7 +252,6 @@ class TimeoutTick:
     """
 
     now: float
-
 
 CartEvent = Union[
     LoginScanned,
@@ -285,14 +270,12 @@ CartEvent = Union[
     TimeoutTick,
 ]
 
-
 @dataclass
 class CartAlert:
     code: str
     severity: str
     message: str
     timestamp: float
-
 
 @dataclass
 class CartSession:
@@ -329,7 +312,6 @@ class CartSession:
 
     # 最近幾筆警告，方便 UI 直接顯示；完整歷史用 CartStateMachine.get_alerts()
     recent_alerts: List[CartAlert] = field(default_factory=list)
-
 
 class CartStateMachine:
     """整套購物流程的狀態機。process_event() 本身是純邏輯（除了呼叫
@@ -946,7 +928,6 @@ class CartStateMachine:
                 # 週期再提醒一次，而不是整段購物過程只警告一次就再也不提醒。
                 s.last_activity_at = now
 
-
 # ----------------------------------------------------------------------
 def load_state_machine_config() -> dict:
     """讀 config.json，把 CartStateMachine 需要的參數合併成一份扁平的 dict
@@ -963,140 +944,3 @@ def load_state_machine_config() -> dict:
     cfg["unscanned_change_timeout_sec"] = weight_cfg.get("unscanned_change_timeout_sec", 8.0)
     # 拿掉純註解欄位（前綴底線），避免混進來
     return {k: v for k, v in cfg.items() if not k.startswith("_")}
-
-
-# ----------------------------------------------------------------------
-# 互動模擬 CLI——閘門硬體、真實掃描器整合都還沒做，這裡讓使用者不需要任何
-# 硬體就能手動走一次「登入->進管制區->掃碼->秤重->鎖定->付款->出管制區->
-# 登出」的完整流程，驗證狀態機邏輯跟訊息是否合理（跟專案裡其他校正/驗證工
-# 具一樣的「先用假資料把流程跑通」哲學）。
-# ----------------------------------------------------------------------
-def _print_session(sm: "CartStateMachine") -> None:
-    s = sm.get_session()
-    print(f"\n--- 目前狀態：{s.state} ---")
-    print(f"會員：{s.member_id}　目前重量：{s.current_weight_g}　感測器連線：{s.sensor_connected}")
-    if s.pending_item_barcode:
-        print(
-            f"等待比對中：條碼={s.pending_item_barcode} 模式={s.pending_item_mode} "
-            f"預期變化={s.pending_item_expected_delta_g:+.1f}±{s.pending_item_tolerance_g:.1f}g "
-            f"基準={s.pending_item_baseline_g}"
-        )
-    if s.unscanned_baseline_g is not None:
-        print(
-            f"偵測到尚未掃碼的重量變化：基準={s.unscanned_baseline_g}g　"
-            f"開始時間={s.unscanned_change_started_at}"
-        )
-    items = sm.cart.list_items()
-    if items:
-        print("購物清單：")
-        for it in items:
-            print(f"  {it.name} x{it.quantity}　${it.subtotal:.0f}")
-        print(f"總計：${sm.cart.total_price():.0f}")
-    if s.recent_alerts:
-        print("最近警告：")
-        for a in s.recent_alerts[-3:]:
-            print(f"  [{a.severity}] {a.code}: {a.message}")
-
-
-def _run_simulation(db_path: Optional[str]) -> None:
-    db = DBManager(db_path)
-    db.init_db(seed=True)
-    cfg = load_state_machine_config()
-    sm = CartStateMachine(db=db, config=cfg)
-
-    sim_now = time.time()
-
-    menu = """
-可用指令：
-  1  登入（輸入會員代碼，測試資料：MEMBER-0001 / MEMBER-0002）
-  2  進入管制區
-  3  掃商品條碼（測試資料例如 4710018001234；加入/移除由系統自動判斷：
-     先掃碼再變重量＝加入，先變重量再掃碼＝移除，不用自己選模式）
-  5  回報秤重讀數（輸入目前公克數，模擬 HX711 換算後的值）
-  6  快轉時間（檢查逾時，輸入要快轉幾秒）
-  7  鎖定結帳
-  8  確認付款完成
-  9  走出管制區
- 10  登出
- 11  強制登出（工作人員，需輸入原因）
- 12  感測器斷線
- 13  感測器恢復
-  0  結束
-"""
-    print("=== Phase 4 購物流程狀態機互動模擬（不需要真實硬體）===")
-    print(menu)
-    _print_session(sm)
-
-    while True:
-        choice = input("\n輸入指令代號：").strip()
-        if choice == "0":
-            break
-        elif choice == "1":
-            member_id = input("會員代碼：").strip()
-            sm.process_event(LoginScanned(member_id=member_id, timestamp=sim_now))
-        elif choice == "2":
-            sm.process_event(GateEntryDetected(timestamp=sim_now))
-        elif choice == "3":
-            barcode = input("條碼：").strip()
-            sm.process_event(ItemScanned(barcode=barcode, timestamp=sim_now))
-        elif choice == "5":
-            grams = float(input("目前公克數：").strip())
-            sm.process_event(WeightSampleReceived(grams=grams, timestamp=sim_now))
-        elif choice == "6":
-            delta = float(input("快轉幾秒：").strip())
-            sim_now += delta
-            sm.process_event(TimeoutTick(now=sim_now))
-        elif choice == "7":
-            sm.process_event(LockForCheckoutRequested(timestamp=sim_now))
-        elif choice == "8":
-            sm.process_event(PaymentConfirmed(timestamp=sim_now))
-        elif choice == "9":
-            sm.process_event(GateExitDetected(timestamp=sim_now))
-        elif choice == "10":
-            sm.process_event(LogoutRequested(timestamp=sim_now))
-        elif choice == "11":
-            reason = input("原因：").strip()
-            sm.process_event(ForceLogoutRequested(timestamp=sim_now, reason=reason))
-        elif choice == "12":
-            sm.process_event(SensorDisconnected(timestamp=sim_now))
-        elif choice == "13":
-            sm.process_event(SensorReconnected(timestamp=sim_now))
-        else:
-            print(menu)
-            continue
-
-        if sm.get_session().state == STATE_WEIGHT_MISMATCH_ERROR:
-            print("(目前在秤重異常狀態，輸入 r 重試比對，或輸入 v 放棄這筆商品)")
-        _print_session(sm)
-
-        if sm.get_session().state == STATE_WEIGHT_MISMATCH_ERROR:
-            follow_up = input("r=重試 / v=放棄 / 直接按 Enter 跳過：").strip().lower()
-            if follow_up == "r":
-                sm.process_event(RetryWeightCheckRequested(timestamp=sim_now))
-                _print_session(sm)
-            elif follow_up == "v":
-                sm.process_event(VoidPendingItemRequested(timestamp=sim_now))
-                _print_session(sm)
-
-
-def _main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    parser = argparse.ArgumentParser(description="Phase 4 購物流程狀態機")
-    parser.add_argument("--simulate", action="store_true", help="啟動互動模擬（不需要真實硬體）")
-    parser.add_argument("--db", default=None, help="資料庫路徑，預設 database/inventory.db")
-    args = parser.parse_args()
-
-    if args.simulate:
-        _run_simulation(args.db)
-        return 0
-
-    print("目前只支援 --simulate 互動模擬。真實硬體整合（barcode_scanner/uart_receiver/"
-          "之後的 gate_sensor 產生事件餵進 CartStateMachine.process_event()）留給主程式"
-          "（main.py，Phase 5）串接。")
-    return 0
-
-
-if __name__ == "__main__":
-    import sys
-
-    sys.exit(_main())

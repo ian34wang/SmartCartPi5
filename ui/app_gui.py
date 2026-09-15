@@ -1,69 +1,63 @@
 """
 ui/app_gui.py
 
-Phase 5：把已經定案的 13 頁 UI 線框稿（`ui/templates/index.html`，由
-`design-cart-ui/*.dc.html` 組裝而成，功能接線跟視覺設計刻意分開處理）接上
-真正的 `core.cart_state_machine.CartStateMachine` + `database.db_manager.DBManager`
-+ `core.cart_manager.CartManager`，變成一支可以直接在 Pi 上執行的觸控應用。
+Phase 5：把 13 頁 UI（`ui/templates/index.html`，由 `tools/build_app_ui.py`
+從 `design-cart-ui/*.dc.html` 組裝而成）接上 `core.cart_state_machine`
++ `database.db_manager` + `core.cart_manager`，變成一支在 Pi 上執行的觸控應用。
 
-現在整套實體硬體（管制區閘門、真的觸控螢幕安裝好、UART 線都接上）還沒辦法
-組起來，所以這支程式內建一個「開發測試面板」（畫面右上角 🛠 圖示打開），把
-目前還沒有硬體來源的事件（閘門進出、秤重讀數、逾時檢查）改成用面板上的按
-鈕/輸入框手動觸發，讓你不用等硬體，先把「登入 -> 選擇飲食偏好精靈 -> 設定
-預算 -> 購物 -> 秤重異常處理 -> 結帳 -> 出場」這一整條 UI 邏輯 + 資料庫串接
-的路走通、找問題。
+================================================================
+單一實體路徑原則（2026-09-15 重構）
+================================================================
+這支程式**只走真實硬體，沒有任何模擬、退回或旁路**。三個裝置都是啟動時必須
+連上的硬性條件，任何一個接不上就直接印出原因並結束（exit 1），不會半殘地開起
+來讓人以為系統正常：
 
-USB 條碼掃描器例外——那個已經是 Phase 3/4 就實機測過的硬體，所以這裡直接
-接了真的（`drivers.barcode_scanner.BarcodeScanner`，開一個背景執行緒讀，見
-`_BarcodeScannerConsumer`），開機時會自動嘗試連線，接不到只印警告不會擋開
-機（也可以 `--no-scanner` 直接關掉這段，只用開發面板模擬）。之後閘門/秤重
-硬體真的接上時，也是同樣的接法：把對應的開發面板按鈕呼叫，換成
-`tools/run_real_hardware_flow.py` 那樣的真實 driver 事件來源即可——
-`CartStateMachine` 本身的介面完全不用改。
+    條碼掃描器  drivers/barcode_scanner.py（evdev 獨佔 /dev/input/event*）
+    秤重        drivers/uart_receiver.py 的 hx711_raw，經 core/weight_convert 換算
+    管制區閘門  drivers/ble_beacon_scanner.py + core/gate_monitor.py（BLE 雙 Beacon 差分）
 
-（如果刷了真的條碼卻「畫面沒反應、也沒有錯誤訊息」：先檢查條碼是不是根本
-不在 `database/db_manager.py` 的商品資料庫裡——資料庫目前只有出廠時寫死的
-5 筆測試商品，刷任何沒建檔的真實商品條碼，狀態機會判定為「查無此商品」，
-之前這支程式沒有把這種「被狀態機拒絕、但不是例外」的情況顯示出來，導致看
-起來像完全沒反應，這個顯示上的洞已經補上——現在會直接秀出錯誤訊息。要把真
-的商品建檔，用 `tools/product_admin.py`，見該檔案開頭說明。）
+會這樣訂，是因為之前每個裝置都有兩三種「接不到就退回模擬」的路徑（掃描器有
+evdev/鍵盤模式、秤重有展示模式、閘門有開發面板按鈕），結果是：出問題的時候
+第一件事不是查硬體，而是要先搞清楚自己現在到底走在哪一條路上，而且畫面會
+在硬體其實沒在運作的情況下看起來一切正常。寧可開不起來，也不要假裝正常。
 
-架構上刻意保持的分工：
+開發測試面板（畫面右上角 DEV）因此改成**唯讀的診斷面板**：顯示目前狀態機狀態、
+最近收到的條碼、秤重讀數、BLE 判定次數。沒有任何可以「製造」事件的按鈕。
+
+架構分工：
     - `Bridge`（本檔案）：pywebview 的 js_api 物件，只做「前端呼叫 -> 轉成
       `CartStateMachine` 事件 -> 組出前端要畫的完整畫面狀態（`_state_payload`）
-      再丟回去」，不含任何 UI 相關邏輯（畫面切換、選取樣式全部在
-      `ui/templates/index.html` 的 JS 裡做）。
+      再丟回去」，不含任何 UI 邏輯（畫面切換、選取樣式都在 index.html 的 JS）。
+    - 三個背景執行緒（`_BarcodeScannerConsumer`／`_UartWeightConsumer`／
+      `_GateConsumer`）把硬體事件餵進狀態機。這些是背景執行緒單方面發生的，
+      沒有對應的前端呼叫可以掛 .then()，所以由 Python 主動呼叫 JS 的
+      `APP.render()` 把最新狀態推過去（`Bridge._push_state()`）。
     - 前端未建模的「精靈式引導流程」（歡迎頁 -> 登入 -> 讀取個人化設定 ->
-      過敏原/飲食習慣/宗教飲食/預算 四步精靈）不是 `CartStateMachine` 本身
-      的狀態（那邊只有「未登入/已登入未進場/購物中/...」這種營運層級的狀
-      態），所以這裡用 `self._ui_stage` 另外疊一層「畫面還沒進到正式購物
-      流程之前，目前在精靈的哪一步」，等使用者完成預算設定、系統模擬「走
-      進管制區」（`GateEntryDetected`）之後，才正式交給狀態機的
-      `STATE_SHOPPING` 接手，`_ui_stage` 歸零。
+      過敏原/飲食/宗教/預算 四步）不是 `CartStateMachine` 的狀態（那邊只有
+      營運層級的狀態），所以用 `self._ui_stage` 另外疊一層。
 
-已知但這一版刻意不假裝做到的缺口（面板上對應功能會直接跳出「尚未串接
-（規劃中）」提示，不會靜悄悄地什麼都不做假裝成功）：
-    1. `database/db_manager.py` 的 `members` 表目前只有 member_id/name，沒
-       有欄位存過敏原/飲食習慣/預算/常購清單——所以 LoadingProfile 畫面
-       「情境 A：找到已儲存設定」這個分支目前查不到真資料，選 A 一樣會走
-       精靈重新問一次（並且會跳提示說明這件事），偏好精靈的結果目前只存在
-       這次執行的記憶體裡，程式關掉就不見，不會寫回資料庫。
-    2. Checkout 畫面「✕ 返回繼續選購」——狀態機沒有「解除鎖定」的事件（鎖
-       定後只能往付款走，或整台車強制重置），所以這顆按鈕先跳提示，不會
-       真的解鎖。
-    3. WeightAlert 畫面「重新校準歸零」「呼叫店員協助」、ExitConfirm 畫面
-       「取消本次結帳／需要協助」——都沒有對應的狀態機事件/店員通知系統，
-       一樣先跳提示。
+已知但這一版刻意不假裝做到的缺口（面板/按鈕會直接跳提示，不會靜悄悄地假裝成功）：
+    1. `members` 表只有 member_id/name，沒有欄位存過敏原/飲食/預算/常購清單
+       ——LoadingProfile 的「情境 A：找到已儲存設定」查不到真資料，選 A 一樣
+       會走精靈重問一次；精靈結果只存在這次執行的記憶體裡，關掉就不見。
+    2. Checkout 畫面「✕ 返回繼續選購」——狀態機沒有「解除鎖定」的事件。
+    3. WeightAlert 的「重新校準歸零」「呼叫店員協助」、ExitConfirm 的
+       「取消本次結帳／需要協助」——沒有對應的狀態機事件或店員通知系統。
 
 用法：
-    python3 -m ui.app_gui                    # 一般視窗，720x1280，會自動嘗試接實體條碼掃描器
-    python3 -m ui.app_gui --fullscreen        # 全螢幕（螢幕剛好是 720x1280 時建議）
-    python3 -m ui.app_gui --db /path/to/inventory.db
-    python3 -m ui.app_gui --scanner-hint USBKey   # 掃描器裝置名稱關鍵字跟預設值不一樣時指定
-    python3 -m ui.app_gui --no-scanner        # 不接實體掃描器，只用開發面板模擬掃描
+    python3 -m ui.app_gui                     # 三個硬體都要接好
+    python3 -m ui.app_gui --fullscreen        # 全螢幕（螢幕本身是 720x1280 時建議）
+    python3 -m ui.app_gui --db /path/to.db
+    python3 -m ui.app_gui --port /dev/ttyAMA0 --baud 115200
+    python3 -m ui.app_gui --scanner-hint USBKey      # 掃描器裝置名稱關鍵字
+    python3 -m ui.app_gui --adapter hci0             # 藍牙介面
+    python3 -m ui.app_gui --beacon-timeout 30        # 開機時等 Beacon 現身的秒數
 
-退出方式：畫面右上角 ✕ 按鈕（正常管道，不用重開終端機）；有接鍵盤的話 `Esc`
-鍵也可以；真的卡住的話另開一個終端機 `pkill -f ui.app_gui`。
+權限：evdev 要讀 /dev/input/event*，需要使用者在 input 群組裡（做一次就好）：
+    sudo usermod -aG input $USER     # 重新登入後生效
+藍牙如果打不開：sudo rfkill unblock bluetooth
+
+退出：畫面右上角 ✕ 按鈕，或鍵盤 Esc；真的卡住就另開終端機 `pkill -f ui.app_gui`。
 """
 
 from __future__ import annotations
@@ -72,14 +66,15 @@ import argparse
 import json
 import logging
 import os
+import queue
 import signal
 import threading
 import time
 from pathlib import Path
 from typing import List, Optional
 
-# 跟 tools/preview_ui.py 同樣的理由：WebKitGTK 在部分顯示環境（尤其遠端
-# VNC/螢幕分享）下硬體合成容易花屏，要在 import webview 之前設，晚了沒用。
+# 跟 WebKitGTK 有關：硬體合成在部分顯示環境（尤其遠端 VNC/螢幕分享）下容易
+# 花屏，要在 import webview 之前設，晚了沒用。
 os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
 
 from core.cart_manager import CartManager
@@ -105,25 +100,28 @@ from core.cart_state_machine import (
     STATE_LOGGED_IN_OUTSIDE_ZONE,
     STATE_SESSION_CLOSED,
     STATE_SHOPPING,
-    STATE_UNAUTHENTICATED,
     STATE_WEIGHT_MISMATCH_ERROR,
     TimeoutTick,
     VoidPendingItemRequested,
     WeightSampleReceived,
     load_state_machine_config,
 )
+from core.gate_monitor import GATE_CROSSING_ENTERING, GateMonitor
+from core.landmark_correction import load_landmark_config
+from core.weight_convert import raw_to_grams
 from database.db_manager import DBManager, Member
 
 logger = logging.getLogger(__name__)
 
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "index.html"
+_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
 SCREEN_W = 720
 SCREEN_H = 1280
 
-# 精靈各步驟的合法畫面代號，wizard_goto() 只接受這些，避免前端傳錯字串時
-# 悄悄把畫面切到一個 index.html 裡根本不存在的 #screen-xxx（那樣會變成整
-# 頁空白，而不是一個看得出來的錯誤）。
+# 精靈各步驟的合法畫面代號。wizard_goto() 只接受這些，避免前端傳錯字串時悄悄
+# 把畫面切到一個 index.html 裡根本不存在的 #screen-xxx（那會變成整頁空白，
+# 而不是一個看得出來的錯誤）。
 _WIZARD_STAGES = ("login", "loading_profile", "allergens", "diet", "religion", "budget")
 
 _ALLERGEN_OPTIONS = (
@@ -138,10 +136,9 @@ _GUEST_SUFFIX = "GUEST"
 
 
 class Bridge:
-    """pywebview 的 js_api 物件。每個 public 方法對應前端 `APP.callApi(name, ...)`
-    呼叫的其中一種；除了 `get_state()`/`quit()` 以外，每個方法最後都回傳
-    `self._state_payload()`，前端收到後直接拿來 `render()`，不需要另外再問
-    一次目前狀態。
+    """pywebview 的 js_api 物件。每個 public 方法對應前端一種
+    `APP.callApi(name, ...)` 呼叫；除了 `quit()` 以外都回傳
+    `self._state_payload()`，前端收到後直接 `render()`。
     """
 
     def __init__(self, db: DBManager, sm: CartStateMachine, window_holder: dict):
@@ -159,9 +156,14 @@ class Bridge:
 
         cfg = sm.cfg
         self._exit_timeout_sec = cfg.get("exit_timeout_after_checkout_sec", 180.0)
-        prefix = cfg.get("login_barcode_prefix", "MEMBER-")
+        self._login_prefix = cfg.get("login_barcode_prefix", "MEMBER-")
+        prefix = self._login_prefix
         self._guest_member_id = f"{prefix}{_GUEST_SUFFIX}" if prefix else _GUEST_SUFFIX
         self.db.upsert_member(Member(member_id=self._guest_member_id, name="訪客"))
+
+        # 診斷用計數器（唯讀診斷面板顯示）
+        self._last_scan: Optional[str] = None
+        self._gate_events = 0
 
     # ------------------------------------------------------------------
     # 內部工具
@@ -182,10 +184,10 @@ class Bridge:
             STATE_AWAITING_WEIGHT_INCREASE,
             STATE_AWAITING_WEIGHT_DECREASE,
             STATE_AWAITING_ITEM_SCAN,
+            # 精靈走完但還沒推進管制區。畫面停在購物主畫面，提示區會顯示
+            # 「等待進入管制區」——這是真實狀態，不是假裝已經開始購物。
+            STATE_LOGGED_IN_OUTSIDE_ZONE,
         ):
-            # 這三個「秤重比對中」的狀態在 UI 上都還是購物主畫面（掃碼/等待
-            # 放入放回的提示框是 Shopping 畫面內的一個區塊，見
-            # ui/templates/index.html 的 #f-pending-box-wrap），不是獨立畫面。
             return "shopping"
         if state == STATE_WEIGHT_MISMATCH_ERROR:
             return "weight_alert"
@@ -194,17 +196,13 @@ class Bridge:
         if state == STATE_AWAITING_EXIT:
             return "exit_confirm"
         if state == STATE_SESSION_CLOSED:
-            # 走出管制區後立刻幫使用者登出、清空這次工作階段，回到歡迎頁，
-            # 讓下一位使用者不用等——這一步 CartStateMachine 不會自己做
-            # （它只負責記錄「這一階段結束了」，重新開始要外部呼叫
-            # LogoutRequested，見檔案開頭 `_on_logout_requested` 的設計）。
+            # 走出管制區後立刻登出、清空這次工作階段，回到歡迎頁讓下一位使用
+            # 者不用等——CartStateMachine 不會自己做這件事（它只負責記錄「這
+            # 一階段結束了」，重新開始要外部送 LogoutRequested）。
             self.sm.process_event(LogoutRequested(timestamp=time.time()))
             self._reset_wizard_profile()
             self._ui_stage = "main"
             return "main"
-        # STATE_LOGGED_IN_OUTSIDE_ZONE / STATE_UNAUTHENTICATED 理論上都會被
-        # self._ui_stage 蓋掉（登入流程/精靈都還在 _ui_stage 範圍內），走到
-        # 這裡代表不預期的狀態，保守導回歡迎頁而不是讓前端拿到不存在的畫面。
         return "main"
 
     def _member_name(self) -> Optional[str]:
@@ -223,12 +221,10 @@ class Bridge:
         return f"{m:02d}:{sec:02d}"
 
     def _state_payload(self) -> dict:
-        # 順序很重要：_current_screen() 在偵測到 STATE_SESSION_CLOSED 時，
-        # 會順手觸發登出（清空購物車、重置成一個全新的 CartSession），所以
-        # 一定要先呼叫它把這個「畫面切換的副作用」做完，再去讀 session/購
-        # 物車快照——不然畫面欄位已經是新的一輪、但 sm_state/購物車欄位卻
-        # 還是登出前的舊資料，兩者對不起來，前端 render() 會拿到互相矛盾的
-        # payload。
+        # 順序很重要：_current_screen() 在偵測到 STATE_SESSION_CLOSED 時會順手
+        # 觸發登出（清空購物車、重置成全新的 CartSession），所以一定要先呼叫
+        # 它把這個「畫面切換的副作用」做完，再去讀 session/購物車快照——不然
+        # 畫面欄位已經是新的一輪、但 sm_state/購物車欄位還是登出前的舊資料。
         screen = self._current_screen()
         s = self.sm.get_session()
         items = self.sm.cart.list_items()
@@ -254,32 +250,55 @@ class Bridge:
             "unscanned_baseline_g": s.unscanned_baseline_g,
             "current_weight_g": s.current_weight_g,
             "sensor_connected": s.sensor_connected,
+            "has_weight_reading": s.current_weight_g is not None,
             "sm_state": s.state,
             "exit_countdown": self._exit_countdown(),
+            # 精靈做完了、但 BLE 還沒判定推車進入管制區
+            "awaiting_gate_entry": self._ui_stage is None and s.state == STATE_LOGGED_IN_OUTSIDE_ZONE,
+            # 唯讀診斷用
+            "last_scan": self._last_scan,
+            "gate_events": self._gate_events,
         }
 
-    def _apply(self, event) -> dict:
-        """送一個事件進狀態機，清掉上一次的錯誤訊息（每次操作都是全新的一
-        次嘗試，舊錯誤不該一直黏在畫面上），回傳最新的完整畫面狀態。
+    def _alert_marker(self):
+        """記住「呼叫狀態機之前，最新的一筆警告是哪一個物件」。
 
-        之前這裡只是單純呼叫 process_event() 就回傳畫面狀態，沒有檢查狀態機
-        內部是不是其實悄悄記了一筆警告（例如條碼掃到但資料庫查無此商品、狀
-        態不允許這個操作）——CartStateMachine 設計上「被拒絕的事件」不會拋
-        例外，只會呼叫 self._alert() 記一筆警告然後直接 return，畫面（跟這
-        支 Bridge）如果不主動去讀 get_alerts()，使用者就會看到「掃了條碼、
-        畫面完全沒反應、也沒有任何錯誤訊息」——這正是實際回報的症狀（多半是
-        因為刷到的是資料庫裡還沒建檔的真實商品條碼，觸發了
-        ALERT_UNKNOWN_BARCODE，但這裡沒把它秀出來）。現在改成比對呼叫前後
-        的警告筆數，有新警告就把最新一筆的訊息當成這次操作的結果顯示出來
-        （SEVERITY_INFO 等級的通常是「忽略了一個不影響流程的事件」之類的雜
-        訊，不到需要跳錯誤的程度，濾掉）。
+        為什麼不是單純記筆數：`CartStateMachine._alert()` 的歷史清單有上限
+        （預設 200 筆），滿了之後每新增一筆就從頭砍掉一筆，總長度固定不變
+        ——也就是說「呼叫後筆數有沒有變多」這種判斷法，在累積滿 200 筆之後
+        會永遠是 False，新的錯誤就再也不會被顯示出來，畫面又會退回「操作了
+        沒反應也沒錯誤」。一台整天開著的購物車跑滿 200 筆並不難。
+        """
+        alerts = self.sm.get_alerts()
+        return alerts[-1] if alerts else None
+
+    def _new_alert_since(self, marker):
+        """回傳這次呼叫新產生的最後一筆警告；沒有新警告則回傳 None。"""
+        alerts = self.sm.get_alerts()
+        if not alerts:
+            return None
+        return alerts[-1] if alerts[-1] is not marker else None
+
+    def _apply(self, event, surface_info: bool = False) -> dict:
+        """送一個事件進狀態機，回傳最新的完整畫面狀態。
+
+        `CartStateMachine` 設計上「被拒絕的事件」不會拋例外，只會記一筆警告然
+        後直接 return——所以這裡一定要主動比對前後的警告，把新的警告當成這次
+        操作的結果顯示出來，不然使用者會看到「操作了、畫面完全沒反應、也沒有
+        任何錯誤訊息」。
+
+        `surface_info`：預設只顯示 warning/critical，因為 INFO 等級大多是背景
+        事件被忽略的雜訊（例如在不相干的狀態收到一筆感測器事件），跳出來只會
+        干擾。但「使用者明確做了一個動作」的情況要設成 True——刷條碼就是典型：
+        在還沒進管制區、或上一筆還在比對中的時候刷條碼，狀態機只會記一筆 INFO
+        然後忽略，使用者眼中就是「刷了完全沒反應」，這正是要避免的情況。
         """
         self._last_error = None
-        before = len(self.sm.get_alerts())
+        marker = self._alert_marker()
         self.sm.process_event(event)
-        alerts = self.sm.get_alerts()
-        if len(alerts) > before and alerts[-1].severity != SEVERITY_INFO:
-            self._last_error = alerts[-1].message
+        new_alert = self._new_alert_since(marker)
+        if new_alert is not None and (surface_info or new_alert.severity != SEVERITY_INFO):
+            self._last_error = new_alert.message
         return self._state_payload()
 
     def _fail(self, message: str) -> dict:
@@ -287,12 +306,11 @@ class Bridge:
         return self._state_payload()
 
     def _push_state(self) -> None:
-        """背景執行緒（真的硬體掃描器/逾時計時器）觸發的狀態變化，前端不會
-        自己主動來問——一般操作是「使用者按按鈕 -> callApi() -> .then(render)」
-        這種一來一回，但硬體事件是背景執行緒單方面發生的，沒有對應的前端呼
-        叫可以掛 .then()，所以要反過來由 Python 主動呼叫 JS 的 APP.render()
-        把最新畫面狀態推過去。真的沒有視窗/頁面還沒載入完成時安靜跳過即可，
-        不是致命錯誤。
+        """背景執行緒（硬體）觸發的狀態變化，主動推給前端重畫。
+
+        一般操作是「使用者按按鈕 -> callApi() -> .then(render)」一來一回，但
+        硬體事件是背景執行緒單方面發生的，沒有對應的前端呼叫可以掛 .then()。
+        視窗還沒建立/頁面還沒載入完成時安靜跳過即可，不是致命錯誤。
         """
         window = self._window_holder.get("window")
         if window is None:
@@ -300,17 +318,14 @@ class Bridge:
         try:
             payload = json.dumps(self._state_payload(), ensure_ascii=False)
             window.evaluate_js(f"window.APP && window.APP.render({payload})")
-        except Exception:  # noqa: BLE001 — 背景執行緒，畫面推送失敗不該讓硬體執行緒整個掛掉
+        except Exception:  # noqa: BLE001 — 背景執行緒，推送失敗不該讓硬體執行緒掛掉
             logger.exception("推送畫面狀態到前端失敗")
 
     # ------------------------------------------------------------------
-    # 畫面本身狀態查詢
+    # 畫面狀態查詢
     # ------------------------------------------------------------------
     def get_state(self) -> dict:
         return self._state_payload()
-
-    def toast(self, message: str) -> dict:  # 目前只有前端自己呼叫 APP.toast()，備用
-        return self._fail(message)
 
     # ------------------------------------------------------------------
     # 歡迎頁 / 登入
@@ -325,23 +340,20 @@ class Bridge:
         member_id = (member_id or "").strip()
         if not member_id:
             return self._fail("請輸入會員代碼")
-        now = time.time()
-        before = self.sm.get_session().state
-        self.sm.process_event(LoginScanned(member_id=member_id, timestamp=now))
-        after = self.sm.get_session()
-        if after.state == before and after.state != STATE_LOGGED_IN_OUTSIDE_ZONE:
-            # 狀態沒變代表登入被狀態機拒絕了（格式不對／查無會員），最近一
-            # 筆警告的訊息就是原因，直接秀給使用者看，不用自己重複判斷。
-            alerts = self.sm.get_alerts()
-            reason = alerts[-1].message if alerts else "登入失敗，請確認會員代碼"
-            return self._fail(reason)
+        marker = self._alert_marker()
+        self.sm.process_event(LoginScanned(member_id=member_id, timestamp=time.time()))
+        new_alert = self._new_alert_since(marker)
+        if new_alert is not None:
+            # `_on_login()` 登入成功時不會產生任何警告，所以「有新警告」就等於
+            # 被拒絕（條碼格式不對／查無會員／已經有人登入著）。訊息沿用狀態機
+            # 寫好的原因，不要在這裡重複判斷一次規則。
+            return self._fail(new_alert.message)
         self._ui_stage = "loading_profile"
         return self._state_payload()
 
     def continue_as_guest(self) -> dict:
         self._last_error = None
-        now = time.time()
-        self.sm.process_event(LoginScanned(member_id=self._guest_member_id, timestamp=now))
+        self.sm.process_event(LoginScanned(member_id=self._guest_member_id, timestamp=time.time()))
         self._ui_stage = "loading_profile"
         return self._state_payload()
 
@@ -350,7 +362,7 @@ class Bridge:
         if choice == "A":
             self._last_error = (
                 "目前資料庫還沒有欄位可以存過敏原／飲食習慣／預算等個人化設定"
-                "（member 資料表只有代碼跟姓名），所以找不到「已儲存的設定」，"
+                "（members 資料表只有代碼跟姓名），所以找不到「已儲存的設定」，"
                 "先照精靈重新設定一次——這次設定一樣只會留在這次購物，不會存起來"
             )
         else:
@@ -406,41 +418,11 @@ class Bridge:
             if budget < 0:
                 return self._fail("預算不能是負數")
             self._budget = budget
-        # 精靈完成，模擬「推車走進管制區」正式進入購物狀態——真的閘門硬體接
-        # 上後，這一段要換成 tools/run_real_hardware_flow.py 那種由真實閘門
-        # 感測事件觸發，而不是設完預算就自動觸發。
-        now = time.time()
-        self.sm.process_event(GateEntryDetected(timestamp=now))
+        # 精靈到此結束。**不會**在這裡自己觸發進場——進入管制區是由真的 BLE
+        # 雙 Beacon 判定的（見 _GateConsumer），這裡只是把畫面交給購物主畫面，
+        # 狀態機仍然停在「已登入、未進管制區」，畫面會顯示等待提示。
         self._ui_stage = None
         return self._state_payload()
-
-    # ------------------------------------------------------------------
-    # 開發測試面板：模擬硬體事件
-    # ------------------------------------------------------------------
-    def simulate_item_scan(self, barcode: str) -> dict:
-        barcode = (barcode or "").strip()
-        if not barcode:
-            return self._fail("請輸入條碼")
-        return self._apply(ItemScanned(barcode=barcode, timestamp=time.time()))
-
-    def simulate_weight(self, grams: str) -> dict:
-        try:
-            g = float(grams)
-        except (TypeError, ValueError):
-            return self._fail(f"重量看不懂：{grams!r}，請輸入數字")
-        return self._apply(WeightSampleReceived(grams=g, timestamp=time.time()))
-
-    def simulate_timeout(self) -> dict:
-        return self._apply(TimeoutTick(now=time.time()))
-
-    def simulate_sensor_disconnect(self) -> dict:
-        return self._apply(SensorDisconnected(timestamp=time.time()))
-
-    def simulate_sensor_reconnect(self) -> dict:
-        return self._apply(SensorReconnected(timestamp=time.time()))
-
-    def simulate_gate_exit(self) -> dict:
-        return self._apply(GateExitDetected(timestamp=time.time()))
 
     # ------------------------------------------------------------------
     # 結帳 / 秤重異常
@@ -461,7 +443,7 @@ class Bridge:
     # 重置 / 結束程式
     # ------------------------------------------------------------------
     def force_logout(self, reason: str = "") -> dict:
-        self._apply(ForceLogoutRequested(timestamp=time.time(), reason=reason or "開發測試面板手動重置"))
+        self._apply(ForceLogoutRequested(timestamp=time.time(), reason=reason or "工作人員手動重置"))
         self.sm.cart.clear()
         self._reset_wizard_profile()
         self._ui_stage = "main"
@@ -473,32 +455,70 @@ class Bridge:
             window.destroy()
 
     # ------------------------------------------------------------------
-    # 真實硬體：USB 條碼掃描器
+    # 硬體事件入口（都由背景執行緒呼叫，結果一律用 _push_state() 推給畫面）
     # ------------------------------------------------------------------
-    def on_hardware_barcode(self, code: str, login_prefix: str) -> None:
-        """背景執行緒（見 `_BarcodeScannerConsumer`）收到真的掃描器掃到的一
-        筆條碼時呼叫。跟開發面板的差異只有「條碼分類」這一步（判斷是會員碼
-        還是商品碼）——分類完之後直接借用 login()/simulate_item_scan() 既有
-        邏輯，錯誤/警告的呈現方式完全一致，不用另外寫一套。這裡沒有回傳
-        值，因為呼叫方是背景執行緒，不是前端的 callApi()，結果一律用
-        `_push_state()` 主動推給畫面。
+    def on_hardware_barcode(self, code: str) -> None:
+        """實體 USB 條碼掃描器掃到一組條碼。
+
+        分類規則跟 `tools/run_real_hardware_flow.py` 的 `classify_barcode()`
+        一致：開頭符合 config.json 的 `state_machine.login_barcode_prefix`
+        就是會員碼，否則當商品條碼。
         """
         code = (code or "").strip()
         if not code:
             return
-        if login_prefix and code.startswith(login_prefix):
+        self._last_scan = code
+        if self._login_prefix and code.startswith(self._login_prefix):
             self.login(code)
         else:
-            self.simulate_item_scan(code)
+            # surface_info=True：刷條碼是使用者明確做的動作，任何被拒絕的原因
+            # 都要講出來，包含狀態機只記 INFO 的那幾種（還沒進管制區、上一筆
+            # 秤重比對還沒完成）。
+            self._apply(ItemScanned(barcode=code, timestamp=time.time()), surface_info=True)
+        self._push_state()
+
+    def on_weight_sample(self, grams: float) -> None:
+        """真實 UART/HX711 每收到一筆換算好的公克數就呼叫這裡。
+
+        注意這裡「不會」每筆都推畫面——HX711 是 20Hz 連續送值，每筆都推會讓畫
+        面每秒重畫 20 次（閃爍）。只有真的造成狀態變化或新警告（也就是比對成
+        功／比對失敗）才推。
+        """
+        before_state = self.sm.get_session().state
+        marker = self._alert_marker()
+        self.sm.process_event(WeightSampleReceived(grams=grams, timestamp=time.time()))
+        new_alert = self._new_alert_since(marker)
+        if self.sm.get_session().state != before_state or new_alert is not None:
+            if new_alert is not None and new_alert.severity != SEVERITY_INFO:
+                self._last_error = new_alert.message
+            self._push_state()
+
+    def on_gate_crossing(self, crossing: str) -> None:
+        """BLE 雙 Beacon 判定出一次門口穿越（見 `core/gate_monitor.py`）。"""
+        self._gate_events += 1
+        now = time.time()
+        if crossing == GATE_CROSSING_ENTERING:
+            self._apply(GateEntryDetected(timestamp=now))
+        else:
+            self._apply(GateExitDetected(timestamp=now))
+        self._push_state()
+
+    def on_sensor_connection_changed(self, connected: bool) -> None:
+        """UART 封包斷流/恢復。"""
+        now = time.time()
+        if connected:
+            self._apply(SensorReconnected(timestamp=now))
+        else:
+            self._apply(SensorDisconnected(timestamp=now))
         self._push_state()
 
 
 # ----------------------------------------------------------------------
+# 背景執行緒
+# ----------------------------------------------------------------------
 class _TimeoutTicker(threading.Thread):
-    """背景執行緒，大約每秒送一次 TimeoutTick，讓「掃碼後一直沒偵測到對應
-    重量變化」「重量變了卻忘記掃碼」「結帳付款後太久沒走出管制區」這些逾時
-    判斷即使沒人手動按開發面板的「手動觸發一次逾時檢查」也會照時間自動觸
-    發，行為跟 tools/run_real_hardware_flow.py 的 timeout_ticker 一致。
+    """大約每秒送一次 TimeoutTick，讓「掃碼後一直沒偵測到對應重量變化」「重量
+    變了卻忘記掃碼」「付款後太久沒走出管制區」這些逾時判斷照時間自動觸發。
     """
 
     def __init__(self, bridge: "Bridge", stop_event: threading.Event):
@@ -511,91 +531,263 @@ class _TimeoutTicker(threading.Thread):
             time.sleep(1.0)
             try:
                 before_state = self.bridge.sm.get_session().state
-                before_alerts = len(self.bridge.sm.get_alerts())
+                marker = self.bridge._alert_marker()
                 self.bridge.sm.process_event(TimeoutTick(now=time.time()))
                 after = self.bridge.sm.get_session()
-                # 大部分 tick 什麼事都不會發生（還沒到逾時門檻），沒必要每秒
-                # 都往前端推一次一模一樣的畫面狀態（螢幕分秒閃爍、還可能打斷
-                # 使用者正在開發面板輸入框打字打到一半）——只有真的觸發了狀
-                # 態變化或新警告（逾時判定成立）才推。ExitConfirm 頁面的倒數
-                # 計時另外用前端自己的 payload.exit_countdown 字串顯示，不
-                # 需要靠這裡每秒推播。
-                if after.state != before_state or len(self.bridge.sm.get_alerts()) > before_alerts:
+                new_alert = self.bridge._new_alert_since(marker)
+                # 大部分 tick 什麼事都不會發生，沒必要每秒都推一次一模一樣的
+                # 畫面狀態。ExitConfirm 的倒數另外用前端自己的字串顯示。
+                if after.state != before_state or new_alert is not None:
+                    if new_alert is not None and new_alert.severity != SEVERITY_INFO:
+                        self.bridge._last_error = new_alert.message
                     self.bridge._push_state()
-            except Exception:  # noqa: BLE001 — 背景執行緒，不能讓例外悄悄吃掉整個 thread 卻沒人知道
+            except Exception:  # noqa: BLE001 — 背景執行緒，例外不能默默吃掉
                 logger.exception("TimeoutTicker 內發生未預期例外")
 
 
 class _BarcodeScannerConsumer(threading.Thread):
-    """背景執行緒：從真的 USB 條碼掃描器（`drivers.barcode_scanner.BarcodeScanner`）
-    讀出掃到的條碼，轉呼叫 `Bridge.on_hardware_barcode()`。這是之前這支程式
-    唯一還沒接上真實硬體的地方——開發面板的「模擬掃描」輸入框一直都有接
-    CartStateMachine，但實體掃描器本身完全沒有被讀取，所以刷真的商品條碼
-    會「沒有任何反應」，不是邏輯錯誤，是這段線路原本就還沒接。
-    """
+    """從實體 USB 條碼掃描器讀條碼，餵進 Bridge。"""
 
-    def __init__(self, bridge: "Bridge", scanner, login_prefix: str, stop_event: threading.Event):
+    def __init__(self, bridge: "Bridge", scanner, stop_event: threading.Event):
         super().__init__(name="BarcodeScannerConsumer", daemon=True)
         self.bridge = bridge
         self.scanner = scanner
-        self.login_prefix = login_prefix
         self.stop_event = stop_event
 
     def run(self) -> None:
-        import queue as _queue
-
         while not self.stop_event.is_set():
             try:
                 evt = self.scanner.out_queue.get(timeout=0.2)
-            except _queue.Empty:
+            except queue.Empty:
                 continue
             try:
-                self.bridge.on_hardware_barcode(evt.code, self.login_prefix)
-            except Exception:  # noqa: BLE001 — 背景執行緒，不能讓例外悄悄吃掉整個 thread 卻沒人知道
-                logger.exception("處理實體掃描器條碼時發生未預期例外（條碼：%s）", evt.code)
+                self.bridge.on_hardware_barcode(evt.code)
+            except Exception:  # noqa: BLE001
+                logger.exception("處理條碼時發生未預期例外（條碼：%s）", evt.code)
+
+
+class _UartWeightConsumer(threading.Thread):
+    """讀真的 UART 封包（BNO080 + PMW3901 + HX711 三合一），把 hx711_raw 換算成
+    公克餵給狀態機，同時把 yaw_deg 餵給 GateMonitor 做門口判定的航向交叉驗證。
+
+    封包斷流超過 `stale_timeout` 就送一次 SensorDisconnected，恢復後再送
+    SensorReconnected，讓畫面上的感測器燈號跟著變。
+    """
+
+    def __init__(
+        self,
+        bridge: "Bridge",
+        uart,
+        gate_monitor: GateMonitor,
+        offset: float,
+        scale: float,
+        stale_timeout: float,
+        stop_event: threading.Event,
+    ):
+        super().__init__(name="UartWeightConsumer", daemon=True)
+        self.bridge = bridge
+        self.uart = uart
+        self.gate_monitor = gate_monitor
+        self.offset = offset
+        self.scale = scale
+        self.stale_timeout = stale_timeout
+        self.stop_event = stop_event
+
+    def run(self) -> None:
+        last_packet_time = time.time()
+        marked_disconnected = False
+        while not self.stop_event.is_set():
+            try:
+                packet = self.uart.out_queue.get(timeout=0.2)
+            except queue.Empty:
+                if time.time() - last_packet_time > self.stale_timeout and not marked_disconnected:
+                    marked_disconnected = True
+                    self.bridge.on_sensor_connection_changed(False)
+                continue
+            last_packet_time = time.time()
+            try:
+                if marked_disconnected:
+                    marked_disconnected = False
+                    self.bridge.on_sensor_connection_changed(True)
+                self.gate_monitor.update_heading(packet.yaw_deg)
+                self.bridge.on_weight_sample(raw_to_grams(packet.hx711_raw, self.offset, self.scale))
+            except Exception:  # noqa: BLE001
+                logger.exception("處理 UART 封包時發生未預期例外")
+
+
+class _GateConsumer(threading.Thread):
+    """把 BLE Beacon 的 RSSI 讀數餵進 GateMonitor，判定出穿越就通知 Bridge。"""
+
+    def __init__(self, bridge: "Bridge", scanner, gate_monitor: GateMonitor, stop_event: threading.Event):
+        super().__init__(name="GateConsumer", daemon=True)
+        self.bridge = bridge
+        self.scanner = scanner
+        self.gate_monitor = gate_monitor
+        self.stop_event = stop_event
+
+    def run(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                obs = self.scanner.out_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                crossing = self.gate_monitor.process_observation(obs.beacon_id, obs.rssi, obs.timestamp)
+                if crossing is not None:
+                    logger.info("門口判定：%s（%s RSSI=%d）", crossing, obs.beacon_id, obs.rssi)
+                    self.bridge.on_gate_crossing(crossing)
+            except Exception:  # noqa: BLE001
+                logger.exception("處理 BLE 觀測時發生未預期例外")
 
 
 # ----------------------------------------------------------------------
+def _fail(message: str) -> int:
+    """硬體接不上時統一的結束方式：印出原因、結束，不要半殘地開起來。"""
+    print(f"\n[錯誤] {message}\n")
+    return 1
+
+
 def _main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-    with open(Path(__file__).resolve().parent.parent / "config.json", "r", encoding="utf-8") as f:
+    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
         full_cfg = json.load(f)
+    serial_cfg = full_cfg.get("serial", {})
+    weight_cfg = full_cfg.get("weight", {})
     default_scanner_hint = full_cfg.get("barcode_scanner", {}).get("device_name_hint", "Barcode")
+    weight_offset = weight_cfg.get("hx711_offset", 0)
+    weight_scale = weight_cfg.get("hx711_scale", 1.0)
+    stale_timeout = full_cfg.get("uart_protocol", {}).get("stale_data_timeout_sec", 0.5)
 
-    parser = argparse.ArgumentParser(description="Phase 5：購物車觸控 UI 正式應用（無實體硬體時可用內建開發面板模擬）")
+    parser = argparse.ArgumentParser(
+        description="Phase 5：購物車觸控 UI（只走真實硬體，任一裝置接不上就不啟動）"
+    )
     parser.add_argument("--db", default=None, help="資料庫路徑，預設 database/inventory.db")
-    parser.add_argument("--fullscreen", action="store_true", help="全螢幕開啟（螢幕本身就是 720x1280 時建議加這個）")
-    parser.add_argument(
-        "--scanner-hint", default=default_scanner_hint,
-        help=f"USB 條碼掃描器的裝置名稱關鍵字（預設讀 config.json 的 barcode_scanner.device_name_hint，目前是 {default_scanner_hint!r}）",
-    )
-    parser.add_argument(
-        "--no-scanner", action="store_true",
-        help="不嘗試接實體條碼掃描器，只用畫面右上角開發面板的模擬掃描輸入框（例如在沒有接掃描器的電腦上先測 UI 邏輯時用）",
-    )
+    parser.add_argument("--fullscreen", action="store_true", help="全螢幕開啟（螢幕本身是 720x1280 時建議）")
+    parser.add_argument("--scanner-hint", default=default_scanner_hint,
+                        help=f"條碼掃描器裝置名稱關鍵字（預設讀 config.json，目前是 {default_scanner_hint!r}）")
+    parser.add_argument("--port", default=serial_cfg.get("port", "/dev/ttyAMA0"), help="UART 序列埠")
+    parser.add_argument("--baud", type=int, default=serial_cfg.get("baudrate", 115200), help="UART baudrate")
+    parser.add_argument("--adapter", default=None, help="藍牙介面名稱，預設用系統預設（通常 hci0）")
+    parser.add_argument("--beacon-timeout", type=float, default=20.0,
+                        help="開機時等門口 Beacon 出現的秒數，逾時就不啟動（預設 20）")
     args = parser.parse_args()
 
     if not _TEMPLATE_PATH.exists():
-        print(f"[錯誤] 找不到 {_TEMPLATE_PATH}，確認 ui/templates/index.html 有跟這支程式一起送過來")
-        return 1
+        return _fail(f"找不到 {_TEMPLATE_PATH}。用 `python3 tools/build_app_ui.py` 產生。")
 
     try:
         import webview
     except ImportError:
-        print(
-            "[錯誤] 沒有安裝 pywebview。先 `pip install pywebview`；"
+        return _fail(
+            "沒有安裝 pywebview。先 `pip install pywebview`；"
             "Pi 上如果啟動時說找不到 GTK/WebKit，再補裝："
             "`sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1`"
             "（找不到 4.1 這個套件名稱的話，改試 gir1.2-webkit2-4.0）"
         )
-        return 1
+
+    if weight_scale == 1.0:
+        print("[警告] config.json 的 weight.hx711_scale 還是 CALIBRATE_ME 佔位值，"
+              "秤重數字不準（流程可以測，數值不能信）。用 tools/calibrate_weight.py 校正。")
 
     db = DBManager(args.db)
-    db.init_db(seed=True)
+    db.init_db(seed=False)
+    if not db.list_products():
+        print("[提醒] 商品資料庫是空的，刷任何條碼都會顯示「查無此商品」。"
+              "用 `python3 -m tools.product_admin` 建檔。")
     sm_cfg = load_state_machine_config()
     sm = CartStateMachine(db=db, cart=CartManager(), config=sm_cfg)
 
+    landmark_cfg = load_landmark_config()
+    try:
+        gate_monitor = GateMonitor.from_config(landmark_cfg)
+    except ValueError as exc:
+        return _fail(f"門口 Beacon 設定不完整：{exc}")
+
+    # ------------------------------------------------------------------
+    # 三個硬體，任何一個接不上就不啟動
+    # ------------------------------------------------------------------
+    stop_event = threading.Event()
+    scanner = None
+    uart = None
+    ble = None
+
+    def _cleanup() -> None:
+        stop_event.set()
+        for dev in (scanner, uart, ble):
+            if dev is not None:
+                try:
+                    dev.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    # 1) 條碼掃描器
+    try:
+        from drivers.barcode_scanner import BarcodeScanner
+
+        scanner = BarcodeScanner(device_name_hint=args.scanner_hint, out_queue=queue.Queue())
+        scanner.start()
+        print(f"[1/3] 條碼掃描器已連上（裝置名稱關鍵字：{args.scanner_hint!r}）")
+    except Exception as exc:  # noqa: BLE001
+        _cleanup()
+        return _fail(
+            f"條碼掃描器連不上：{exc}\n"
+            "  1) 裝 evdev：pip install evdev\n"
+            "  2) 給讀取 /dev/input/event* 的權限（做一次就好）：sudo usermod -aG input $USER，重新登入生效\n"
+            "  3) 確認裝置名稱關鍵字：sudo python3 -m drivers.barcode_scanner --list"
+        )
+
+    # 2) UART（秤重 + 姿態）
+    try:
+        from drivers.uart_receiver import UartReceiver
+
+        uart = UartReceiver(port=args.port, baudrate=args.baud)
+        uart.start()
+        deadline = time.time() + 5.0
+        while time.time() < deadline and uart.out_queue.empty():
+            time.sleep(0.1)
+        if uart.out_queue.empty():
+            raise RuntimeError(f"序列埠開起來了，但 5 秒內沒有收到任何合法封包（{args.port}）")
+        print(f"[2/3] UART 已連上並收到封包（{args.port} @ {args.baud}）")
+    except Exception as exc:  # noqa: BLE001
+        _cleanup()
+        return _fail(
+            f"UART 秤重資料流連不上：{exc}\n"
+            "  1) 確認下位機有在送封包，且封包是 v2 格式（8 欄位，含 squal）\n"
+            f"  2) 確認 {args.port} 存在且有權限（通常要在 dialout 群組），或用 --port 指定\n"
+            "  3) 單獨測一次：python3 -m drivers.uart_receiver --port " + str(args.port)
+        )
+
+    # 3) BLE 門口 Beacon
+    try:
+        from drivers.ble_beacon_scanner import (
+            BleBeaconScanner,
+            load_beacon_identity_map,
+            load_beacon_ids,
+        )
+
+        ble = BleBeaconScanner(
+            beacon_ids=load_beacon_ids(),
+            address_map=load_beacon_identity_map(),
+            out_queue=queue.Queue(),
+            adapter=args.adapter,
+        )
+        ble.start()
+        ble.wait_for_beacons(
+            [gate_monitor.inside_beacon_id, gate_monitor.outside_beacon_id],
+            timeout_sec=args.beacon_timeout,
+        )
+        print(f"[3/3] 門口 Beacon 都掃到了。{gate_monitor.describe()}")
+    except Exception as exc:  # noqa: BLE001
+        _cleanup()
+        return _fail(
+            f"BLE 門口 Beacon 連不上：{exc}\n"
+            "  1) 藍牙有開嗎：sudo rfkill unblock bluetooth；systemctl status bluetooth\n"
+            "  2) 裝 bleak：pip install bleak\n"
+            "  3) 查實際位址/名稱：python3 -m drivers.ble_beacon_scanner --list"
+        )
+
+    # ------------------------------------------------------------------
     window_holder: dict = {"window": None}
     bridge = Bridge(db=db, sm=sm, window_holder=window_holder)
 
@@ -611,52 +803,26 @@ def _main() -> int:
     )
     window_holder["window"] = window
 
-    stop_event = threading.Event()
-    ticker = _TimeoutTicker(bridge, stop_event)
-
-    # 實體 USB 條碼掃描器：跟 tools/run_real_hardware_flow.py 一樣「失敗不
-    # 致命」——接不到掃描器（沒裝 evdev、找不到裝置、沒有讀取權限）只印警
-    # 告，UI 照樣可以開、開發面板的模擬掃描照樣能用，不會因為硬體還沒接好
-    # 就整支程式起不來。
-    scanner = None
-    scanner_thread = None
-    if not args.no_scanner:
-        try:
-            from drivers.barcode_scanner import BarcodeScanner
-            import queue as _queue
-
-            scanner = BarcodeScanner(device_name_hint=args.scanner_hint, out_queue=_queue.Queue())
-            scanner.start()
-            login_prefix = sm_cfg.get("login_barcode_prefix", "")
-            scanner_thread = _BarcodeScannerConsumer(bridge, scanner, login_prefix, stop_event)
-            print(f"已接上條碼掃描器（裝置名稱關鍵字：{args.scanner_hint!r}）")
-        except Exception as exc:  # noqa: BLE001 — 掃描器接不上不該讓整支 UI 起不來
-            print(
-                f"[警告] 沒有接上實體條碼掃描器（{exc}），畫面右上角開發面板的"
-                "模擬掃描輸入框還是能用。真的要用實體掃描器的話，先確認："
-                "1) 已安裝 evdev（pip install evdev）　"
-                "2) 有讀取 /dev/input/event* 的權限（sudo usermod -aG input $USER，重新登入生效，或直接用 sudo 跑）　"
-                "3) --scanner-hint 有對到掃描器的實際裝置名稱"
-                "（用 `sudo python3 -m drivers.barcode_scanner --list` 查）"
-            )
-            scanner = None
+    threads = [
+        _TimeoutTicker(bridge, stop_event),
+        _BarcodeScannerConsumer(bridge, scanner, stop_event),
+        _UartWeightConsumer(bridge, uart, gate_monitor, weight_offset, weight_scale, stale_timeout, stop_event),
+        _GateConsumer(bridge, ble, gate_monitor, stop_event),
+    ]
 
     def on_loaded():
-        ticker.start()
-        if scanner_thread is not None:
-            scanner_thread.start()
+        for t in threads:
+            t.start()
 
     window.events.loaded += on_loaded
 
-    # Esc 鍵跟畫面右上角 ✕ 按鈕都能正常退出（不用重開終端機）；Ctrl+C 在終
-    # 端機也要能乾淨結束（GTK 主迴圈預設會吃掉 SIGINT）。
+    # Esc 鍵跟畫面右上角 ✕ 按鈕都能正常退出；Ctrl+C 在終端機也要能乾淨結束
+    # （GTK 主迴圈預設會吃掉 SIGINT）。
     signal.signal(signal.SIGINT, lambda *_: window.destroy())
 
-    print(f"視窗大小 {SCREEN_W}x{SCREEN_H}，畫面右上角 🛠 開發面板 / ✕ 退出。")
+    print(f"\n三個硬體都就緒。視窗 {SCREEN_W}x{SCREEN_H}，右上角 DEV 診斷面板 / ✕ 退出。\n")
     webview.start()
-    stop_event.set()
-    if scanner is not None:
-        scanner.stop()
+    _cleanup()
     return 0
 
 

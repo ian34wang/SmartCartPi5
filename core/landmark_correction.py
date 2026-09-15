@@ -38,20 +38,17 @@ Beacon 附近時偵測到一個訊號峰值，就把 dead-reckoning 累積的座
    衰減，比單一 Beacon 的絕對 RSSI 閾值穩定（跟討論紀錄的結論一致）。
 
 這個檔案裡的東西全部是純邏輯（純函式/簡單的串流狀態物件，沒有任何 I/O），
-可以直接餵合成的 RSSI 數列做測試，不需要真的 BLE 硬體或 Beacon——跟這個
-專案其他模組（odometry_engine.py 用假封包測試、cart_state_machine.py 用
-假事件測試）一樣的哲學。真正掃描 BLE 廣播、把原始 RSSI 讀數餵進來，是
-drivers/ble_beacon_scanner.py 的責任（背景執行緒 + bleak 套件），目前這個
-環境沒有 BLE 硬體可以測，那支還沒寫、也還沒實測過，先不做（等這個檔案的
-邏輯定案、也有真的 Beacon 可以測之後再說）。
+沒有 CLI、也沒有互動模擬入口。
 
-用法（互動模擬，不需要真實硬體）：
-    python3 -m core.landmark_correction --simulate
+實際的資料流是：
+    drivers/ble_beacon_scanner.py   真的掃 BLE 廣播，產生一筆筆 RSSI 觀測
+        -> core/gate_monitor.py     每顆 Beacon 各自平滑、湊成一對餵進下面的
+                                    GateCrossingDetector，並用 IMU 航向交叉驗證
+        -> core/cart_state_machine  GateEntryDetected / GateExitDetected
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 from dataclasses import dataclass
@@ -77,26 +74,84 @@ class LandmarkPoint:
     x_mm: float
     y_mm: float
     label: str = ""
+    rssi_offset_db: float = 0.0
+    """這顆 Beacon 的 RSSI 校正偏移量，比較訊號強弱之前會先加上去。
+
+    為什麼需要：門口的差分判定假設「訊號比較強的那顆＝比較近的那顆」，但這
+    個假設只有在兩顆 Beacon 的實際發射功率/天線增益一樣時才成立。實測（2026-09-15，
+    兩顆不同廠牌的 Beacon）發現：車子明明離 OUTSIDE 只有 1.7m、離 INSIDE 有
+    3.6m，INSIDE 卻還比 OUTSIDE 強 6 dB——單看訊號強弱會得到完全相反的結論，
+    系統性偏差高達 12.5 dB。不校正的話出場判定永遠不會觸發。
+
+    用 `tools/calibrate_gate_beacons.py` 量出來後寫回 config.json。
+    """
 
 
 # ----------------------------------------------------------------------
 # 共用：RSSI 平滑
 # ----------------------------------------------------------------------
-def smooth_rssi(history: List[float], window: int = 5) -> float:
-    """對最近 window 筆原始 RSSI 讀數做移動中位數平滑，用來消除單筆突波
-    （室內多路徑反射造成的瞬間跳動）。history 是時間順序的原始讀數，取最後
-    window 筆算中位數；不足 window 筆時用目前有的全部樣本（開機/剛進入偵測
-    範圍時樣本還不夠多，用現有的先頂著，不要因為樣本不足就完全不給值）。
+RSSI_ESTIMATORS = ("p75", "p90", "median", "max", "mean")
+
+
+def smooth_rssi(history: List[float], window: int = 5, method: str = "p75") -> float:
+    """把最近 window 筆原始 RSSI 讀數壓成一個代表值，消除多路徑造成的抖動。
+
+    ## 為什麼預設不是中位數（2026-09-15 用實測資料改的）
+
+    一般在講「RSSI 要平滑」時直覺都是中位數或平均，但實測資料顯示這裡的雜訊
+    **是單邊的**，不是對稱的：
+
+        GATE-INSIDE   中位數 -64　往上最多 +1 dB（2 筆）　往下最多 -6 dB（5 筆）
+        GATE-OUTSIDE  中位數 -70　往上最多 +1 dB（11 筆）　往下最多 -6 dB（15 筆）
+
+    訊號很少突然「變強」，但常常突然「變弱」——這是多路徑破壞性干涉（deep fade）
+    的典型特徵：反射波跟直達波相位相反時會互相抵消。換句話說，**上包絡線（最強
+    的那幾筆）才接近真正的直達路徑，下面那些是被抵消掉的假訊號**。
+
+    中位數對「對稱雜訊」是好選擇，但對單邊雜訊反而會被下半部的 fade 拉著跑；
+    更糟的是當樣本呈現雙峰分布（一半正常、一半在 fade 中）時，中位數會在兩個
+    群之間跳來跳去。實測 window=5 時 GATE-INSIDE 的中位數殘餘標準差高達 2.29 dB，
+    是所有估計量裡最差的。
+
+    各估計量在「車子完全靜止」時的殘餘抖動（越小越好，window=5）：
+
+        估計量      INSIDE    OUTSIDE   較差的那個
+        mean         0.89      0.80       0.89
+        median       2.29      0.60       2.29   <- 最差
+        p75          0.00      0.53       0.53
+        p90          0.29      0.46       0.46   <- 最好
+        max          0.49      0.49       0.49
+
+    換算成「需要多大的 ΔRSSI 變化才可靠（3σ）」：median 要 7.1 dB、mean 要 3.6 dB、
+    **p75 只要 1.6 dB**。差了 4 倍以上——等於門口 Beacon 的間距可以放寬一倍多。
+
+    預設選 p75 而不是 p90/max 的理由：max 只看單一最強樣本，一筆假的高讀數就會
+    主導結果；p75 丟掉下面 75% 的 fade，但仍然用到 1/4 的樣本，單筆異常不會決定
+    結果，穩健性比較好。
+
+    method 可選 "p75"（預設）/"p90"/"median"/"max"/"mean"。
+    不足 window 筆時用目前有的全部樣本（剛進入偵測範圍時樣本還不夠多，
+    用現有的先頂著，不要因為樣本不足就完全不給值）。
     """
     if not history:
         raise ValueError("history 不能是空的")
-    recent = history[-window:]
-    sorted_vals = sorted(recent)
-    n = len(sorted_vals)
-    mid = n // 2
-    if n % 2 == 1:
-        return float(sorted_vals[mid])
-    return (sorted_vals[mid - 1] + sorted_vals[mid]) / 2.0
+    recent = sorted(history[-window:])
+    n = len(recent)
+
+    if method == "mean":
+        return sum(recent) / n
+    if method == "max":
+        return float(recent[-1])
+    if method == "median":
+        mid = n // 2
+        return float(recent[mid]) if n % 2 == 1 else (recent[mid - 1] + recent[mid]) / 2.0
+    if method in ("p75", "p90"):
+        q = 0.75 if method == "p75" else 0.90
+        k = (n - 1) * q
+        lo = int(k)
+        hi = min(lo + 1, n - 1)
+        return recent[lo] + (recent[hi] - recent[lo]) * (k - lo)
+    raise ValueError(f"不認得的 RSSI 估計量：{method!r}（可用：{RSSI_ESTIMATORS}）")
 
 
 # ----------------------------------------------------------------------
@@ -291,13 +346,19 @@ def load_landmark_config() -> dict:
         raw = json.load(f)
     cfg = raw.get("landmarks", {})
     points = [
-        LandmarkPoint(beacon_id=p["beacon_id"], x_mm=p["x_mm"], y_mm=p["y_mm"], label=p.get("label", ""))
+        LandmarkPoint(
+            beacon_id=p["beacon_id"], x_mm=p["x_mm"], y_mm=p["y_mm"],
+            label=p.get("label", ""), rssi_offset_db=p.get("rssi_offset_db", 0.0),
+        )
         for p in cfg.get("points", [])
     ]
     return {
         "points": points,
+        "rssi_offsets": {p.beacon_id: p.rssi_offset_db for p in points},
         "gate_beacon_pair": cfg.get("gate_beacon_pair", {}),
-        "rssi_smoothing_window": cfg.get("rssi_smoothing_window", 5),
+        "rssi_smoothing_sec": cfg.get("rssi_smoothing_sec", 0.8),
+        "rssi_estimator": cfg.get("rssi_estimator", "p75"),
+        "rssi_min_samples": cfg.get("rssi_min_samples", 2),
         "peak_min_rise_dbm": cfg.get("peak_min_rise_dbm", 3.0),
         "peak_min_rssi_dbm": cfg.get("peak_min_rssi_dbm"),
         "gate_hysteresis_dbm": cfg.get("gate_hysteresis_dbm", 2.0),
@@ -305,117 +366,5 @@ def load_landmark_config() -> dict:
         "gate_min_confirm_samples": cfg.get("gate_min_confirm_samples", 1),
         "gate_exit_yaw_deg": cfg.get("gate_exit_yaw_deg"),
         "gate_heading_tolerance_deg": cfg.get("gate_heading_tolerance_deg", 45.0),
+        "gate_max_sample_age_sec": cfg.get("gate_max_sample_age_sec", 5.0),
     }
-
-
-# ----------------------------------------------------------------------
-# 互動模擬 CLI——沒有真的 BLE 硬體/Beacon 可以測，這裡讓使用者手動輸入一串
-# RSSI 數值（模擬推車經過 Beacon 時訊號先升後降的過程），驗證峰值偵測跟門口
-# 雙 Beacon 方向判定的邏輯是否合理。
-# ----------------------------------------------------------------------
-def _run_peak_simulation(min_rise_dbm: float, min_peak_rssi_dbm: Optional[float], window: int) -> None:
-    detector = RssiPeakDetector(min_rise_dbm=min_rise_dbm, min_peak_rssi_dbm=min_peak_rssi_dbm)
-    history: List[float] = []
-    t = 0.0
-    print("=== 一般地標點峰值偵測模擬 ===")
-    print(f"（絕對門檻 min_peak_rssi_dbm={min_peak_rssi_dbm}：峰值不夠強會被忽略，試試看只晃到 -85 又降回去 vs. 真的靠近到 -60）")
-    print("依序輸入 RSSI 數值（dBm，例如 -80），模擬推車靠近再遠離 Beacon 的過程。輸入 q 結束。")
-    while True:
-        raw = input("RSSI: ").strip()
-        if raw.lower() == "q":
-            break
-        try:
-            rssi = float(raw)
-        except ValueError:
-            print("請輸入數字或 q")
-            continue
-        history.append(rssi)
-        smoothed = smooth_rssi(history, window=window)
-        t += 1.0
-        peak_ts = detector.add_sample(smoothed, t)
-        print(f"  平滑後={smoothed:.1f}dBm", end="")
-        if peak_ts is not None:
-            print(f"  >>> 偵測到峰值！觸發地標校正（t={peak_ts:.0f}）")
-        else:
-            print()
-
-
-def _run_gate_simulation(
-    hysteresis_dbm: float,
-    min_crossing_rssi_dbm: Optional[float],
-    min_confirm_samples: int,
-    window: int,
-) -> None:
-    detector = GateCrossingDetector(
-        hysteresis_dbm=hysteresis_dbm,
-        min_crossing_rssi_dbm=min_crossing_rssi_dbm,
-        min_confirm_samples=min_confirm_samples,
-    )
-    history_a: List[float] = []
-    history_b: List[float] = []
-    t = 0.0
-    print("=== 管制區門口雙 Beacon 方向判定模擬 ===")
-    print(f"（絕對門檻 min_crossing_rssi_dbm={min_crossing_rssi_dbm}，連續樣本數 min_confirm_samples={min_confirm_samples}）")
-    print("依序輸入 'A的RSSI B的RSSI'（例如 -70 -85），模擬推車通過門口。輸入 q 結束。")
-    while True:
-        raw = input("RSSI_A RSSI_B: ").strip()
-        if raw.lower() == "q":
-            break
-        parts = raw.split()
-        if len(parts) != 2:
-            print("請輸入兩個數字，用空格分開")
-            continue
-        try:
-            rssi_a, rssi_b = float(parts[0]), float(parts[1])
-        except ValueError:
-            print("請輸入數字或 q")
-            continue
-        history_a.append(rssi_a)
-        history_b.append(rssi_b)
-        smoothed_a = smooth_rssi(history_a, window=window)
-        smoothed_b = smooth_rssi(history_b, window=window)
-        t += 1.0
-        crossing = detector.add_sample(smoothed_a, smoothed_b, t)
-        print(f"  平滑後 A={smoothed_a:.1f} B={smoothed_b:.1f}", end="")
-        if crossing is not None:
-            print(f"  >>> 偵測到穿越！方向={crossing}（t={t:.0f}）")
-        else:
-            print()
-
-
-def _main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    parser = argparse.ArgumentParser(description="Phase 3/7 BLE 地標校正邏輯")
-    parser.add_argument("--simulate", choices=["peak", "gate"], help="互動模擬：peak=一般地標峰值偵測，gate=門口雙 Beacon 方向判定")
-    args = parser.parse_args()
-
-    try:
-        cfg = load_landmark_config()
-    except (OSError, json.JSONDecodeError):
-        cfg = {
-            "rssi_smoothing_window": 5,
-            "peak_min_rise_dbm": 3.0,
-            "peak_min_rssi_dbm": None,
-            "gate_hysteresis_dbm": 2.0,
-            "gate_min_crossing_rssi_dbm": None,
-            "gate_min_confirm_samples": 1,
-        }
-
-    if args.simulate == "peak":
-        _run_peak_simulation(cfg["peak_min_rise_dbm"], cfg["peak_min_rssi_dbm"], cfg["rssi_smoothing_window"])
-    elif args.simulate == "gate":
-        _run_gate_simulation(
-            cfg["gate_hysteresis_dbm"],
-            cfg["gate_min_crossing_rssi_dbm"],
-            cfg["gate_min_confirm_samples"],
-            cfg["rssi_smoothing_window"],
-        )
-    else:
-        print("請指定 --simulate peak 或 --simulate gate")
-    return 0
-
-
-if __name__ == "__main__":
-    import sys
-
-    sys.exit(_main())

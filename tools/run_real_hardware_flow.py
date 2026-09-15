@@ -1,45 +1,37 @@
 """
 tools/run_real_hardware_flow.py
 
-從 Phase 3 之後就沒有在實機上跑過整條流程了——這支就是用來補這件事的：把
-目前「有真實硬體」的部分（UART：BNO080 yaw + PMW3901 光流 + HX711 秤重、
-USB 條碼掃描器）跟「還沒有硬體」的部分（管制區閘門、鎖定/付款/登出這些目
-前只能靠 UI 按鈕觸發、UI 本身要 Phase 5 才會做）接起來，讓你可以在真的推
-車上測試「掃碼->秤重比對->…」這條路走不走得順，不用等閘門硬體或觸控 UI
-做出來才能測。
+純終端機的實機整合測試：把三個真實硬體同時接上 `CartStateMachine`，在真的推車
+上跑完整流程，不需要觸控 UI。跟 `ui/app_gui.py` 是同一套硬體、同一套狀態機，
+差別只在這支沒有畫面、而且會順便印出 Phase 3 的定位座標——站在推車旁邊一邊推
+一邊看數字時比較方便。
 
-具體接法：
-    - `drivers.uart_receiver.UartReceiver`（真的 UART port）收到的每一筆
-      封包，同時餵給 `core.odometry_engine.OdometryEngine`（更新位置，讓你
-      也能順便看 Phase 3 dead-reckoning 現在準不準）跟換算成公克數餵給
-      `core.cart_state_machine.CartStateMachine` 的 `WeightSampleReceived`
-      （這是秤重比對邏輯第一次真的接上實機數據，之前只有 `--simulate` 用
-      假數字測過）。
-    - `drivers.barcode_scanner.BarcodeScanner`（真的 USB 掃描器）掃到的每
-      一組條碼，依 `config.json` 的 `state_machine.login_barcode_prefix`
-      自動判斷是「登入」還是「商品掃碼」，餵進狀態機——這也是第一次真的用
-      實體掃描器觸發狀態機，不是打字模擬。加入/移除不用手動切換模式，狀態
-      機會自動用「掃碼跟重量變化的先後順序」判斷：先掃碼再變重量＝加入
-      （原本就有的流程），先變重量（拿起來/放進去）再掃碼＝移除；如果重
-      量變了卻一直沒補掃碼，狀態機會在逾時後自動報「只做一半」的錯誤。
-    - 閘門進出、鎖定結帳、付款完成、登出這幾個目前沒有硬體/UI 來源的事件，
-      用終端機打字模擬（跟 `core.cart_state_machine --simulate` 同一套指
-      令，只是跟真實資料流同時跑），輸入單一字元就好，不用打整行指令，這
-      樣手在推車旁邊操作時比較方便。
+    UART        BNO080 yaw + PMW3901 光流 + HX711 秤重（drivers/uart_receiver.py）
+    條碼掃描器  USB HID，evdev 獨佔（drivers/barcode_scanner.py）
+    管制區閘門  BLE 雙 Beacon 差分（drivers/ble_beacon_scanner.py + core/gate_monitor.py）
+
+**三個硬體都是硬性條件，任何一個接不上就直接結束，沒有模擬或退回路徑。**
+之前這支有 `--no-scanner`、鍵盤模擬閘門進出等旁路，結果是出問題時要先搞清楚
+自己走在哪一條路上，而且畫面/終端機會在硬體其實沒在運作的情況下看起來正常。
+
+還是用鍵盤輸入的，只有「本來就該由人操作」的那幾個動作——鎖定結帳、確認付款、
+登出、工作人員強制登出、秤重異常時重試/放棄。這些在正式產品裡是觸控螢幕上的
+按鈕（見 ui/app_gui.py），不是硬體感測器，所以在這支純終端機工具裡用鍵盤代替
+是它原本的介面，不是旁路。
 
 用法：
     python3 -m tools.run_real_hardware_flow
     python3 -m tools.run_real_hardware_flow --port /dev/ttyAMA0 --barcode-hint USBKey
 
 執行中輸入以下單一字元指令（Enter 送出）：
-    e = 模擬進入管制區          x = 模擬走出管制區
     l = 鎖定結帳                p = 確認付款完成
     o = 登出                    f = 強制登出（工作人員）
     r = 秤重異常時重試比對        v = 秤重異常時放棄這筆商品
     s = 印出目前完整狀態          q = 結束
-真正的登入/商品掃碼直接刷條碼即可，不用打字，加入/移除也不用切換模式（見
-上方說明，狀態機自動判斷）；秤重比對是背景自動用真實 HX711 數據跑的，不
-用手動觸發。
+
+登入/商品掃碼直接刷條碼；進出管制區直接推車通過門口（BLE 自動判定）；秤重比對
+背景自動用真實 HX711 數據跑。加入/移除不用切換模式，狀態機會自己依「掃碼跟重量
+變化的先後順序」判斷。
 """
 
 from __future__ import annotations
@@ -76,7 +68,14 @@ from core.cart_state_machine import (
 from core.odometry_engine import OdometryEngine
 from core.weight_convert import raw_to_grams
 from database.db_manager import DBManager
+from core.gate_monitor import GATE_CROSSING_ENTERING, GateMonitor
+from core.landmark_correction import load_landmark_config
 from drivers.barcode_scanner import BarcodeEvent, BarcodeScanner
+from drivers.ble_beacon_scanner import (
+    BleBeaconScanner,
+    load_beacon_identity_map,
+    load_beacon_ids,
+)
 from drivers.uart_receiver import UartPacket, UartReceiver
 
 logger = logging.getLogger(__name__)
@@ -150,13 +149,18 @@ def _main() -> int:
     weight_scale = cfg.get("weight", {}).get("hx711_scale", 1.0)
     stale_timeout = uart_stale_timeout_sec(cfg)
 
-    parser = argparse.ArgumentParser(description="Phase 3+4 實機整合流程測試（真實 UART+條碼掃描器，手動模擬閘門/結帳事件）")
+    parser = argparse.ArgumentParser(
+        description="實機整合流程測試（真實 UART + 條碼掃描器 + BLE 閘門，任一接不上就不啟動）"
+    )
     parser.add_argument("--port", default=default_port)
     parser.add_argument("--baud", type=int, default=default_baud)
     parser.add_argument("--px-to-mm", type=float, default=default_px_to_mm)
     parser.add_argument("--min-squal", type=int, default=0)
     parser.add_argument("--barcode-hint", default=default_barcode_hint)
     parser.add_argument("--db", default=None)
+    parser.add_argument("--adapter", default=None, help="藍牙介面名稱，預設用系統預設（通常 hci0）")
+    parser.add_argument("--beacon-timeout", type=float, default=20.0,
+                        help="開機時等門口 Beacon 出現的秒數，逾時就不啟動（預設 20）")
     args = parser.parse_args()
 
     if args.px_to_mm == 1.0:
@@ -172,15 +176,54 @@ def _main() -> int:
 
     odometry = OdometryEngine(px_to_mm=args.px_to_mm, min_squal=args.min_squal)
 
-    uart = UartReceiver(port=args.port, baudrate=args.baud)
+    landmark_cfg = load_landmark_config()
     try:
-        scanner = BarcodeScanner(device_name_hint=args.barcode_hint)
-    except RuntimeError as exc:
-        print(f"[錯誤] 條碼掃描器無法啟動：{exc}")
-        print("（如果只是想先測秤重/定位那段，可以先註解掉 scanner 相關部分——但正常應該接得到）")
+        gate_monitor = GateMonitor.from_config(landmark_cfg)
+    except ValueError as exc:
+        print(f"[錯誤] 門口 Beacon 設定不完整：{exc}")
         return 1
 
+    uart = UartReceiver(port=args.port, baudrate=args.baud)
+    scanner = None
+    ble = None
     stop_event = threading.Event()
+
+    def _cleanup() -> None:
+        stop_event.set()
+        for dev in (uart, scanner, ble):
+            if dev is not None:
+                try:
+                    dev.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    try:
+        scanner = BarcodeScanner(device_name_hint=args.barcode_hint)
+    except Exception as exc:  # noqa: BLE001
+        print(f"\n[錯誤] 條碼掃描器連不上：{exc}")
+        print("  1) pip install evdev　2) sudo usermod -aG input $USER（重新登入生效）")
+        print("  3) 查裝置名稱：sudo python3 -m drivers.barcode_scanner --list\n")
+        return 1
+
+    try:
+        ble = BleBeaconScanner(
+            beacon_ids=load_beacon_ids(),
+            address_map=load_beacon_identity_map(),
+            out_queue=queue.Queue(),
+            adapter=args.adapter,
+        )
+        ble.start()
+        ble.wait_for_beacons(
+            [gate_monitor.inside_beacon_id, gate_monitor.outside_beacon_id],
+            timeout_sec=args.beacon_timeout,
+        )
+        print(f"BLE 門口 Beacon 都掃到了。{gate_monitor.describe()}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"\n[錯誤] BLE 門口 Beacon 連不上：{exc}")
+        print("  1) sudo rfkill unblock bluetooth　2) pip install bleak")
+        print("  3) 查實際位址/名稱：python3 -m drivers.ble_beacon_scanner --list\n")
+        _cleanup()
+        return 1
 
     # ------------------------------------------------------------------
     def uart_consumer() -> None:
@@ -199,6 +242,7 @@ def _main() -> int:
                 sm.process_event(SensorReconnected(timestamp=packet.timestamp))
                 sensor_marked_disconnected = False
             odometry.process_packet(packet)
+            gate_monitor.update_heading(packet.yaw_deg)
             grams = raw_to_grams(packet.hx711_raw, weight_offset, weight_scale)
             sm.process_event(WeightSampleReceived(grams=grams, timestamp=packet.timestamp))
 
@@ -213,6 +257,23 @@ def _main() -> int:
                 sm.process_event(LoginScanned(member_id=evt.code, timestamp=evt.timestamp))
             else:
                 sm.process_event(ItemScanned(barcode=evt.code, timestamp=evt.timestamp))
+            _print_status(sm, odometry)
+
+    def gate_consumer() -> None:
+        while not stop_event.is_set():
+            try:
+                obs = ble.out_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            crossing = gate_monitor.process_observation(obs.beacon_id, obs.rssi, obs.timestamp)
+            if crossing is None:
+                continue
+            now = time.time()
+            print(f"\n[門口] BLE 判定：{crossing}（{obs.beacon_id} RSSI={obs.rssi}）")
+            if crossing == GATE_CROSSING_ENTERING:
+                sm.process_event(GateEntryDetected(timestamp=now))
+            else:
+                sm.process_event(GateExitDetected(timestamp=now))
             _print_status(sm, odometry)
 
     def timeout_ticker() -> None:
@@ -230,10 +291,6 @@ def _main() -> int:
             if cmd == "q":
                 stop_event.set()
                 break
-            elif cmd == "e":
-                sm.process_event(GateEntryDetected(timestamp=now))
-            elif cmd == "x":
-                sm.process_event(GateExitDetected(timestamp=now))
             elif cmd == "l":
                 sm.process_event(LockForCheckoutRequested(timestamp=now))
             elif cmd == "p":
@@ -257,16 +314,16 @@ def _main() -> int:
     uart.start()
     scanner.start()
 
-    threads = [
+    for t in (
         threading.Thread(target=uart_consumer, name="UartConsumer", daemon=True),
         threading.Thread(target=barcode_consumer, name="BarcodeConsumer", daemon=True),
+        threading.Thread(target=gate_consumer, name="GateConsumer", daemon=True),
         threading.Thread(target=timeout_ticker, name="TimeoutTicker", daemon=True),
-    ]
-    for t in threads:
+    ):
         t.start()
 
-    print(__doc__)
-    print(f"監聽 UART {args.port} @ {args.baud}、條碼掃描器（關鍵字 '{args.barcode_hint}'）...")
+    print(f"三個硬體都就緒：UART {args.port} @ {args.baud}、"
+          f"條碼掃描器（關鍵字 {args.barcode_hint!r}）、BLE 門口 Beacon。")
     _print_status(sm, odometry)
 
     try:
@@ -274,9 +331,7 @@ def _main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        stop_event.set()
-        uart.stop()
-        scanner.stop()
+        _cleanup()
 
     return 0
 

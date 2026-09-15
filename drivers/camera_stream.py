@@ -355,6 +355,11 @@ def _main() -> None:
         action="store_true",
         help="校正時不開預覽視窗（沒有 X11 畫面可用時加這個，例如純文字 SSH）",
     )
+    parser.add_argument(
+        "--color-test-output", default="color_test.png",
+        help="--color-test 拍下來的圖片存到哪（預設存在目前工作目錄的 color_test.png）。"
+             "注意 --output 是校正結果 .npz 的路徑，兩個是不同的東西，不要混用",
+    )
     parser.add_argument("--num-images", type=int, default=15)
     parser.add_argument("--board-cols", type=int, default=9, help="棋盤格內角點欄數")
     parser.add_argument("--board-rows", type=int, default=6, help="棋盤格內角點列數")
@@ -375,7 +380,7 @@ def _main() -> None:
         return
 
     if args.color_test:
-        run_color_test(output_path=Path("color_test.png"))
+        run_color_test(output_path=Path(args.color_test_output))
         return
 
     if args.preview:
