@@ -1,0 +1,1264 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SmartCart</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap');
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; background:#111; }
+  body { width:720px; height:1280px; margin:0 auto; font-family:'Kalam','Comic Sans MS',cursive; position:relative; overflow:hidden; }
+  .screen { display:none; position:absolute; inset:0; }
+  .screen.active { display:flex; }
+
+  /* 通用 checkbox/radio 視覺勾選（不依賴各畫面原本手畫的 SVG，統一用 CSS 畫） */
+  .chip.selected .box::after, .chip-row.selected .box::after { content:"✓"; color:#fff; font-weight:700; font-size:14px; }
+  .radio-row.selected .radio-dot::after { content:""; display:block; width:10px; height:10px; border-radius:50%; background:#fff; }
+  .opt-selected { background:#1a1a1a !important; color:#fff !important; }
+  .pay-btn.selected { background:#1a1a1a !important; color:#fff !important; }
+
+  /* 全域工具列：退出 / 開發測試面板開關，疊在所有畫面最上層 */
+  #app-toolbar { position:absolute; top:0; right:0; z-index:100000; display:flex; gap:6px; padding:6px; }
+  #app-toolbar button {
+    width:34px; height:34px; border-radius:50%; border:2px solid rgba(26,26,26,0.4);
+    background:rgba(253,252,249,0.6); font-size:16px; font-family:sans-serif; line-height:1;
+  }
+  #app-toolbar button:active { background:rgba(26,26,26,0.15); }
+
+  #f-global-error {
+    position:absolute; top:44px; left:12px; right:12px; z-index:99998;
+    background:#fff3f3; border:2px solid #b00020; color:#b00020; border-radius:8px;
+    padding:10px 14px; font-size:16px;
+  }
+  #f-global-error[hidden] { display:none; }
+
+  #f-toast {
+    position:absolute; left:50%; bottom:40px; transform:translateX(-50%); z-index:99999;
+    background:#1a1a1a; color:#fff; padding:12px 20px; border-radius:20px; font-size:16px;
+    max-width:80%; text-align:center; opacity:0; transition:opacity .2s;
+  }
+  #f-toast.show { opacity:1; }
+
+  /* 開發測試面板：真實硬體（掃描器/UART/閘門）還沒做好之前，用這裡模擬事件 */
+  #dev-panel {
+    position:absolute; top:0; left:0; right:0; bottom:0; z-index:99997;
+    background:rgba(20,20,20,0.94); color:#fff; padding:50px 20px 20px; overflow:auto;
+    font-family:'Kalam','Comic Sans MS',cursive;
+  }
+  #dev-panel[hidden] { display:none; }
+  #dev-panel h2 { font-size:20px; margin:18px 0 8px; border-bottom:1px dashed #666; padding-bottom:4px; }
+  #dev-panel h2:first-of-type { margin-top:0; }
+  #dev-panel .row { display:flex; gap:8px; margin-bottom:8px; align-items:center; flex-wrap:wrap; }
+  #dev-panel input { flex:1; min-width:120px; border:2px solid #666; border-radius:6px; padding:8px; font:inherit; background:#222; color:#fff; }
+  #dev-panel button { border:2px solid #888; border-radius:6px; padding:8px 12px; font:inherit; background:#333; color:#fff; }
+  #dev-panel button:active { background:#555; }
+  #dev-panel .state-dump { font-size:13px; color:#aaa; white-space:pre-wrap; word-break:break-all; margin-top:12px; }
+
+#screen-main 700&display=swap');
+    * { box-sizing: border-box; }
+#screen-main { margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+       flex-direction: column; overflow: hidden; }
+#screen-main .sysbar { display:flex; align-items:center; justify-content:space-between; padding:10px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+#screen-main .sysbar .row { display:flex; align-items:center; gap:8px; }
+#screen-main .center-stage { flex:1; min-height:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:36px; padding:0 48px; text-align:center; }
+#screen-main .title { font-size:48px; font-weight:700; line-height:1.3; margin:0; }
+#screen-main .hint-row { display:flex; align-items:center; gap:14px; color:#555; font-size:22px; border-top:2px dashed #1a1a1a; border-bottom:2px dashed #1a1a1a; padding:22px 0; width:100%; justify-content:center; }
+#screen-main .btn-big { border:3px solid #1a1a1a; border-radius:10px; padding:28px 56px; font-size:32px; font-family:inherit; background:#1a1a1a; color:#fff; cursor:pointer; }
+#screen-main .footer { padding:18px 26px; border-top:2px dashed #1a1a1a; font-size:19px; color:#555; text-align:center; }
+#screen-login 700&display=swap');
+    * { box-sizing: border-box; }
+#screen-login { margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+       flex-direction: column; overflow: hidden; }
+#screen-login .sysbar { display:flex; align-items:center; justify-content:space-between; padding:10px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+#screen-login .sysbar .row { display:flex; align-items:center; gap:8px; }
+#screen-login .titlebar { padding:16px 22px 0; font-size:22px; }
+#screen-login .center-stage { flex:1; min-height:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:30px; padding:0 48px; text-align:center; }
+#screen-login .title { font-size:38px; font-weight:700; margin:0; }
+#screen-login .scan-frame { position:relative; width:340px; height:340px; }
+#screen-login .corner { position:absolute; width:44px; height:44px; border:5px solid #1a1a1a; }
+#screen-login .tl { top:0; left:0; border-right:none; border-bottom:none; }
+#screen-login .tr { top:0; right:0; border-left:none; border-bottom:none; }
+#screen-login .bl { bottom:0; left:0; border-right:none; border-top:none; }
+#screen-login .br { bottom:0; right:0; border-left:none; border-top:none; }
+#screen-login .scan-label { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:23px; color:#666; }
+#screen-login .waiting { font-size:23px; color:#555; }
+#screen-login .divider-text { display:flex; align-items:center; gap:16px; width:100%; color:#888; font-size:19px; }
+#screen-login .divider-text::before, #screen-login .divider-text::after { content:""; flex:1; border-top:2px dashed #ccc; }
+#screen-login .btn-dashed { border:2.5px dashed #1a1a1a; border-radius:8px; padding:16px 28px; font-size:22px; font-family:inherit; background:#fff; }
+#screen-login .footnote { max-width:520px; font-size:18px; color:#777; line-height:1.6; }
+#screen-loading_profile 700&display=swap');
+    * { box-sizing: border-box; }
+#screen-loading_profile { margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+       flex-direction: column; overflow: hidden; }
+#screen-loading_profile .sysbar { display:flex; align-items:center; justify-content:space-between; padding:10px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+#screen-loading_profile .sysbar .row { display:flex; align-items:center; gap:8px; }
+#screen-loading_profile .badge-new { border:2px solid #1a1a1a; border-radius:6px; padding:3px 9px; font-size:15px; font-weight:700; margin-left:auto; }
+#screen-loading_profile .titlebar { padding:16px 22px 0; font-size:22px; display:flex; align-items:center; }
+#screen-loading_profile .center-stage { flex:1; min-height:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px; padding:0 46px; }
+#screen-loading_profile .member-name { font-size:30px; font-weight:700; }
+#screen-loading_profile .checklist { width:100%; max-width:480px; border:2.5px solid #1a1a1a; border-radius:10px; padding:6px 20px; }
+#screen-loading_profile .check-row { display:flex; align-items:center; gap:12px; padding:14px 0; font-size:21px; border-bottom:1.5px dashed #ddd; }
+#screen-loading_profile .check-row:last-child { border-bottom:none; }
+#screen-loading_profile .check-circle { width:26px; height:26px; border-radius:50%; border:2.5px solid #1a1a1a; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+#screen-loading_profile .branch-wrap { width:100%; max-width:520px; display:flex; flex-direction:column; gap:14px; margin-top:6px; }
+#screen-loading_profile .branch { border:2px dashed #999; border-radius:10px; padding:14px 18px; font-size:18px; color:#555; }
+#screen-loading_profile .branch-title { font-weight:700; color:#1a1a1a; margin-bottom:4px; font-size:19px; }
+#screen-loading_profile .branch-cta { display:inline-block; margin-top:8px; border:2px solid #1a1a1a; border-radius:8px; padding:8px 16px; font-size:18px; color:#1a1a1a; }
+#screen-allergens 700&display=swap');
+    * { box-sizing: border-box; }
+#screen-allergens { margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+       flex-direction: column; overflow: hidden; }
+#screen-allergens .sysbar { display:flex; align-items:center; justify-content:space-between; padding:10px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+#screen-allergens .sysbar .row { display:flex; align-items:center; gap:8px; }
+#screen-allergens .wizard-head { padding:18px 22px 14px; border-bottom:2px dashed #1a1a1a; }
+#screen-allergens .wizard-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+#screen-allergens .wizard-title { font-size:26px; font-weight:700; }
+#screen-allergens .skip-link { font-size:17px; color:#777; border:1.5px dashed #999; border-radius:6px; padding:6px 12px; }
+#screen-allergens .steps { display:flex; gap:8px; }
+#screen-allergens .step-dot { flex:1; height:6px; border-radius:3px; background:#ddd; }
+#screen-allergens .step-dot.done { background:#1a1a1a; }
+#screen-allergens .step-label { font-size:16px; color:#777; margin-top:6px; }
+#screen-allergens .content { flex:1; min-height:0; padding:20px 22px; overflow:auto; }
+#screen-allergens .content-sub { font-size:17px; color:#777; margin-bottom:14px; }
+#screen-allergens .chip-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:16px; }
+#screen-allergens .chip { border:2.5px solid #1a1a1a; border-radius:12px; padding:30px 10px; font-size:26px; text-align:center; display:flex; align-items:center; justify-content:center; gap:10px; }
+#screen-allergens .chip .box { width:24px; height:24px; border:2px solid #1a1a1a; border-radius:4px; flex-shrink:0; display:flex; align-items:center; justify-content:center; }
+#screen-allergens .chip.selected { background:#1a1a1a; color:#fff; }
+#screen-allergens .chip.selected .box { border-color:#fff; }
+#screen-allergens .footer-cta { padding:18px 22px; border-top:2px dashed #1a1a1a; display:flex; gap:12px; }
+#screen-allergens .btn { flex:1; border:2.5px solid #1a1a1a; border-radius:10px; padding:16px; font-size:22px; font-family:inherit; text-align:center; }
+#screen-allergens .btn-primary { background:#1a1a1a; color:#fff; }
+#screen-diet 700&display=swap');
+    * { box-sizing: border-box; }
+#screen-diet { margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+       flex-direction: column; overflow: hidden; }
+#screen-diet .sysbar { display:flex; align-items:center; justify-content:space-between; padding:10px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+#screen-diet .sysbar .row { display:flex; align-items:center; gap:8px; }
+#screen-diet .wizard-head { padding:18px 22px 14px; border-bottom:2px dashed #1a1a1a; }
+#screen-diet .wizard-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+#screen-diet .wizard-title { font-size:26px; font-weight:700; }
+#screen-diet .skip-link { font-size:17px; color:#777; border:1.5px dashed #999; border-radius:6px; padding:6px 12px; }
+#screen-diet .steps { display:flex; gap:8px; }
+#screen-diet .step-dot { flex:1; height:6px; border-radius:3px; background:#ddd; }
+#screen-diet .step-dot.done { background:#1a1a1a; }
+#screen-diet .step-label { font-size:16px; color:#777; margin-top:6px; }
+#screen-diet .content { flex:1; min-height:0; padding:20px 22px; overflow:auto; }
+#screen-diet .content-sub { font-size:17px; color:#777; margin-bottom:14px; }
+#screen-diet .radio-list { display:flex; flex-direction:column; gap:14px; }
+#screen-diet .radio-row { border:2.5px solid #1a1a1a; border-radius:10px; padding:22px 20px; font-size:24px; display:flex; align-items:center; gap:16px; }
+#screen-diet .radio-row.selected { background:#1a1a1a; color:#fff; }
+#screen-diet .radio-dot { width:22px; height:22px; border-radius:50%; border:2px solid #1a1a1a; flex-shrink:0; display:flex; align-items:center; justify-content:center; }
+#screen-diet .radio-row.selected .radio-dot { border-color:#fff; }
+#screen-diet .radio-dot .fill { width:11px; height:11px; border-radius:50%; background:#fff; }
+#screen-diet .radio-sub { font-size:16px; opacity:0.75; margin-top:2px; }
+#screen-diet .footer-cta { padding:18px 22px; border-top:2px dashed #1a1a1a; display:flex; gap:12px; }
+#screen-diet .btn { flex:1; border:2.5px solid #1a1a1a; border-radius:10px; padding:16px; font-size:22px; font-family:inherit; text-align:center; }
+#screen-diet .btn-primary { background:#1a1a1a; color:#fff; }
+#screen-religion 700&display=swap');
+    * { box-sizing: border-box; }
+#screen-religion { margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+       flex-direction: column; overflow: hidden; }
+#screen-religion .sysbar { display:flex; align-items:center; justify-content:space-between; padding:10px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+#screen-religion .sysbar .row { display:flex; align-items:center; gap:8px; }
+#screen-religion .wizard-head { padding:18px 22px 14px; border-bottom:2px dashed #1a1a1a; }
+#screen-religion .wizard-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+#screen-religion .wizard-title { font-size:26px; font-weight:700; }
+#screen-religion .skip-link { font-size:17px; color:#777; border:1.5px dashed #999; border-radius:6px; padding:6px 12px; }
+#screen-religion .steps { display:flex; gap:8px; }
+#screen-religion .step-dot { flex:1; height:6px; border-radius:3px; background:#ddd; }
+#screen-religion .step-dot.done { background:#1a1a1a; }
+#screen-religion .step-label { font-size:16px; color:#777; margin-top:6px; }
+#screen-religion .content { flex:1; min-height:0; padding:20px 22px; overflow:auto; }
+#screen-religion .content-sub { font-size:17px; color:#777; margin-bottom:14px; }
+#screen-religion .chip-list { display:flex; flex-direction:column; gap:16px; }
+#screen-religion .chip-row { border:2.5px solid #1a1a1a; border-radius:10px; padding:24px 22px; font-size:24px; display:flex; align-items:center; gap:16px; }
+#screen-religion .chip-row.selected { background:#1a1a1a; color:#fff; }
+#screen-religion .box { width:24px; height:24px; border:2px solid #1a1a1a; border-radius:4px; flex-shrink:0; display:flex; align-items:center; justify-content:center; }
+#screen-religion .chip-row.selected .box { border-color:#fff; }
+#screen-religion .chip-sub { font-size:18px; opacity:0.7; margin-top:4px; }
+#screen-religion .footer-cta { padding:18px 22px; border-top:2px dashed #1a1a1a; display:flex; gap:12px; }
+#screen-religion .btn { flex:1; border:2.5px solid #1a1a1a; border-radius:10px; padding:16px; font-size:22px; font-family:inherit; text-align:center; }
+#screen-religion .btn-primary { background:#1a1a1a; color:#fff; }
+#screen-budget 700&display=swap');
+    * { box-sizing: border-box; }
+#screen-budget { margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+       flex-direction: column; overflow: hidden; }
+#screen-budget .sysbar { display:flex; align-items:center; justify-content:space-between; padding:10px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+#screen-budget .sysbar .row { display:flex; align-items:center; gap:8px; }
+#screen-budget .wizard-head { padding:18px 22px 14px; border-bottom:2px dashed #1a1a1a; }
+#screen-budget .wizard-title { font-size:26px; font-weight:700; margin-bottom:6px; }
+#screen-budget .step-label { font-size:16px; color:#777; }
+#screen-budget .content { flex:1; min-height:0; padding:26px 22px; overflow:auto; }
+#screen-budget .content-sub { font-size:18px; color:#666; margin-bottom:18px; line-height:1.6; }
+#screen-budget .grid2 { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:18px; }
+#screen-budget .opt { border:2.5px solid #1a1a1a; border-radius:12px; padding:34px 10px; font-size:28px; text-align:center; }
+#screen-budget .opt-selected { background:#1a1a1a; color:#fff; }
+#screen-budget .custom-row { margin-top:18px; display:flex; align-items:center; gap:10px; font-size:21px; }
+#screen-budget .custom-input { flex:1; border:2px dashed #1a1a1a; border-radius:8px; padding:14px; text-align:center; }
+#screen-budget .footer-cta { padding:20px 22px; border-top:2px dashed #1a1a1a; display:flex; gap:12px; }
+#screen-budget .btn { flex:1; border:2.5px solid #1a1a1a; border-radius:10px; padding:18px; font-size:24px; font-family:inherit; text-align:center; }
+#screen-budget .btn-primary { background:#1a1a1a; color:#fff; }
+#screen-shopping 700&display=swap');
+    * { box-sizing: border-box; }
+#screen-shopping { margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+       flex-direction: column; overflow: hidden; }
+#screen-shopping .sysbar { display:flex; align-items:center; justify-content:space-between; padding:8px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+#screen-shopping .sysbar .row { display:flex; align-items:center; gap:8px; }
+#screen-shopping .statusbar { padding:12px 22px; border-bottom:2px dashed #1a1a1a; font-size:19px; }
+#screen-shopping .statusbar-row1 { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+#screen-shopping .progress-track { width:100%; height:14px; border:2px solid #1a1a1a; border-radius:7px; overflow:hidden; background:#fff; }
+#screen-shopping .progress-fill { height:100%; width:52%; background:repeating-linear-gradient(45deg,#1a1a1a,#1a1a1a 6px,#fff 6px,#fff 10px); }
+#screen-shopping .statusbar-row2 { display:flex; align-items:center; justify-content:space-between; margin-top:8px; font-size:17px; color:#444; }
+#screen-shopping .sensor-chip { display:flex; align-items:center; gap:5px; border:1.5px solid #1a1a1a; border-radius:12px; padding:3px 10px; }
+#screen-shopping .scroll-body { flex:1; min-height:0; overflow:hidden; display:flex; flex-direction:column; }
+#screen-shopping .section { padding:16px 22px; border-bottom:2px dashed #1a1a1a; }
+#screen-shopping .section-title { font-size:27px; font-weight:700; margin:0 0 12px; display:flex; align-items:center; gap:8px; }
+#screen-shopping .hint-line { font-size:16px; color:#777; margin-bottom:12px; line-height:1.5; }
+#screen-shopping .mode-badge { display:inline-flex; align-items:center; gap:6px; border:2px solid #1a1a1a; border-radius:20px; padding:6px 16px; font-size:20px; font-weight:700; margin-bottom:8px; }
+#screen-shopping .mode-badge.remove { background:#1a1a1a; color:#fff; }
+#screen-shopping .pending-box { border:2.5px solid #1a1a1a; border-radius:10px; padding:16px; margin-bottom:12px; }
+#screen-shopping .pending-line { font-size:21px; margin:4px 0; }
+#screen-shopping .pulse-row { display:flex; align-items:center; gap:8px; margin-top:8px; font-size:17px; color:#444; }
+#screen-shopping .pulse-dot { width:10px; height:10px; border-radius:50%; border:2px solid #1a1a1a; }
+#screen-shopping .warn-box { border:2.5px solid #1a1a1a; border-radius:8px; padding:12px 14px; margin-top:10px; display:flex; align-items:flex-start; gap:10px; font-size:19px; font-weight:700; }
+#screen-shopping .warn-sub { font-weight:400; font-size:16px; color:#555; margin-top:2px; }
+#screen-shopping .item-row { display:flex; align-items:center; justify-content:space-between; padding:9px 0; font-size:20px; border-bottom:1px dashed #ddd; }
+#screen-shopping .item-row:last-child { border-bottom:none; }
+#screen-shopping .item-tag { font-size:16px; border:1.5px solid #1a1a1a; border-radius:10px; padding:1px 10px; margin-left:6px; }
+#screen-shopping .bottomnav { display:flex; border-top:2px dashed #1a1a1a; background:#fdfcf9; }
+#screen-shopping .navitem { flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; padding:10px 2px 12px; font-size:18px; color:#777; }
+#screen-shopping .navitem svg { stroke:#777; }
+#screen-shopping .navitem.active { color:#1a1a1a; font-weight:700; }
+#screen-shopping .navitem.active svg { stroke:#1a1a1a; }
+#screen-shopping .nav-badge { position:relative; }
+#screen-shopping .nav-dot { position:absolute; top:-2px; right:-4px; width:8px; height:8px; border-radius:50%; background:#1a1a1a; }
+#screen-navigation 700&display=swap');
+    * { box-sizing: border-box; }
+#screen-navigation { margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+       flex-direction: column; overflow: hidden; }
+#screen-navigation .sysbar { display:flex; align-items:center; justify-content:space-between; padding:8px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+#screen-navigation .sysbar .row { display:flex; align-items:center; gap:8px; }
+#screen-navigation .searchbar { display:flex; align-items:center; justify-content:space-between; padding:16px 22px; border-bottom:2px dashed #1a1a1a; gap:12px; }
+#screen-navigation .search-input { flex:1; display:flex; align-items:center; gap:10px; border:2px solid #1a1a1a; border-radius:20px; padding:10px 16px; font-size:20px; color:#777; }
+#screen-navigation .close-btn { border:2px dashed #1a1a1a; border-radius:6px; padding:10px 16px; font-size:22px; font-family:inherit; background:#fff; }
+#screen-navigation .section { padding:18px 22px; border-bottom:2px dashed #1a1a1a; }
+#screen-navigation .section-title { font-size:27px; font-weight:700; margin:0 0 12px; }
+#screen-navigation .nav-line { font-size:19px; margin:6px 0; }
+#screen-navigation .nav-instruction { font-size:30px; font-weight:700; margin:12px 0; line-height:1.3; }
+#screen-navigation .muted { color:#777; font-size:17px; }
+#screen-navigation .replan-btn { margin-top:12px; border:2px dashed #1a1a1a; border-radius:8px; padding:16px; font-size:24px; font-family:inherit; background:#fff; width:100%; }
+#screen-navigation .map-wrap { flex:1; min-height:0; padding:18px 22px; display:flex; flex-direction:column; overflow:hidden; }
+#screen-navigation .map-box { flex:1; border:2.5px solid #1a1a1a; border-radius:10px; position:relative; display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr auto; }
+#screen-navigation .zone { border:1.5px dashed #999; display:flex; align-items:center; justify-content:center; font-size:18px; color:#555; }
+#screen-navigation .path-line { position:absolute; top:14%; left:12%; width:60%; height:46%; border-left:3px dashed #1a1a1a; border-bottom:3px dashed #1a1a1a; }
+#screen-navigation .cur-pos { position:absolute; top:10%; left:10%; width:12px; height:12px; border-radius:50%; background:#1a1a1a; }
+#screen-navigation .target-pos { position:absolute; top:58%; left:70%; display:flex; align-items:center; gap:4px; font-size:16px; font-weight:700; }
+#screen-navigation .bottomnav { display:flex; border-top:2px dashed #1a1a1a; background:#fdfcf9; }
+#screen-navigation .navitem { flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; padding:10px 2px 12px; font-size:18px; color:#777; }
+#screen-navigation .navitem svg { stroke:#777; }
+#screen-navigation .navitem.active { color:#1a1a1a; font-weight:700; }
+#screen-navigation .navitem.active svg { stroke:#1a1a1a; }
+#screen-navigation .nav-badge { position:relative; }
+#screen-navigation .nav-dot { position:absolute; top:-2px; right:-4px; width:8px; height:8px; border-radius:50%; background:#1a1a1a; }
+#screen-promotions 700&display=swap');
+    * { box-sizing: border-box; }
+#screen-promotions { margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+       flex-direction: column; overflow: hidden; }
+#screen-promotions .sysbar { display:flex; align-items:center; justify-content:space-between; padding:8px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+#screen-promotions .sysbar .row { display:flex; align-items:center; gap:8px; }
+#screen-promotions .statusbar { display:flex; align-items:center; justify-content:space-between; padding:16px 22px; border-bottom:2px dashed #1a1a1a; font-size:25px; font-weight:700; }
+#screen-promotions .back-btn { border:2px dashed #1a1a1a; border-radius:6px; padding:10px 16px; font-size:21px; font-family:inherit; background:#fff; font-weight:400; }
+#screen-promotions .cards { flex:1; min-height:0; padding:18px 22px; display:flex; flex-direction:column; gap:14px; overflow:hidden; }
+#screen-promotions .card { border:2.5px solid #1a1a1a; border-radius:10px; padding:16px; }
+#screen-promotions .card-title { font-size:23px; font-weight:700; margin-bottom:9px; display:flex; align-items:center; gap:6px; }
+#screen-promotions .card-body { font-size:18px; line-height:1.6; }
+#screen-promotions .card-cta { margin-top:10px; display:inline-block; border:2px dashed #1a1a1a; border-radius:8px; padding:12px 16px; font-size:21px; }
+#screen-promotions .btn-row { display:flex; gap:10px; margin-top:10px; }
+#screen-promotions .btn { flex:1; border:2px solid #1a1a1a; border-radius:8px; padding:13px; font-size:21px; text-align:center; }
+#screen-promotions .btn-primary { background:#1a1a1a; color:#fff; }
+#screen-promotions .bottomnav { display:flex; border-top:2px dashed #1a1a1a; background:#fdfcf9; }
+#screen-promotions .navitem { flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; padding:10px 2px 12px; font-size:18px; color:#777; }
+#screen-promotions .navitem svg { stroke:#777; }
+#screen-promotions .navitem.active { color:#1a1a1a; font-weight:700; }
+#screen-promotions .navitem.active svg { stroke:#1a1a1a; }
+#screen-promotions .nav-badge { position:relative; }
+#screen-promotions .nav-dot { position:absolute; top:-2px; right:-4px; width:8px; height:8px; border-radius:50%; background:#1a1a1a; }
+#screen-weight_alert 700&display=swap');
+    * { box-sizing: border-box; }
+#screen-weight_alert { margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+       flex-direction: column; overflow: hidden; }
+#screen-weight_alert .sysbar { display:flex; align-items:center; justify-content:space-between; padding:8px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+#screen-weight_alert .sysbar .row { display:flex; align-items:center; gap:8px; }
+#screen-weight_alert .titlebar { display:flex; align-items:center; gap:12px; padding:22px 26px; border-bottom:3px solid #1a1a1a; }
+#screen-weight_alert .titlebar h1 { font-size:34px; margin:0; line-height:1.3; }
+#screen-weight_alert .body-wrap { flex:1; min-height:0; overflow:auto; padding:26px; display:flex; flex-direction:column; gap:20px; }
+#screen-weight_alert .lead { font-size:24px; font-weight:700; }
+#screen-weight_alert .facts { border:2.5px solid #1a1a1a; border-radius:10px; padding:18px; font-size:22px; line-height:1.8; }
+#screen-weight_alert .facts .hl { font-weight:700; }
+#screen-weight_alert .pending-item { font-size:18px; color:#555; border-top:1.5px dashed #ccc; margin-top:8px; padding-top:8px; }
+#screen-weight_alert .steps { font-size:20px; line-height:1.7; }
+#screen-weight_alert .steps ol { margin:6px 0 0; padding-left:24px; }
+#screen-weight_alert .btn-row { display:flex; gap:12px; }
+#screen-weight_alert .btn { flex:1; border:2.5px solid #1a1a1a; border-radius:8px; padding:20px; font-size:24px; font-family:inherit; background:#fff; text-align:center; }
+#screen-weight_alert .btn-primary { background:#1a1a1a; color:#fff; }
+#screen-weight_alert .btn-dashed { border-style:dashed; font-size:21px; }
+#screen-weight_alert .footnote { margin-top:auto; padding:16px 26px; border-top:2px dashed #1a1a1a; font-size:17px; color:#777; text-align:center; }
+#screen-checkout 700&display=swap');
+    * { box-sizing: border-box; }
+#screen-checkout { margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+       flex-direction: column; overflow: hidden; }
+#screen-checkout .sysbar { display:flex; align-items:center; justify-content:space-between; padding:8px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+#screen-checkout .sysbar .row { display:flex; align-items:center; gap:8px; }
+#screen-checkout .statusbar { display:flex; align-items:center; justify-content:space-between; padding:16px 22px; border-bottom:2px dashed #1a1a1a; font-size:26px; font-weight:700; }
+#screen-checkout .back-link { font-size:16px; font-weight:400; color:#777; padding:4px 22px 0; }
+#screen-checkout .back-btn { border:2px dashed #1a1a1a; border-radius:6px; padding:10px 16px; font-size:21px; font-family:inherit; background:#fff; font-weight:400; }
+#screen-checkout .section { padding:16px 22px; border-bottom:2px dashed #1a1a1a; }
+#screen-checkout .section-title { display:flex; align-items:center; gap:8px; font-size:26px; font-weight:700; margin-bottom:12px; }
+#screen-checkout .lock-badge { font-size:15px; border:1.5px solid #1a1a1a; border-radius:10px; padding:2px 10px; font-weight:400; }
+#screen-checkout .item-row { display:flex; justify-content:space-between; font-size:19px; padding:7px 0; border-bottom:1px dashed #ddd; }
+#screen-checkout .item-row:last-of-type { border-bottom:none; }
+#screen-checkout .totals { margin-top:12px; font-size:19px; line-height:1.8; border-top:2px dashed #1a1a1a; padding-top:10px; }
+#screen-checkout .totals .final { font-weight:700; font-size:24px; }
+#screen-checkout .invoice { margin-top:6px; font-size:16px; color:#777; }
+#screen-checkout .pay-methods { display:flex; gap:12px; margin-bottom:12px; }
+#screen-checkout .pay-btn { flex:1; border:2.5px solid #1a1a1a; border-radius:8px; padding:16px; text-align:center; font-size:23px; }
+#screen-checkout .pay-btn.selected { background:#1a1a1a; color:#fff; }
+#screen-checkout .qr-hint { font-size:16px; color:#555; margin-bottom:8px; }
+#screen-checkout .qr-box { width:150px; height:150px; margin:0 auto; border:2.5px solid #1a1a1a; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:18px; color:#666; }
+#screen-checkout .footer-cta { padding:16px 22px; border-top:2px dashed #1a1a1a; }
+#screen-checkout .btn-primary { width:100%; border:3px solid #1a1a1a; border-radius:10px; padding:22px; font-size:28px; font-family:inherit; background:#1a1a1a; color:#fff; }
+#screen-checkout .bottomnav { display:flex; border-top:2px dashed #1a1a1a; background:#fdfcf9; }
+#screen-checkout .navitem { flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; padding:9px 2px 11px; font-size:18px; color:#777; }
+#screen-checkout .navitem svg { stroke:#777; }
+#screen-checkout .navitem.active { color:#1a1a1a; font-weight:700; }
+#screen-checkout .navitem.active svg { stroke:#1a1a1a; }
+#screen-exit_confirm 700&display=swap');
+    * { box-sizing: border-box; }
+#screen-exit_confirm { margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+       flex-direction: column; overflow: hidden; }
+#screen-exit_confirm .statusbar { display:flex; align-items:center; justify-content:space-between; padding:20px 26px; border-bottom:2px dashed #1a1a1a; font-size:22px; }
+#screen-exit_confirm .badge-new { border:2px solid #1a1a1a; border-radius:6px; padding:4px 10px; font-size:16px; font-weight:700; }
+#screen-exit_confirm .center-stage { flex:1; min-height:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:26px; padding:0 46px; text-align:center; }
+#screen-exit_confirm .check-circle { width:90px; height:90px; border-radius:50%; border:3px solid #1a1a1a; display:flex; align-items:center; justify-content:center; }
+#screen-exit_confirm .title { font-size:36px; font-weight:700; margin:0; }
+#screen-exit_confirm .amount { font-size:23px; }
+#screen-exit_confirm .timer-box { border:2.5px dashed #1a1a1a; border-radius:10px; padding:18px 26px; font-size:20px; line-height:1.6; }
+#screen-exit_confirm .timer-count { font-size:56px; font-weight:700; }
+#screen-exit_confirm .note { font-size:17px; color:#777; max-width:480px; line-height:1.6; }
+#screen-exit_confirm .gate-status { display:flex; align-items:center; justify-content:center; gap:10px; padding:20px; border-top:3px solid #1a1a1a; font-size:23px; font-weight:700; }
+#screen-exit_confirm .footer-alt { padding:16px 26px; text-align:center; }
+#screen-exit_confirm .btn-dashed { border:2px dashed #1a1a1a; border-radius:8px; padding:16px 22px; font-size:21px; font-family:inherit; background:#fff; color:#555; }
+</style>
+</head>
+<body>
+
+<div id="f-global-error" hidden></div>
+<div id="f-toast"></div>
+
+<div id="app-toolbar">
+  <button title="開發測試面板" onclick="APP.toggleDevPanel()">🛠</button>
+  <button title="退出" onclick="APP.callApi('quit')">✕</button>
+</div>
+
+<div class="screen" id="screen-main">
+<div class="sysbar">
+  <div class="row">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row">
+    <span>10:25 AM</span>
+    <svg width="26" height="14" viewBox="0 0 30 16"><rect x="1" y="1" width="25" height="14" rx="3" fill="none" stroke="#555" stroke-width="2"/><rect x="27" y="5" width="2.5" height="6" rx="1" fill="#555"/><rect x="3.5" y="3.5" width="20" height="9" fill="#555"/></svg>
+    <span>100%</span>
+  </div>
+</div>
+
+<div class="center-stage">
+  <h1 class="title">開始使用<br>AI 智慧購物車</h1>
+  <div class="hint-row">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2"><circle cx="12" cy="12" r="2.5"/><circle cx="12" cy="12" r="7" stroke-dasharray="3 3"/><circle cx="12" cy="12" r="11" stroke-dasharray="2 4"/></svg>
+    <span>靠近感應區自動喚醒</span>
+  </div>
+  <button class="btn-big" onclick="APP.callApi('go_to_login')">點擊開始使用 →</button>
+</div>
+
+<div class="footer">系統狀態：正常運作</div>
+</div>
+<div class="screen" id="screen-login">
+<div class="sysbar">
+  <div class="row">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row">
+    <span>10:25 AM</span>
+    <svg width="26" height="14" viewBox="0 0 30 16"><rect x="1" y="1" width="25" height="14" rx="3" fill="none" stroke="#555" stroke-width="2"/><rect x="27" y="5" width="2.5" height="6" rx="1" fill="#555"/><rect x="3.5" y="3.5" width="20" height="9" fill="#555"/></svg>
+    <span>100%</span>
+  </div>
+</div>
+<div class="titlebar">會員登入</div>
+
+<div class="center-stage">
+  <h1 class="title">請掃描會員條碼／QR Code</h1>
+  <div class="scan-frame">
+    <div class="corner tl"></div><div class="corner tr"></div>
+    <div class="corner bl"></div><div class="corner br"></div>
+    <div class="scan-label">對準掃描窗<br>條碼／QR Code</div>
+  </div>
+  <div class="waiting">● 等待掃描中 ...</div>
+
+  <div id="f-login-error" style="color:#b00020;font-size:16px;min-height:22px;"></div><div style="display:flex;gap:10px;width:100%;max-width:440px;"><input id="f-login-input" type="text" placeholder="會員代碼，例如 MEMBER-0001" style="flex:1;border:2px solid #1a1a1a;border-radius:8px;padding:14px;font-size:18px;font-family:inherit;text-align:center;background:#fff;color:#1a1a1a;" onkeydown="if(event.key==='Enter')APP.doLogin()"><button class="btn-dashed" style="padding:14px 20px;font-size:18px;" onclick="APP.doLogin()">登入</button></div><div style="font-size:14px;color:#999;">（沒有實體掃描器可用時的開發測試輸入框；真的接上掃描器後，掃碼會直接呼叫同一支 login()）</div><div class="divider-text">或</div>
+
+  <button class="btn-dashed" onclick="APP.callApi('continue_as_guest')">以訪客身份繼續（暫不登入）</button>
+  <div class="footnote">
+    訪客模式不會載入任何已儲存的資料，需要重新設定過敏原、飲食習慣與本次預算；
+    會員登入後系統會自動嘗試載入你上次儲存的設定與常購清單。
+  </div>
+</div>
+</div>
+<div class="screen" id="screen-loading_profile">
+<div class="sysbar">
+  <div class="row">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 100%</span></div>
+</div>
+<div class="titlebar">載入會員資料
+</div>
+
+<div class="center-stage">
+  <div class="member-name">歡迎回來，<span id="f-loading-member-name">會員</span></div>
+  <div class="checklist">
+    <div class="check-row">
+      <div class="check-circle"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
+      過敏原與飲食偏好設定
+    </div>
+    <div class="check-row">
+      <div class="check-circle"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
+      常購清單（3 項）
+    </div>
+    <div class="check-row">
+      <div class="check-circle"></div>
+      本次購物預算 …
+    </div>
+  </div>
+
+  <div class="branch-wrap">
+    <div class="branch">
+      <div class="branch-title">情況 A：找到已儲存的過敏原設定／常購清單</div>
+      略過三步驟偏好設定，直接沿用；僅需確認或調整本次預算。
+      <div class="branch-cta" onclick="APP.callApi('loading_profile_choice','A')">確認並開始購物 →</div>
+    </div>
+    <div class="branch">
+      <div class="branch-title">情況 B：首次使用／查無資料／訪客身份</div>
+      需要完成「過敏原 → 葷素習慣 → 宗教飲食」三步驟設定，再輸入本次預算。
+      <div class="branch-cta" onclick="APP.callApi('loading_profile_choice','B')">開始設定 →</div>
+    </div>
+  </div>
+</div>
+</div>
+<div class="screen" id="screen-allergens">
+<div class="sysbar">
+  <div class="row">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 100%</span></div>
+</div>
+
+<div class="wizard-head">
+  <div class="wizard-top">
+    <div class="wizard-title">過敏原設定</div>
+    <div class="skip-link" onclick="APP.callApi('wizard_goto','diet')">跳過此步驟</div>
+  </div>
+  <div class="steps">
+    <div class="step-dot done"></div>
+    <div class="step-dot"></div>
+    <div class="step-dot"></div>
+  </div>
+  <div class="step-label">步驟 1 / 3　·　依衛福部公告 11 項強制標示過敏原，可複選</div>
+</div>
+
+<div class="content">
+  <div class="content-sub">購物中辨識到含有以下成分的商品時，會即時提醒你</div>
+  <div class="chip-grid">
+    <div class="chip selected" data-name="堅果類" onclick="APP.wizardToggle('allergens','堅果類')"><span class="box"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>堅果類</div>
+    <div class="chip" data-name="甲殼類" onclick="APP.wizardToggle('allergens','甲殼類')"><span class="box"></span>甲殼類</div>
+    <div class="chip" data-name="芒果" onclick="APP.wizardToggle('allergens','芒果')"><span class="box"></span>芒果</div>
+    <div class="chip" data-name="花生" onclick="APP.wizardToggle('allergens','花生')"><span class="box"></span>花生</div>
+    <div class="chip" data-name="牛奶／羊奶" onclick="APP.wizardToggle('allergens','牛奶／羊奶')"><span class="box"></span>牛奶／羊奶</div>
+    <div class="chip" data-name="蛋" onclick="APP.wizardToggle('allergens','蛋')"><span class="box"></span>蛋</div>
+    <div class="chip" data-name="芝麻" onclick="APP.wizardToggle('allergens','芝麻')"><span class="box"></span>芝麻</div>
+    <div class="chip" data-name="含麩質穀物" onclick="APP.wizardToggle('allergens','含麩質穀物')"><span class="box"></span>含麩質穀物</div>
+    <div class="chip" data-name="大豆" onclick="APP.wizardToggle('allergens','大豆')"><span class="box"></span>大豆</div>
+    <div class="chip" data-name="魚類" onclick="APP.wizardToggle('allergens','魚類')"><span class="box"></span>魚類</div>
+    <div class="chip" data-name="亞硫酸鹽" onclick="APP.wizardToggle('allergens','亞硫酸鹽')"><span class="box"></span>亞硫酸鹽</div>
+    <div class="chip" data-name="都沒有" onclick="APP.wizardToggle('allergens','都沒有')"><span class="box"></span>都沒有</div>
+  </div>
+</div>
+
+<div class="footer-cta">
+  <div class="btn" onclick="APP.callApi('wizard_goto','login')">上一步</div>
+  <div class="btn btn-primary" onclick="APP.callApi('wizard_goto','diet')">下一步：葷素習慣 →</div>
+</div>
+</div>
+<div class="screen" id="screen-diet">
+<div class="sysbar">
+  <div class="row">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 100%</span></div>
+</div>
+
+<div class="wizard-head">
+  <div class="wizard-top">
+    <div class="wizard-title">葷素飲食習慣</div>
+    <div class="skip-link" onclick="APP.callApi('wizard_goto','religion')">跳過此步驟</div>
+  </div>
+  <div class="steps">
+    <div class="step-dot done"></div>
+    <div class="step-dot done"></div>
+    <div class="step-dot"></div>
+  </div>
+  <div class="step-label">步驟 2 / 3　·　單選（若不確定分類，可先選最接近的）</div>
+</div>
+
+<div class="content">
+  <div class="content-sub">購物中辨識到不符合的商品成分時，會即時提醒你</div>
+  <div class="radio-list">
+    <div class="radio-row selected" data-value="無特別素食習慣" onclick="APP.wizardSetDiet('無特別素食習慣')"><div class="radio-dot"><div class="fill"></div></div>無特別素食習慣</div>
+    <div class="radio-row" data-value="全素（純素）" onclick="APP.wizardSetDiet('全素（純素）')"><div class="radio-dot"></div>全素（純素）</div>
+    <div class="radio-row" data-value="蛋奶素" onclick="APP.wizardSetDiet('蛋奶素')"><div class="radio-dot"></div>蛋奶素</div>
+    <div class="radio-row" data-value="奶素" onclick="APP.wizardSetDiet('奶素')"><div class="radio-dot"></div>奶素</div>
+    <div class="radio-row" data-value="蛋素" onclick="APP.wizardSetDiet('蛋素')"><div class="radio-dot"></div>蛋素</div>
+    <div class="radio-row" data-value="五辛素（植物五辛素）" onclick="APP.wizardSetDiet('五辛素（植物五辛素）')"><div class="radio-dot"></div>五辛素（植物五辛素）</div>
+    <div class="radio-row" data-value="鍋邊素（可接受海鮮／肉湯）" onclick="APP.wizardSetDiet('鍋邊素（可接受海鮮／肉湯）')"><div class="radio-dot"></div>鍋邊素（可接受海鮮／肉湯）</div>
+  </div>
+</div>
+
+<div class="footer-cta">
+  <div class="btn" onclick="APP.callApi('wizard_goto','allergens')">上一步</div>
+  <div class="btn btn-primary" onclick="APP.callApi('wizard_goto','religion')">下一步：宗教飲食 →</div>
+</div>
+</div>
+<div class="screen" id="screen-religion">
+<div class="sysbar">
+  <div class="row">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 100%</span></div>
+</div>
+
+<div class="wizard-head">
+  <div class="wizard-top">
+    <div class="wizard-title">宗教／民俗飲食規範</div>
+    <div class="skip-link" onclick="APP.callApi('wizard_goto','budget')">跳過此步驟</div>
+  </div>
+  <div class="steps">
+    <div class="step-dot done"></div>
+    <div class="step-dot done"></div>
+    <div class="step-dot done"></div>
+  </div>
+  <div class="step-label">步驟 3 / 3　·　可複選</div>
+</div>
+
+<div class="content">
+  <div class="content-sub">購物中辨識到不符合的商品成分時，會即時提醒你</div>
+  <div class="chip-list">
+    <div class="chip-row selected" data-name="無特別宗教飲食規範" onclick="APP.wizardToggle('religion','無特別宗教飲食規範')"><span class="box"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>無特別宗教飲食規範</div>
+    <div class="chip-row" data-name="伊斯蘭教（清真／Halal）" onclick="APP.wizardToggle('religion','伊斯蘭教（清真／Halal）')">
+      <span class="box"></span>
+      <div>伊斯蘭教（清真／Halal）<div class="chip-sub">不吃豬肉及其製品</div></div>
+    </div>
+    <div class="chip-row" data-name="印度教" onclick="APP.wizardToggle('religion','印度教')">
+      <span class="box"></span>
+      <div>印度教<div class="chip-sub">不吃牛肉及其製品</div></div>
+    </div>
+    <div class="chip-row" data-name="台灣民俗不食牛" onclick="APP.wizardToggle('religion','台灣民俗不食牛')">
+      <span class="box"></span>
+      <div>台灣民俗不食牛<div class="chip-sub">不吃牛肉及其製品（非宗教教義，屬民俗習慣）</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="footer-cta">
+  <div class="btn" onclick="APP.callApi('wizard_goto','diet')">上一步</div>
+  <div class="btn btn-primary" onclick="APP.callApi('wizard_goto','budget')">完成，下一步：本次預算 →</div>
+</div>
+</div>
+<div class="screen" id="screen-budget">
+<div class="sysbar">
+  <div class="row">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 100%</span></div>
+</div>
+
+<div class="wizard-head">
+  <div class="wizard-title">錢包管家：本次購物預算</div>
+  <div class="step-label">每次購物都可重新設定，不影響已儲存的過敏原／飲食設定</div>
+</div>
+
+<div class="content">
+  <div class="content-sub">購物中會即時顯示消費進度；超過上限不會鎖卡，僅提醒（進階花費分析與建議屬於之後的 AI 功能）</div>
+  <div class="grid2">
+    <div class="opt" data-value="500" onclick="APP.budgetPick('500')">$500</div>
+    <div class="opt opt-selected" data-value="1000" onclick="APP.budgetPick('1000')">$1000</div>
+    <div class="opt" data-value="1500" onclick="APP.budgetPick('1500')">$1500</div>
+    <div class="opt" data-value="unlimited" onclick="APP.budgetPick('unlimited')">自由消費（不限）</div>
+  </div>
+  <div class="custom-row">
+    <span>或自訂金額</span>
+    <input id="f-budget-custom" class="custom-input" type="number" placeholder="輸入金額" style="border:2px dashed #1a1a1a;background:#fff;font:inherit;text-align:center;color:#1a1a1a;" oninput="APP.budgetPick(this.value)">
+  </div>
+</div>
+
+<div class="footer-cta">
+  <div class="btn" onclick="APP.callApi('wizard_goto','religion')">上一步</div>
+  <div class="btn btn-primary" onclick="APP.confirmBudget()">開始購物 →</div>
+</div>
+</div>
+<div class="screen" id="screen-shopping">
+<div class="sysbar">
+  <div class="row">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 90%</span></div>
+</div>
+
+<div class="statusbar">
+  <div class="statusbar-row1">
+    <span id="f-shop-header"></span>
+    <span class="sensor-chip">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+      感測器正常
+    </span>
+  </div>
+  <div class="progress-track"><div class="progress-fill" id="f-progress-fill" style="width:0%;"></div></div>
+  <div class="statusbar-row2">
+    <span id="f-progress-pct"></span>
+    <span id="f-cart-count-line"></span>
+  </div>
+</div>
+
+<div class="scroll-body">
+  <div class="section">
+    <div class="section-title">商品掃碼中</div>
+    <div class="hint-line">系統自動判斷：先掃碼再放入＝加入；先拿出再掃碼＝移除；拿取後忘記掃碼會逾時警示</div>
+<div id="f-pending-box-wrap"></div>
+
+    
+  </div>
+
+  <div class="section" style="flex:1; min-height:0; overflow:hidden;">
+    <div class="section-title">已選商品清單</div>
+    <div id="f-cart-items"></div>
+  </div>
+</div>
+
+<div class="bottomnav">
+  <div class="navitem active" data-tab="shopping">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+    清單
+  </div>
+  <div class="navitem" data-tab="navigation">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s7-7.58 7-12a7 7 0 1 0-14 0c0 4.42 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>
+    找貨
+  </div>
+  <div class="navitem nav-badge" data-tab="promotions">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 12 22 2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"/><circle cx="7" cy="7" r="1.4" fill="currentColor" stroke="none"/></svg>
+    優惠
+    <span class="nav-dot"></span>
+  </div>
+  <div class="navitem" data-tab="profile">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>
+    我的
+  </div>
+  <div class="navitem" data-tab="checkout">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/><path d="M3 4h2l2.2 11.2a2 2 0 0 0 2 1.6h7.6a2 2 0 0 0 2-1.6L21 8H6"/></svg>
+    結帳
+  </div>
+</div>
+</div>
+<div class="screen" id="screen-navigation">
+<div class="sysbar">
+  <div class="row">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 90%</span></div>
+</div>
+
+<div class="searchbar">
+  <div class="search-input">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#777" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+    <span>點擊搜尋商品名稱或類別</span>
+  </div>
+  <button class="close-btn" onclick="APP.showTab('shopping')">✕ 關閉導航</button>
+</div>
+
+<div class="section">
+  <div class="section-title">目前導航路徑指引</div>
+  <div class="nav-line">目標商品 → 大同純釀醬油 500ml</div>
+  <div class="nav-line">商品位置 → 走道 B2 貨架架位 04</div>
+  <div class="nav-instruction">前方走道右轉 → 直行 8 公尺 → 左轉即達目標貨架</div>
+  <div class="muted">預估步行約 20 秒（已避開擁擠走道）</div>
+  <button class="replan-btn">⟳ 重新規劃路線</button>
+</div>
+
+<div class="map-wrap">
+  <div class="section-title" style="padding-bottom:8px;">賣場平面圖（最短路徑）</div>
+  <div class="map-box">
+    <div class="zone" style="grid-column:1;grid-row:1;">貨架 A</div>
+    <div class="zone" style="grid-column:2;grid-row:1;">貨架 B</div>
+    <div class="zone" style="grid-column:1;grid-row:2;">生鮮區</div>
+    <div class="zone" style="grid-column:2;grid-row:2;">收銀台</div>
+    <div class="zone" style="grid-column:1/3;grid-row:3;">入口　　　　　　　　　出口</div>
+    <div class="path-line"></div>
+    <div class="cur-pos"></div>
+    <div class="target-pos">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s7-7.58 7-12a7 7 0 1 0-14 0c0 4.42 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>
+      目標貨架
+    </div>
+  </div>
+</div>
+
+<div class="bottomnav">
+  <div class="navitem" data-tab="shopping">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+    清單
+  </div>
+  <div class="navitem active" data-tab="navigation">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s7-7.58 7-12a7 7 0 1 0-14 0c0 4.42 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>
+    找貨
+  </div>
+  <div class="navitem nav-badge" data-tab="promotions">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 12 22 2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"/><circle cx="7" cy="7" r="1.4" fill="currentColor" stroke="none"/></svg>
+    優惠
+    <span class="nav-dot"></span>
+  </div>
+  <div class="navitem" data-tab="profile">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>
+    我的
+  </div>
+  <div class="navitem" data-tab="checkout">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/><path d="M3 4h2l2.2 11.2a2 2 0 0 0 2 1.6h7.6a2 2 0 0 0 2-1.6L21 8H6"/></svg>
+    結帳
+  </div>
+</div>
+</div>
+<div class="screen" id="screen-promotions">
+<div class="sysbar">
+  <div class="row">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 90%</span></div>
+</div>
+
+<div class="statusbar">
+  <span>即時專屬優惠與綠色惜食推薦</span>
+  <button class="back-btn" onclick="APP.showTab('shopping')">← 返回購物車</button>
+</div>
+
+<div class="cards">
+  <div class="card">
+    <div class="card-title">🌱 即期惜食折扣　已為您套用！</div>
+    <div class="card-body">偵測到「即期生鮮沙拉盒」，系統自動帶入綠色減碳 5 折優惠（現省 $20）。</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">多件優惠提醒</div>
+    <div class="card-body">您已拿取「全脂鮮奶 936ml」×1，同品項第 2 件 5 折，尚可現省 $42。</div>
+    <div class="card-cta">導航去貨架再拿一件 →</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">組合商品推薦</div>
+    <div class="card-body">偵測到購物車內有「義大利麵醬」，需不需要搭配「義大利直麵」（特價 $39）？</div>
+    <div class="btn-row">
+      <div class="btn">不用了</div>
+      <div class="btn btn-primary">加入購物車</div>
+    </div>
+  </div>
+</div>
+
+<div class="bottomnav">
+  <div class="navitem" data-tab="shopping">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+    清單
+  </div>
+  <div class="navitem" data-tab="navigation">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s7-7.58 7-12a7 7 0 1 0-14 0c0 4.42 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>
+    找貨
+  </div>
+  <div class="navitem active" data-tab="promotions">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 12 22 2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"/><circle cx="7" cy="7" r="1.4" fill="currentColor" stroke="none"/></svg>
+    優惠
+  </div>
+  <div class="navitem" data-tab="profile">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>
+    我的
+  </div>
+  <div class="navitem" data-tab="checkout">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/><path d="M3 4h2l2.2 11.2a2 2 0 0 0 2 1.6h7.6a2 2 0 0 0 2-1.6L21 8H6"/></svg>
+    結帳
+  </div>
+</div>
+</div>
+<div class="screen" id="screen-weight_alert">
+<div class="sysbar">
+  <div class="row">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 90%</span></div>
+</div>
+<div class="titlebar">
+  <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3z"/><line x1="12" y1="9" x2="12" y2="14"/><circle cx="12" cy="17.5" r="1" fill="#1a1a1a" stroke="none"/></svg>
+  <h1>重量檢核異常．防損機制啟動</h1>
+</div>
+
+<div class="body-wrap">
+  <div class="lead">系統偵測到購物籃重量不符</div>
+
+  <div class="facts" id="f-wa-facts"></div>
+  <div class="steps">
+    請依指示操作：
+    <ol>
+      <li>請確認籃內商品與剛才掃描的是同一件，重新掃描條碼一次</li>
+      <li>若同時放入／取出了不只一件商品，請一件一件分開操作</li>
+      <li>若為隨身私人物品誤放，請直接自籃內移出</li>
+    </ol>
+  </div>
+
+  <div class="btn-row">
+    <button class="btn" onclick="APP.callApi('retry_weight')">重新感應商品</button>
+    <button class="btn btn-primary" onclick="APP.callApi('void_pending')">放棄此次動作</button>
+  </div>
+  <div class="btn-row">
+    <button class="btn btn-dashed" onclick="APP.toast('重新校準歸零：尚未串接（規劃中）')">重新校準歸零</button>
+    <button class="btn btn-dashed" onclick="APP.toast('呼叫店員協助：尚未串接（規劃中）')">呼叫店員協助</button>
+  </div>
+</div>
+
+<div class="footnote">為保障您與賣場權益，此畫面無法略過，請依指示排除異常</div>
+</div>
+<div class="screen" id="screen-checkout">
+<div class="sysbar">
+  <div class="row">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 90%</span></div>
+</div>
+
+<div class="statusbar">
+  <span>購物車自助結帳</span>
+  <button class="back-btn" onclick="APP.toast('目前狀態機還沒有「解除鎖定」事件，暫時無法從這裡返回——已知待補')">✕ 返回繼續選購</button>
+</div>
+<div class="back-link">（返回將解除清單鎖定，可能需重新核對重量）</div>
+
+<div class="section">
+  <div class="section-title">
+    消費明細核對
+    <span class="lock-badge">🔒 清單已鎖定</span>
+  </div>
+  <div id="f-co-items"></div>
+  <div class="totals" id="f-co-totals"></div>
+</div>
+
+<div class="section" style="flex:1; min-height:0; overflow:auto;">
+  <div class="section-title">選擇付款方式</div>
+  <div class="pay-methods">
+    <div class="pay-btn selected" onclick="APP.selectPay(this)">LINE Pay</div>
+    <div class="pay-btn" onclick="APP.selectPay(this)">信用卡支付</div>
+  </div>
+  <div class="qr-hint">請使用手機掃描 QR Code 完成扣款</div>
+  <div class="qr-box">QR Code</div>
+</div>
+
+<div class="footer-cta">
+  <button class="btn-primary" onclick="APP.callApi('confirm_payment')">確認付款，推車直接離場</button>
+</div>
+
+<div class="bottomnav">
+  <div class="navitem" data-tab="shopping">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+    清單
+  </div>
+  <div class="navitem" data-tab="navigation">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s7-7.58 7-12a7 7 0 1 0-14 0c0 4.42 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>
+    找貨
+  </div>
+  <div class="navitem" data-tab="promotions">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 12 22 2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"/><circle cx="7" cy="7" r="1.4" fill="currentColor" stroke="none"/></svg>
+    優惠
+  </div>
+  <div class="navitem" data-tab="profile">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>
+    我的
+  </div>
+  <div class="navitem active" data-tab="checkout">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/><path d="M3 4h2l2.2 11.2a2 2 0 0 0 2 1.6h7.6a2 2 0 0 0 2-1.6L21 8H6"/></svg>
+    結帳
+  </div>
+</div>
+</div>
+<div class="screen" id="screen-exit_confirm">
+<div class="statusbar">
+  <span>付款完成</span>
+</div>
+
+<div class="center-stage">
+  <div class="check-circle">
+    <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+  </div>
+  <h1 class="title">感謝您的惠顧！</h1>
+  <div class="amount"><span id="f-exit-amount">應付金額已成功扣款</span></div>
+
+  <div class="timer-box">
+    請於倒數時間內推車通過出口閘門
+    <div class="timer-count" id="f-exit-timer">--:--</div>
+  </div>
+
+  <div class="note">若通過閘門時系統偵測到重量與結帳清單不符，將再次觸發防損檢查，請配合店員說明。</div>
+</div>
+
+<div class="gate-status">
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6" stroke-width="2.2"/></svg>
+  閘門狀態：已解鎖，請直接推車通過
+</div>
+<div class="footer-alt">
+  <button class="btn-dashed" onclick="APP.toast('需要協助：尚未串接店員通知系統（規劃中）')">取消本次結帳／需要協助</button>
+</div>
+</div>
+
+<div id="dev-panel" hidden>
+  <h2>登入／管制區（硬體還沒有時用這裡模擬）</h2>
+  <div class="row">
+    <button onclick="APP.callApi('go_to_login')">回到登入畫面</button>
+    <button onclick="APP.callApi('simulate_sensor_disconnect')">秤重感測器斷線</button>
+    <button onclick="APP.callApi('simulate_sensor_reconnect')">秤重感測器恢復</button>
+  </div>
+
+  <h2>商品掃碼 / 秤重</h2>
+  <div class="row">
+    <input id="dev-barcode" placeholder="條碼，例如 4710018001234">
+    <button onclick="APP.callApi('simulate_item_scan', document.getElementById('dev-barcode').value)">模擬掃描</button>
+  </div>
+  <div class="row">
+    <input id="dev-weight" type="number" placeholder="目前公克數">
+    <button onclick="APP.callApi('simulate_weight', document.getElementById('dev-weight').value)">送出秤重讀數</button>
+  </div>
+  <div class="row">
+    <button onclick="APP.callApi('simulate_timeout')">手動觸發一次逾時檢查</button>
+  </div>
+
+  <h2>結帳 / 出場</h2>
+  <div class="row">
+    <button onclick="APP.callApi('lock_checkout')">鎖定結帳</button>
+    <button onclick="APP.callApi('confirm_payment')">確認付款</button>
+    <button onclick="APP.callApi('simulate_gate_exit')">模擬走出管制區</button>
+  </div>
+
+  <h2>秤重異常</h2>
+  <div class="row">
+    <button onclick="APP.callApi('retry_weight')">重試比對</button>
+    <button onclick="APP.callApi('void_pending')">放棄這筆</button>
+  </div>
+
+  <h2>強制重置</h2>
+  <div class="row">
+    <button onclick="APP.callApi('force_logout', '開發測試面板手動重置')">強制登出／清空重來</button>
+  </div>
+
+  <div class="state-dump" id="dev-state-dump"></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var SHOPPING_FAMILY = ["shopping", "navigation", "promotions"];
+  var NAV_TABS = ["shopping", "navigation", "promotions", "profile", "checkout"];
+  var currentTab = "shopping";
+  var lastState = null;
+  var toastTimer = null;
+
+  function esc(s) {
+    return (s == null ? "" : String(s)).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  function showScreen(id) {
+    document.querySelectorAll(".screen").forEach(function (el) {
+      el.classList.toggle("active", el.id === "screen-" + id);
+    });
+    document.querySelectorAll(".navitem[data-tab]").forEach(function (el) {
+      el.classList.toggle("active", el.dataset.tab === id);
+    });
+  }
+
+  function showTab(id) {
+    if (id === "checkout") { callApi("lock_checkout"); return; }
+    if (id === "profile") { toast("「我的」功能尚未實作"); return; }
+    currentTab = id;
+    showScreen(id);
+  }
+
+  function toast(msg) {
+    var el = document.getElementById("f-toast");
+    el.textContent = msg;
+    el.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.classList.remove("show"); }, 2600);
+  }
+
+  function toggleDevPanel() {
+    var el = document.getElementById("dev-panel");
+    el.hidden = !el.hidden;
+  }
+
+  function callApi(name) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    if (!window.pywebview || !window.pywebview.api || !window.pywebview.api[name]) {
+      console.warn("pywebview api not ready:", name, args);
+      return Promise.resolve(null);
+    }
+    return window.pywebview.api[name].apply(null, args).then(render).catch(function (err) {
+      console.error(err);
+      toast("發生錯誤：" + err);
+    });
+  }
+
+  function doLogin() {
+    var val = document.getElementById("f-login-input").value;
+    callApi("login", val);
+  }
+
+  function wizardToggle(kind, name) {
+    if (kind === "allergens") callApi("wizard_toggle_allergen", name);
+    else if (kind === "religion") callApi("wizard_toggle_religion", name);
+  }
+
+  function wizardSetDiet(value) {
+    callApi("wizard_set_diet", value);
+  }
+
+  var pendingBudgetValue = null;
+  function budgetPick(value) {
+    pendingBudgetValue = value;
+    document.querySelectorAll("#screen-budget .opt").forEach(function (el) {
+      el.classList.toggle("opt-selected", el.dataset.value === value);
+    });
+  }
+
+  function confirmBudget() {
+    var v = pendingBudgetValue;
+    if (v == null) {
+      var custom = document.getElementById("f-budget-custom");
+      v = custom && custom.value ? custom.value : "unlimited";
+    }
+    callApi("set_budget", v);
+  }
+
+  function selectPay(el) {
+    var parent = el.parentElement;
+    Array.prototype.forEach.call(parent.children, function (c) { c.classList.remove("selected"); });
+    el.classList.add("selected");
+  }
+
+  // ------------------------------------------------------------------
+  function renderCartItems(containerId, items, withIndex) {
+    var el = document.getElementById(containerId);
+    if (!el) return;
+    if (!items.length) {
+      el.innerHTML = '<div style="color:#999;padding:8px 0;">（購物車目前是空的）</div>';
+      return;
+    }
+    el.innerHTML = items.map(function (it, i) {
+      var label = (withIndex ? (i + 1) + ". " : "") + esc(it.name) + (it.quantity > 1 ? " ×" + it.quantity : "");
+      return '<div class="item-row"><span>' + label + '</span><span>$' + it.subtotal.toFixed(0) + '</span></div>';
+    }).join("");
+  }
+
+  function render(payload) {
+    if (!payload) return;
+    lastState = payload;
+
+    var errEl = document.getElementById("f-global-error");
+    if (payload.last_error) { errEl.textContent = payload.last_error; errEl.hidden = false; }
+    else { errEl.hidden = true; }
+    var loginErrEl = document.getElementById("f-login-error");
+    if (loginErrEl) loginErrEl.textContent = payload.screen === "login" ? (payload.last_error || "") : "";
+
+    if (SHOPPING_FAMILY.indexOf(payload.screen) !== -1 || SHOPPING_FAMILY.indexOf(currentTab) !== -1 && payload.screen === "shopping") {
+      if (SHOPPING_FAMILY.indexOf(currentTab) === -1) currentTab = "shopping";
+      showScreen(currentTab);
+    } else {
+      currentTab = "shopping";
+      showScreen(payload.screen);
+    }
+
+    // 載入會員資料
+    var nameEl = document.getElementById("f-loading-member-name");
+    if (nameEl) nameEl.textContent = payload.member_name || payload.member_id || "會員";
+
+    // 偏好精靈：反映目前已選項目
+    document.querySelectorAll("#screen-allergens .chip[data-name]").forEach(function (el) {
+      el.classList.toggle("selected", payload.wizard_profile.allergens.indexOf(el.dataset.name) !== -1);
+    });
+    document.querySelectorAll("#screen-diet .radio-row[data-value]").forEach(function (el) {
+      el.classList.toggle("selected", payload.wizard_profile.diet === el.dataset.value);
+    });
+    document.querySelectorAll("#screen-religion .chip-row[data-name]").forEach(function (el) {
+      el.classList.toggle("selected", payload.wizard_profile.religion.indexOf(el.dataset.name) !== -1);
+    });
+
+    // 購物主畫面
+    var header = document.getElementById("f-shop-header");
+    if (header) {
+      var budgetText = payload.budget != null ? ("$" + payload.budget.toFixed(0)) : "不限";
+      header.textContent = (payload.member_name || payload.member_id || "訪客") +
+        "　總額 = $" + payload.cart_total.toFixed(0) + " ／ 預算 = " + budgetText;
+    }
+    var fillEl = document.getElementById("f-progress-fill");
+    if (fillEl) {
+      var pct = payload.budget ? Math.min(100, (payload.cart_total / payload.budget) * 100) : 0;
+      fillEl.style.width = pct.toFixed(0) + "%";
+      var pctEl = document.getElementById("f-progress-pct");
+      if (pctEl) pctEl.textContent = payload.budget ? (pct.toFixed(0) + "% 已使用") : "無預算上限";
+    }
+    var countEl = document.getElementById("f-cart-count-line");
+    if (countEl) countEl.textContent = "購物車 = " + payload.cart_count + " 件";
+
+    renderCartItems("f-cart-items", payload.cart_items, true);
+    renderCartItems("f-co-items", payload.cart_items, true);
+
+    var coTotals = document.getElementById("f-co-totals");
+    if (coTotals) {
+      coTotals.innerHTML = '<div class="final">應付金額 = $' + payload.cart_total.toFixed(0) + '</div>';
+    }
+
+    var pendingWrap = document.getElementById("f-pending-box-wrap");
+    if (pendingWrap) {
+      if (payload.pending_item_barcode) {
+        var modeText = payload.pending_item_mode === "remove" ? "移除購物車" : "加入購物車";
+        pendingWrap.innerHTML =
+          '<div class="pending-box">' +
+          '<div class="mode-badge">系統判定：' + modeText + '</div>' +
+          '<div class="pending-line">已掃描條碼：' + esc(payload.pending_item_barcode) + '</div>' +
+          '<div class="pulse-row"><div class="pulse-dot"></div>核對中 ...　目前重量 ' +
+          (payload.current_weight_g != null ? payload.current_weight_g.toFixed(1) + 'g' : '（無讀數）') + '</div>' +
+          '</div>';
+      } else if (payload.unscanned_baseline_g != null) {
+        pendingWrap.innerHTML =
+          '<div class="pending-box"><div class="mode-badge">偵測到重量變化，尚未掃碼</div>' +
+          '<div class="pending-line">變化前基準值：' + payload.unscanned_baseline_g.toFixed(1) + 'g　目前：' +
+          (payload.current_weight_g != null ? payload.current_weight_g.toFixed(1) + 'g' : '（無讀數）') + '</div>' +
+          '<div class="pulse-row"><div class="pulse-dot"></div>請掃描剛才拿取／放入的商品</div></div>';
+      } else {
+        pendingWrap.innerHTML = "";
+      }
+    }
+
+    // 重量異常
+    var waFacts = document.getElementById("f-wa-facts");
+    if (waFacts) {
+      var lines = [];
+      if (payload.pending_item_barcode) {
+        lines.push("比對中商品：條碼 " + esc(payload.pending_item_barcode) + "　自動判定方向：" +
+          (payload.pending_item_mode === "remove" ? "移除" : "加入"));
+      } else {
+        lines.push("這筆是「拿取／放入後忘記掃碼」逾時觸發的異常，沒有對應的條碼可核對");
+      }
+      lines.push("目前秤重讀數 = " + (payload.current_weight_g != null ? payload.current_weight_g.toFixed(1) + "g" : "（無讀數）"));
+      lines.push("感測器狀態 = " + (payload.sensor_connected ? "正常" : "已斷線"));
+      waFacts.innerHTML = lines.map(function (l) { return "<div>" + l + "</div>"; }).join("");
+    }
+
+    var exitAmount = document.getElementById("f-exit-amount");
+    if (exitAmount) exitAmount.textContent = "應付金額 $" + payload.cart_total.toFixed(0) + " 已成功扣款";
+    var exitTimer = document.getElementById("f-exit-timer");
+    if (exitTimer) exitTimer.textContent = payload.exit_countdown || "--:--";
+
+    var dump = document.getElementById("dev-state-dump");
+    if (dump) dump.textContent = JSON.stringify(payload, null, 1);
+  }
+
+  document.body.addEventListener("click", function (e) {
+    var nav = e.target.closest(".navitem[data-tab]");
+    if (nav) showTab(nav.dataset.tab);
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") callApi("quit");
+  });
+
+  function boot() {
+    if (window.pywebview && window.pywebview.api) {
+      window.pywebview.api.get_state().then(render);
+    } else {
+      setTimeout(boot, 200);
+    }
+  }
+
+  window.addEventListener("pywebviewready", boot);
+  setTimeout(boot, 500); // 保險：萬一 pywebviewready 事件沒發生也能啟動
+
+  window.APP = {
+    callApi: callApi, showTab: showTab, toast: toast, toggleDevPanel: toggleDevPanel,
+    doLogin: doLogin, wizardToggle: wizardToggle, wizardSetDiet: wizardSetDiet,
+    budgetPick: budgetPick, confirmBudget: confirmBudget, selectPay: selectPay,
+    render: render,
+  };
+})();
+</script>
+</body>
+</html>
