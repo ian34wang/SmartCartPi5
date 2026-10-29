@@ -192,8 +192,8 @@ b9 = new_bridge()
 b9.go_to_login()
 b9.on_hardware_barcode("MEMBER-0002")
 p = b9.loading_profile_choice("A")
-check(p["screen"] == "allergens", "選 A 仍走精靈", p["screen"])
-check(bool(p["last_error"]), "有說明「資料庫還沒有欄位可存設定」")
+check(p["screen"] == "allergens", "沒有已儲存的設定時，選 A 走精靈", p["screen"])
+check("還沒有儲存過設定" in (p["last_error"] or ""), "有說明這個會員還沒有已儲存的設定", repr(p["last_error"]))
 p = b9.wizard_toggle_allergen("花生")
 check("花生" in p["wizard_profile"]["allergens"], "過敏原可勾選")
 p = b9.wizard_toggle_allergen("花生")
@@ -222,6 +222,195 @@ check(len(b10.sm.get_alerts()) == 200, "警告清單確實已達上限", len(b10
 b10.on_hardware_barcode("9999999999999")
 p = b10.get_state()
 check(bool(p["last_error"]), "清單塞滿後新的錯誤仍然顯示得出來", repr(p["last_error"]))
+
+print("\n[13] 會員偏好：精靈走完存起來，下次選 A 直接沿用")
+db13 = b9.db
+prefs = db13.get_preferences("MEMBER-0002")
+check(prefs is not None and prefs.diet == "蛋奶素" and prefs.budget == 500.0
+      and prefs.religion == ["伊斯蘭教（清真／Halal）"], "精靈結果已寫進資料庫", prefs)
+b9.force_logout("測試換人")
+b9.go_to_login()
+b9.on_hardware_barcode("MEMBER-0002")
+p = b9.get_state()
+check(p["saved_profile"]["exists"] is True and p["saved_profile"]["diet"] == "蛋奶素",
+      "登入後載入畫面看得到已儲存的設定", p["saved_profile"])
+p = b9.loading_profile_choice("A")
+check(p["screen"] == "budget", "選 A 直接跳到預算確認", p["screen"])
+check(p["wizard_profile"]["diet"] == "蛋奶素" and p["budget"] == 500.0, "讀回已儲存的偏好與預算",
+      (p["wizard_profile"], p["budget"]))
+check(not p["last_error"], "沒有錯誤訊息", repr(p["last_error"]))
+bg = new_bridge()
+bg.continue_as_guest()
+p = bg.loading_profile_choice("A")
+check(p["screen"] == "allergens" and "訪客" in (p["last_error"] or ""), "訪客選 A：說明訪客沒有已儲存的設定")
+for stage in ("diet", "religion", "budget"):
+    bg.wizard_goto(stage)
+bg.set_budget("1000")
+check(bg.db.get_preferences(bg._guest_member_id) is None, "訪客的設定不會存進資料庫")
+
+print("\n[14] 結帳返回：解除鎖定，鎖定期間的重量變化在解鎖後被抓到")
+b14 = new_bridge()
+to_shopping(b14)
+p = b14.lock_checkout()
+check(p["screen"] == "checkout", "鎖定結帳", p["screen"])
+b14.on_weight_sample(300.0)                # 鎖定期間偷放東西
+p = b14.unlock_checkout()
+check(p["sm_state"] == STATE_SHOPPING and p["screen"] == "shopping", "解鎖回到購物中", p["sm_state"])
+b14.on_weight_sample(300.0)
+p = b14.get_state()
+check(p["sm_state"] == "awaiting_item_scan", "解鎖後立刻偵測到未掃碼的重量變化", p["sm_state"])
+p = b14.unlock_checkout()
+check(p["sm_state"] == "awaiting_item_scan", "沒有鎖定時解鎖不會改變狀態", p["sm_state"])
+
+print("\n[15] 交易紀錄：付款寫一筆，出場補出場時間，「我的」看得到")
+b15 = new_bridge()
+b15.go_to_login()
+b15.on_hardware_barcode("MEMBER-0001")
+b15.loading_profile_choice("B")
+for stage in ("diet", "religion", "budget"):
+    b15.wizard_goto(stage)
+b15.set_budget("1000")
+b15.on_gate_crossing("entering")
+b15.on_weight_sample(0.0)
+b15.on_hardware_barcode("4710018001234")   # 25 元，320g
+b15.on_weight_sample(320.0)
+b15.on_hardware_barcode("4711080012345")   # 15 元，605g
+b15.on_weight_sample(925.0)
+b15.lock_checkout()
+p = b15.confirm_payment("LINE Pay")
+check(p["sm_state"] == STATE_AWAITING_EXIT and not p["last_error"], "付款完成", (p["sm_state"], p["last_error"]))
+txs = b15.db.list_transactions(member_id="MEMBER-0001")
+check(len(txs) == 1 and abs(txs[0].total - 40.0) < 1e-9 and txs[0].item_count == 2
+      and txs[0].payment_method == "LINE Pay" and txs[0].exited_at is None, "寫進一筆交易（金額、件數、付款方式）",
+      txs)
+check([i.barcode for i in txs[0].items] == ["4710018001234", "4711080012345"], "交易明細正確", txs[0].items)
+check(txs[0].zone_entered_at is not None and txs[0].budget == 1000.0, "記下進場時間與預算")
+check(len(p["recent_transactions"]) == 1, "「我的」最近消費紀錄看得到", p["recent_transactions"])
+b15.on_gate_crossing("exiting")
+p = b15.get_state()
+check(p["screen"] == "main", "出場後回歡迎頁")
+check(b15.db.list_transactions(member_id="MEMBER-0001")[0].exited_at is not None, "出場時間已補上")
+b15b = new_bridge()
+to_shopping(b15b)
+p = b15b.confirm_payment("LINE Pay")      # 沒有鎖定就付款：狀態機拒絕
+check(b15b.db.list_transactions() == [], "狀態機拒絕付款時不會寫交易")
+
+print("\n[16] 呼叫店員協助：寫一筆待處理，店員刷工作證處理掉")
+b16 = new_bridge()
+to_shopping(b16)
+p = b16.request_assistance("general")
+check(p["assist_open"] is not None and p["notice"], "畫面顯示已通知店員", (p["assist_open"], p["notice"]))
+p = b16.request_assistance("general")
+check(len(b16.db.list_assistance_requests(status="open")) == 1, "同一個原因不會重複寫")
+p = b16.request_assistance("亂寫")
+check(bool(p["last_error"]), "不認得的協助類型要擋下來")
+b16.on_hardware_barcode("STAFF-9999")
+p = b16.get_state()
+check("不在店員名單" in (p["last_error"] or "") and p["assist_open"] is not None, "不認得的工作證不能處理請求",
+      repr(p["last_error"]))
+check(p["cart_count"] == 0 and p["sm_state"] == STATE_SHOPPING, "工作證不會被當成商品條碼")
+b16.on_hardware_barcode("STAFF-0001")
+p = b16.get_state()
+check(p["assist_open"] is None and "測試店員" in (p["notice"] or ""), "店員刷工作證後請求標成已處理",
+      (p["assist_open"], p["notice"]))
+r = b16.db.list_assistance_requests()[0]
+check(r.status == "resolved" and r.resolved_by == "STAFF-0001" and r.sm_state == STATE_SHOPPING,
+      "資料庫記下誰處理、當時狀態", r)
+
+print("\n[17] 重新校準歸零：要店員刷工作證才生效")
+b17 = new_bridge()
+to_shopping(b17)
+b17.on_hardware_barcode("4710428061234")   # 74g ±5g
+b17.on_weight_sample(74.0)
+check(b17.get_state()["cart_count"] == 1, "先放一件")
+b17.on_hardware_barcode("4710018001234")   # 320g
+b17.on_weight_sample(500.0)                # 不符
+p = b17.get_state()
+check(p["screen"] == "weight_alert", "進入秤重異常")
+p = b17.request_rezero()
+check(p["staff_pending"] == "rezero" and p["sm_state"] == STATE_WEIGHT_MISMATCH_ERROR,
+      "使用者按下只送出申請，狀態不變", (p["staff_pending"], p["sm_state"]))
+check(p["assist_open"] is not None, "同時寫一筆協助請求")
+b17.on_hardware_barcode("STAFF-9999")
+p = b17.get_state()
+check(p["sm_state"] == STATE_WEIGHT_MISMATCH_ERROR, "不認得的工作證不能歸零")
+b17.on_hardware_barcode("STAFF-0001")
+p = b17.get_state()
+check(p["sm_state"] == STATE_SHOPPING and p["screen"] == "shopping", "店員刷工作證後回到購物中", p["sm_state"])
+check(p["cart_count"] == 1, "待比對的那件沒有被加入", p["cart_count"])
+check(abs(b17.sm.get_session().stable_weight_g - 500.0) < 1e-9, "目前重量成為新的基準")
+check(any(a.code == "staff_rezero_authorized" and "STAFF-0001" in a.message for a in b17.sm.get_alerts()),
+      "警告歷史記下是哪位店員確認的")
+check(p["assist_open"] is None and p["staff_pending"] is None, "協助請求一併處理掉")
+b17.on_weight_sample(500.0)
+check(b17.get_state()["sm_state"] == STATE_SHOPPING, "之後同樣重量不會再觸發異常")
+b17b = new_bridge()
+to_shopping(b17b)
+p = b17b.request_rezero()
+check(bool(p["last_error"]) and p["staff_pending"] is None, "不是秤重異常時不能申請歸零")
+b17c = new_bridge()
+to_shopping(b17c)
+b17c.on_hardware_barcode("4710428061234")
+b17c.on_weight_sample(400.0)
+b17c.request_rezero()
+p = b17c.void_pending()                    # 使用者自己放棄了
+check(p["staff_pending"] is None, "異常自己解除後，歸零申請跟著取消")
+b17c.on_hardware_barcode("STAFF-0001")
+check(not any(a.code == "staff_rezero_authorized" for a in b17c.sm.get_alerts()), "之後刷工作證不會歸零")
+
+print("\n[18] 「我的」：改預算、重新設定偏好、秤重異常優先")
+b18 = new_bridge()
+b18.go_to_login()
+b18.on_hardware_barcode("MEMBER-0001")
+b18.loading_profile_choice("B")
+b18.wizard_toggle_allergen("花生")
+for stage in ("diet", "religion", "budget"):
+    b18.wizard_goto(stage)
+b18.set_budget("1000")
+b18.on_gate_crossing("entering")
+b18.on_weight_sample(0.0)
+p = b18.set_session_budget("1500")
+check(p["budget"] == 1500.0 and b18.db.get_preferences("MEMBER-0001").budget == 1500.0, "改預算，也存成下次的預設")
+p = b18.set_session_budget("abc")
+check(bool(p["last_error"]) and p["budget"] == 1500.0, "看不懂的金額要擋下來")
+p = b18.edit_preferences()
+check(p["screen"] == "allergens", "重新設定偏好走精靈", p["screen"])
+b18.wizard_toggle_allergen("芝麻")
+p = b18.wizard_goto("login")               # 第一步按上一步＝取消
+check(p["screen"] == "shopping" and p["wizard_profile"]["allergens"] == ["花生"], "取消會還原原本的設定",
+      (p["screen"], p["wizard_profile"]))
+b18.edit_preferences()
+b18.wizard_toggle_allergen("芝麻")
+b18.on_hardware_barcode("4710428061234")
+b18.on_weight_sample(400.0)                # 精靈進行中發生秤重異常
+p = b18.get_state()
+check(p["screen"] == "weight_alert", "秤重異常蓋過精靈畫面", p["screen"])
+p = b18.void_pending()
+check(p["screen"] == "allergens", "異常處理完回到精靈原本那一步", p["screen"])
+for stage in ("diet", "religion", "budget"):
+    b18.wizard_goto(stage)
+p = b18.set_budget("1500")
+check(p["screen"] == "shopping" and p["notice"] == "偏好設定已更新", "完成後回購物畫面", (p["screen"], p["notice"]))
+check(b18.db.get_preferences("MEMBER-0001").allergens == ["花生", "芝麻"], "新的偏好已存檔")
+b18.lock_checkout()
+p = b18.edit_preferences()
+check(bool(p["last_error"]) and p["screen"] == "checkout", "結帳鎖定中不能改偏好", p["screen"])
+
+print("\n[19] 繪圖設定固定：終端機殘留的測試變數不會影響 app")
+import ui.app_gui as app_mod  # noqa: E402
+dirty = {"WEBKIT_DISABLE_COMPOSITING_MODE": "1", "WEBKIT_DISABLE_DMABUF_RENDERER": "0",
+         "GDK_BACKEND": "x11", "LIBGL_ALWAYS_SOFTWARE": "1", "WEBKIT_SKIA_ENABLE_CPU_RENDERING": "1",
+         "HOME": "/home/x", "WAYLAND_DISPLAY": "wayland-0"}
+changed = app_mod.apply_render_env(dirty)
+check(dirty == {"WEBKIT_DISABLE_DMABUF_RENDERER": "1", "HOME": "/home/x", "WAYLAND_DISPLAY": "wayland-0"},
+      "只留下固定的那一組，其他繪圖變數全部清掉，無關的變數不動", dirty)
+check(len(changed) == 5, "每一個被清掉或改掉的都回報出來", changed)
+clean = {"WEBKIT_DISABLE_DMABUF_RENDERER": "1"}
+check(app_mod.apply_render_env(clean) == [] and clean == {"WEBKIT_DISABLE_DMABUF_RENDERER": "1"},
+      "已經是正確設定時什麼都不報")
+import os  # noqa: E402
+check(os.environ.get("WEBKIT_DISABLE_DMABUF_RENDERER") == "1" and "WEBKIT_DISABLE_COMPOSITING_MODE" not in os.environ,
+      "載入 ui.app_gui 時已經套用（GPU 繪製、關 DMA-BUF）")
 
 # ======================================================================
 print("\n" + "=" * 60)

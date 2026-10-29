@@ -1,0 +1,139 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&display=swap');
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .sysbar { display:flex; align-items:center; justify-content:space-between; padding:8px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+    .sysbar .row { display:flex; align-items:center; gap:8px; }
+
+    .statusbar { display:flex; align-items:center; justify-content:space-between; padding:14px 22px; border-bottom:2px dashed #1a1a1a; font-size:24px; font-weight:700; }
+    .member-tag { font-size:16px; font-weight:400; border:1.5px solid #1a1a1a; border-radius:12px; padding:3px 12px; }
+
+    .scroll-body { flex:1; min-height:0; overflow:auto; }
+    .section { padding:16px 22px; border-bottom:2px dashed #1a1a1a; }
+    .section-title { font-size:25px; font-weight:700; margin:0 0 4px; }
+    .section-sub { font-size:15px; color:#777; margin:0 0 12px; }
+
+    .member-line { font-size:21px; }
+    .guest-note { font-size:16px; color:#777; margin-top:6px; }
+
+    .grid4 { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:10px; }
+    .opt { border:2.5px solid #1a1a1a; border-radius:8px; padding:12px 6px; font-size:19px; text-align:center; background:#fff; }
+    .opt-selected { background:#1a1a1a; color:#fff; }
+    .custom-row { margin-top:12px; display:flex; align-items:center; gap:10px; font-size:17px; }
+    .custom-input { flex:1; border:2px dashed #1a1a1a; border-radius:6px; padding:10px; text-align:center; }
+    .btn-small { border:2px solid #1a1a1a; border-radius:6px; padding:10px 18px; font-size:17px; background:#fff; }
+
+    .pref-row { display:flex; justify-content:space-between; gap:16px; padding:8px 0; font-size:19px; border-bottom:1px dashed #ddd; }
+    .pref-row:last-child { border-bottom:none; }
+    .pref-key { color:#555; white-space:nowrap; }
+    .pref-val { text-align:right; }
+    .btn-outline { width:100%; margin-top:12px; border:2.5px solid #1a1a1a; border-radius:8px; padding:12px; font-size:20px; background:#fff; }
+
+    .tx-row { display:flex; justify-content:space-between; padding:9px 0; font-size:19px; border-bottom:1px dashed #ddd; }
+    .tx-row:last-child { border-bottom:none; }
+    .tx-meta { color:#777; font-size:16px; }
+
+    .bottomnav { display:flex; border-top:2px dashed #1a1a1a; background:#fdfcf9; }
+    .navitem { flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; padding:10px 2px 12px; font-size:18px; color:#777; }
+    .navitem svg { stroke:#777; }
+    .navitem.active { color:#1a1a1a; font-weight:700; }
+    .navitem.active svg { stroke:#1a1a1a; }
+  </style>
+</helmet>
+
+<div class="sysbar">
+  <div class="row">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 90%</span></div>
+</div>
+
+<div class="statusbar">
+  <span>我的</span>
+  <span class="member-tag">會員</span>
+</div>
+
+<div class="scroll-body">
+  <div class="section">
+    <div class="section-title">會員資料</div>
+    <div class="member-line">王小明　（MEMBER-0001）</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">本次預算</div>
+    <div class="section-sub">購物中隨時可以改；會員的話也會記成下次的預設</div>
+    <div class="grid4">
+      <div class="opt">$500</div>
+      <div class="opt opt-selected">$1000</div>
+      <div class="opt">$1500</div>
+      <div class="opt">不限</div>
+    </div>
+    <div class="custom-row">
+      <span>或自訂金額</span>
+      <div class="custom-input">$ ____</div>
+      <div class="btn-small">設定</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">健康偏好</div>
+    <div class="section-sub">登入時的偏好精靈設定的內容</div>
+    <div class="pref-list">
+      <div class="pref-row"><span class="pref-key">過敏原</span><span class="pref-val">花生、芝麻</span></div>
+      <div class="pref-row"><span class="pref-key">葷素習慣</span><span class="pref-val">蛋奶素</span></div>
+      <div class="pref-row"><span class="pref-key">宗教飲食</span><span class="pref-val">無特別宗教飲食規範</span></div>
+    </div>
+    <div class="btn-outline">重新設定偏好 →</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">最近消費紀錄</div>
+    <div class="tx-list">
+      <div class="tx-row"><span>10/27 18:42　<span class="tx-meta">3 件・LINE Pay</span></span><span>$95</span></div>
+      <div class="tx-row"><span>10/25 12:10　<span class="tx-meta">1 件・信用卡支付</span></span><span>$25</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="bottomnav">
+  <div class="navitem">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+    清單
+  </div>
+  <div class="navitem">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s7-7.58 7-12a7 7 0 1 0-14 0c0 4.42 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>
+    找貨
+  </div>
+  <div class="navitem">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 12 22 2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"/><circle cx="7" cy="7" r="1.4" fill="currentColor" stroke="none"/></svg>
+    優惠
+  </div>
+  <div class="navitem active">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>
+    我的
+  </div>
+  <div class="navitem">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/><path d="M3 4h2l2.2 11.2a2 2 0 0 0 2 1.6h7.6a2 2 0 0 0 2-1.6L21 8H6"/></svg>
+    結帳
+  </div>
+</div>
+
+</x-dc>
+</body>
+</html>

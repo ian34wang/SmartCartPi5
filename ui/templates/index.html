@@ -40,6 +40,14 @@
   }
   #f-toast.show { opacity:1; }
 
+  /* 有待處理的協助請求時一直顯示，直到店員刷工作證處理掉 */
+  #f-assist-banner {
+    position:absolute; left:12px; right:12px; bottom:96px; z-index:99996;
+    background:#fff8dc; border:2px solid #1a1a1a; border-radius:8px;
+    padding:10px 14px; font-size:17px; text-align:center;
+  }
+  #f-assist-banner[hidden] { display:none; }
+
   /* 開發測試面板：真實硬體（掃描器/UART/閘門）還沒做好之前，用這裡模擬事件 */
   #dev-panel {
     position:absolute; top:0; left:0; right:0; bottom:0; z-index:99997;
@@ -315,6 +323,42 @@
 #screen-promotions .navitem.active svg { stroke:#1a1a1a; }
 #screen-promotions .nav-badge { position:relative; }
 #screen-promotions .nav-dot { position:absolute; top:-2px; right:-4px; width:8px; height:8px; border-radius:50%; background:#1a1a1a; }
+#screen-profile 700&display=swap');
+    * { box-sizing: border-box; }
+#screen-profile { margin: 0; width: 720px; height: 1280px;
+      font-family: 'Kalam', 'Comic Sans MS', cursive;
+      background: #fdfcf9; color: #1a1a1a;
+      border: 3px solid #1a1a1a;
+       flex-direction: column; overflow: hidden; }
+#screen-profile .sysbar { display:flex; align-items:center; justify-content:space-between; padding:8px 22px; font-size:16px; color:#555; border-bottom:1px solid #bbb; background:#f2f1ec; }
+#screen-profile .sysbar .row { display:flex; align-items:center; gap:8px; }
+#screen-profile .statusbar { display:flex; align-items:center; justify-content:space-between; padding:14px 22px; border-bottom:2px dashed #1a1a1a; font-size:24px; font-weight:700; }
+#screen-profile .member-tag { font-size:16px; font-weight:400; border:1.5px solid #1a1a1a; border-radius:12px; padding:3px 12px; }
+#screen-profile .scroll-body { flex:1; min-height:0; overflow:auto; }
+#screen-profile .section { padding:16px 22px; border-bottom:2px dashed #1a1a1a; }
+#screen-profile .section-title { font-size:25px; font-weight:700; margin:0 0 4px; }
+#screen-profile .section-sub { font-size:15px; color:#777; margin:0 0 12px; }
+#screen-profile .member-line { font-size:21px; }
+#screen-profile .guest-note { font-size:16px; color:#777; margin-top:6px; }
+#screen-profile .grid4 { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:10px; }
+#screen-profile .opt { border:2.5px solid #1a1a1a; border-radius:8px; padding:12px 6px; font-size:19px; text-align:center; background:#fff; }
+#screen-profile .opt-selected { background:#1a1a1a; color:#fff; }
+#screen-profile .custom-row { margin-top:12px; display:flex; align-items:center; gap:10px; font-size:17px; }
+#screen-profile .custom-input { flex:1; border:2px dashed #1a1a1a; border-radius:6px; padding:10px; text-align:center; }
+#screen-profile .btn-small { border:2px solid #1a1a1a; border-radius:6px; padding:10px 18px; font-size:17px; background:#fff; }
+#screen-profile .pref-row { display:flex; justify-content:space-between; gap:16px; padding:8px 0; font-size:19px; border-bottom:1px dashed #ddd; }
+#screen-profile .pref-row:last-child { border-bottom:none; }
+#screen-profile .pref-key { color:#555; white-space:nowrap; }
+#screen-profile .pref-val { text-align:right; }
+#screen-profile .btn-outline { width:100%; margin-top:12px; border:2.5px solid #1a1a1a; border-radius:8px; padding:12px; font-size:20px; background:#fff; }
+#screen-profile .tx-row { display:flex; justify-content:space-between; padding:9px 0; font-size:19px; border-bottom:1px dashed #ddd; }
+#screen-profile .tx-row:last-child { border-bottom:none; }
+#screen-profile .tx-meta { color:#777; font-size:16px; }
+#screen-profile .bottomnav { display:flex; border-top:2px dashed #1a1a1a; background:#fdfcf9; }
+#screen-profile .navitem { flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; padding:10px 2px 12px; font-size:18px; color:#777; }
+#screen-profile .navitem svg { stroke:#777; }
+#screen-profile .navitem.active { color:#1a1a1a; font-weight:700; }
+#screen-profile .navitem.active svg { stroke:#1a1a1a; }
 #screen-weight_alert 700&display=swap');
     * { box-sizing: border-box; }
 #screen-weight_alert { margin: 0; width: 720px; height: 1280px;
@@ -408,6 +452,7 @@
 
 <div id="f-global-error" hidden></div>
 <div id="f-toast"></div>
+<div id="f-assist-banner" hidden></div>
 <div id="app-toolbar">
   <!-- 原本這兩顆用的是 emoji（🛠）。Pi OS 預設沒有裝彩色 emoji 字型，實機上
        會變成一個看不懂的豆腐方框，找不到開發面板在哪——改用純文字標籤。 -->
@@ -484,24 +529,11 @@
 
 <div class="center-stage">
   <div class="member-name">歡迎回來，<span id="f-loading-member-name">會員</span></div>
-  <div class="checklist">
-    <div class="check-row">
-      <div class="check-circle"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
-      過敏原與飲食偏好設定
-    </div>
-    <div class="check-row">
-      <div class="check-circle"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
-      常購清單（3 項）
-    </div>
-    <div class="check-row">
-      <div class="check-circle"></div>
-      本次購物預算 …
-    </div>
-  </div>
+  <div class="checklist" id="f-loading-checklist"></div>
 
   <div class="branch-wrap">
-    <div class="branch">
-      <div class="branch-title">情況 A：找到已儲存的過敏原設定／常購清單</div>
+    <div class="branch" id="f-branch-a">
+      <div class="branch-title">情況 A：找到已儲存的偏好設定</div>
       略過三步驟偏好設定，直接沿用；僅需確認或調整本次預算。
       <div class="branch-cta" onclick="APP.callApi('loading_profile_choice','A')">確認並開始購物 →</div>
     </div>
@@ -866,6 +898,79 @@
   </div>
 </div>
 </div>
+<div class="screen" id="screen-profile">
+<div class="sysbar">
+  <div class="row">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round"><path d="M2 8.5c5.5-5 14.5-5 20 0"/><path d="M5.5 12.5c3.6-3.2 9.4-3.2 13 0"/><path d="M9 16.5c1.9-1.6 4.1-1.6 6 0"/><circle cx="12" cy="20" r="1.2" fill="#555"/></svg>
+    <span>Wi-Fi 連線正常</span>
+  </div>
+  <div class="row"><span>10:25 AM</span><span>🔋 90%</span></div>
+</div>
+
+<div class="statusbar">
+  <span>我的</span>
+  <span class="member-tag" id="f-pf-tag"></span>
+</div>
+
+<div class="scroll-body">
+  <div class="section">
+    <div class="section-title">會員資料</div>
+    <div class="member-line" id="f-pf-member"></div>
+    <div class="guest-note" id="f-pf-guest"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">本次預算</div>
+    <div class="section-sub">購物中隨時可以改；會員的話也會記成下次的預設</div>
+    <div class="grid4">
+      <div class="opt" data-value="500" onclick="APP.callApi('set_session_budget','500')">$500</div>
+      <div class="opt" data-value="1000" onclick="APP.callApi('set_session_budget','1000')">$1000</div>
+      <div class="opt" data-value="1500" onclick="APP.callApi('set_session_budget','1500')">$1500</div>
+      <div class="opt" data-value="unlimited" onclick="APP.callApi('set_session_budget','unlimited')">不限</div>
+    </div>
+    <div class="custom-row">
+      <span>或自訂金額</span>
+      <input id="f-pf-budget" class="custom-input" type="number" placeholder="輸入金額" style="font:inherit;background:#fff;color:#1a1a1a;">
+      <div class="btn-small" onclick="APP.profileCustomBudget()">設定</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">健康偏好</div>
+    <div class="section-sub">登入時的偏好精靈設定的內容</div>
+    <div class="pref-list" id="f-pf-prefs"></div>
+    <div class="btn-outline" onclick="APP.callApi('edit_preferences')">重新設定偏好 →</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">最近消費紀錄</div>
+    <div class="tx-list" id="f-pf-tx"></div>
+  </div>
+</div>
+
+<div class="bottomnav">
+  <div class="navitem" data-tab="shopping">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+    清單
+  </div>
+  <div class="navitem" data-tab="navigation">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s7-7.58 7-12a7 7 0 1 0-14 0c0 4.42 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>
+    找貨
+  </div>
+  <div class="navitem" data-tab="promotions">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 12 22 2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"/><circle cx="7" cy="7" r="1.4" fill="currentColor" stroke="none"/></svg>
+    優惠
+  </div>
+  <div class="navitem active" data-tab="profile">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>
+    我的
+  </div>
+  <div class="navitem" data-tab="checkout">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/><path d="M3 4h2l2.2 11.2a2 2 0 0 0 2 1.6h7.6a2 2 0 0 0 2-1.6L21 8H6"/></svg>
+    結帳
+  </div>
+</div>
+</div>
 <div class="screen" id="screen-weight_alert">
 <div class="sysbar">
   <div class="row">
@@ -897,9 +1002,10 @@
     <button class="btn btn-primary" onclick="APP.callApi('void_pending')">放棄此次動作</button>
   </div>
   <div class="btn-row">
-    <button class="btn btn-dashed" onclick="APP.toast('重新校準歸零：尚未串接（規劃中）')">重新校準歸零</button>
-    <button class="btn btn-dashed" onclick="APP.toast('呼叫店員協助：尚未串接（規劃中）')">呼叫店員協助</button>
+    <button class="btn btn-dashed" onclick="APP.callApi('request_rezero')">重新校準歸零</button>
+    <button class="btn btn-dashed" onclick="APP.callApi('request_assistance','weight_alert')">呼叫店員協助</button>
   </div>
+  <div id="f-wa-staff" style="font-size:18px;font-weight:700;margin-top:10px;"></div>
 </div>
 
 <div class="footnote">為保障您與賣場權益，此畫面無法略過，請依指示排除異常</div>
@@ -915,7 +1021,7 @@
 
 <div class="statusbar">
   <span>購物車自助結帳</span>
-  <button class="back-btn" onclick="APP.toast('目前狀態機還沒有「解除鎖定」事件，暫時無法從這裡返回——已知待補')">✕ 返回繼續選購</button>
+  <button class="back-btn" onclick="APP.callApi('unlock_checkout')">✕ 返回繼續選購</button>
 </div>
 <div class="back-link">（返回將解除清單鎖定，可能需重新核對重量）</div>
 
@@ -939,7 +1045,7 @@
 </div>
 
 <div class="footer-cta">
-  <button class="btn-primary" onclick="APP.callApi('confirm_payment')">確認付款，推車直接離場</button>
+  <button class="btn-primary" onclick="APP.confirmPayment()">確認付款，推車直接離場</button>
 </div>
 
 <div class="bottomnav">
@@ -990,7 +1096,7 @@
   閘門狀態：已解鎖，請直接推車通過
 </div>
 <div class="footer-alt">
-  <button class="btn-dashed" onclick="APP.toast('需要協助：尚未串接店員通知系統（規劃中）')">取消本次結帳／需要協助</button>
+  <button class="btn-dashed" onclick="APP.callApi('request_assistance','exit_confirm')">取消本次結帳／需要協助</button>
 </div>
 </div>
 
@@ -1026,7 +1132,7 @@
 (function () {
   "use strict";
 
-  var SHOPPING_FAMILY = ["shopping", "navigation", "promotions"];
+  var SHOPPING_FAMILY = ["shopping", "navigation", "promotions", "profile"];
   var NAV_TABS = ["shopping", "navigation", "promotions", "profile", "checkout"];
   var currentTab = "shopping";
   var lastState = null;
@@ -1049,7 +1155,6 @@
 
   function showTab(id) {
     if (id === "checkout") { callApi("lock_checkout"); return; }
-    if (id === "profile") { toast("「我的」功能尚未實作"); return; }
     currentTab = id;
     showScreen(id);
   }
@@ -1105,6 +1210,25 @@
     callApi("set_budget", v);
   }
 
+  function confirmPayment() {
+    var sel = document.querySelector("#screen-checkout .pay-btn.selected");
+    callApi("confirm_payment", sel ? sel.textContent.trim() : "");
+  }
+
+  function profileCustomBudget() {
+    var el = document.getElementById("f-pf-budget");
+    if (!el || !el.value) { toast("請先輸入金額"); return; }
+    callApi("set_session_budget", el.value);
+    el.value = "";
+  }
+
+  var CHECK_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="3" ' +
+    'stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+  function checkRow(ok, text) {
+    return '<div class="check-row"><div class="check-circle">' + (ok ? CHECK_SVG : "") + '</div>' + esc(text) + '</div>';
+  }
+  function listText(arr) { return arr && arr.length ? arr.join("、") : "未設定"; }
+
   function selectPay(el) {
     var parent = el.parentElement;
     Array.prototype.forEach.call(parent.children, function (c) { c.classList.remove("selected"); });
@@ -1125,9 +1249,22 @@
     }).join("");
   }
 
+  var lastScreen = null;
   function render(payload) {
     if (!payload) return;
+    var prevScreen = lastScreen;
+    lastScreen = payload.screen;
     lastState = payload;
+    if (payload.notice) toast(payload.notice);
+
+    var assistEl = document.getElementById("f-assist-banner");
+    if (payload.assist_open) {
+      assistEl.textContent = "已通知店員（" + payload.assist_open.time + "）：" + payload.assist_open.reason +
+        "——請在原地稍候，店員刷工作證即完成處理";
+      assistEl.hidden = false;
+    } else {
+      assistEl.hidden = true;
+    }
 
     var errEl = document.getElementById("f-global-error");
     if (payload.last_error) { errEl.textContent = payload.last_error; errEl.hidden = false; }
@@ -1143,9 +1280,34 @@
       showScreen(payload.screen);
     }
 
-    // 載入會員資料
+    // 載入會員資料：依資料庫裡真的有沒有已儲存的設定
     var nameEl = document.getElementById("f-loading-member-name");
     if (nameEl) nameEl.textContent = payload.member_name || payload.member_id || "會員";
+    var sp = payload.saved_profile || {exists: false};
+    var checklist = document.getElementById("f-loading-checklist");
+    if (checklist) {
+      if (sp.exists) {
+        checklist.innerHTML =
+          checkRow(true, "過敏原：" + listText(sp.allergens)) +
+          checkRow(true, "葷素：" + (sp.diet || "未設定") + "　宗教飲食：" + listText(sp.religion)) +
+          checkRow(true, "上次預算：" + sp.budget_text + "（" + sp.updated + " 儲存）");
+      } else {
+        checklist.innerHTML = checkRow(false, payload.is_guest ?
+          "訪客身份：設定只用在這次購物，不會儲存" : "還沒有儲存過偏好設定");
+      }
+    }
+    var branchA = document.getElementById("f-branch-a");
+    if (branchA) branchA.style.opacity = sp.exists ? "1" : "0.45";
+
+    // 預算：剛進到預算這一步時，依目前的值（情境 A 讀回來的、或從「我的」改過的）預先選好
+    if (payload.screen === "budget" && prevScreen !== "budget") {
+      var b = payload.budget;
+      var preset = b == null ? "unlimited" : String(b);
+      var custom = document.getElementById("f-budget-custom");
+      var isPreset = ["500", "1000", "1500", "unlimited"].indexOf(preset) !== -1;
+      if (custom) custom.value = isPreset ? "" : preset;
+      budgetPick(preset);
+    }
 
     // 偏好精靈：反映目前已選項目
     document.querySelectorAll("#screen-allergens .chip[data-name]").forEach(function (el) {
@@ -1228,6 +1390,43 @@
       waFacts.innerHTML = lines.map(function (l) { return "<div>" + l + "</div>"; }).join("");
     }
 
+    var waStaff = document.getElementById("f-wa-staff");
+    if (waStaff) {
+      waStaff.textContent = payload.staff_pending === "rezero" ?
+        "已送出歸零申請：等待店員刷工作證確認（確認後以目前重量為新基準）" : "";
+    }
+
+    // 我的
+    var pfTag = document.getElementById("f-pf-tag");
+    if (pfTag) pfTag.textContent = payload.is_guest ? "訪客" : "會員";
+    var pfMember = document.getElementById("f-pf-member");
+    if (pfMember) pfMember.textContent = (payload.member_name || "—") + "　（" + (payload.member_id || "未登入") + "）";
+    var pfGuest = document.getElementById("f-pf-guest");
+    if (pfGuest) pfGuest.textContent = payload.is_guest ?
+      "訪客身份：偏好只用在這次購物、不會儲存，也沒有消費紀錄" : "";
+    document.querySelectorAll("#screen-profile .opt[data-value]").forEach(function (el) {
+      var v = payload.budget == null ? "unlimited" : String(payload.budget);
+      el.classList.toggle("opt-selected", el.dataset.value === v);
+    });
+    var pfPrefs = document.getElementById("f-pf-prefs");
+    if (pfPrefs) {
+      var wp = payload.wizard_profile;
+      pfPrefs.innerHTML = [["過敏原", listText(wp.allergens)], ["葷素習慣", wp.diet || "未設定"],
+                           ["宗教飲食", listText(wp.religion)]].map(function (r) {
+        return '<div class="pref-row"><span class="pref-key">' + r[0] + '</span><span class="pref-val">' +
+          esc(r[1]) + '</span></div>';
+      }).join("");
+    }
+    var pfTx = document.getElementById("f-pf-tx");
+    if (pfTx) {
+      var txs = payload.recent_transactions || [];
+      pfTx.innerHTML = txs.length ? txs.map(function (t) {
+        return '<div class="tx-row"><span>' + esc(t.paid_at) + '　<span class="tx-meta">' + t.item_count + ' 件' +
+          (t.method ? "・" + esc(t.method) : "") + '</span></span><span>$' + t.total.toFixed(0) + '</span></div>';
+      }).join("") : '<div style="color:#999;padding:8px 0;">' +
+        (payload.is_guest ? "訪客沒有消費紀錄" : "還沒有消費紀錄") + '</div>';
+    }
+
     var exitAmount = document.getElementById("f-exit-amount");
     if (exitAmount) exitAmount.textContent = "應付金額 $" + payload.cart_total.toFixed(0) + " 已成功扣款";
     var exitTimer = document.getElementById("f-exit-timer");
@@ -1292,6 +1491,7 @@
     callApi: callApi, showTab: showTab, toast: toast, toggleDevPanel: toggleDevPanel,
     wizardToggle: wizardToggle, wizardSetDiet: wizardSetDiet,
     budgetPick: budgetPick, confirmBudget: confirmBudget, selectPay: selectPay,
+    confirmPayment: confirmPayment, profileCustomBudget: profileCustomBudget,
     render: render,
   };
 })();

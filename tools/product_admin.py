@@ -49,6 +49,12 @@ tools/product_admin.py
     python3 -m tools.product_admin delete 4710018001234
     python3 -m tools.product_admin import products.csv       # 從 CSV 批次匯入/更新
     python3 -m tools.product_admin export products_backup.csv
+    python3 -m tools.product_admin staff-list               # 店員工作證
+    python3 -m tools.product_admin staff-add                # 新增／修改店員（工作證可直接刷）
+    python3 -m tools.product_admin staff-delete STAFF-0002
+    python3 -m tools.product_admin assist-list               # 待處理的協助請求（--all 含已處理）
+    python3 -m tools.product_admin assist-resolve 3 --by STAFF-0001   # 手動標成已處理（all = 全部）
+    python3 -m tools.product_admin tx-list                   # 最近的交易紀錄（--member 篩選、--limit 筆數）
 
     全部指令都可以加 --db /path/to/inventory.db 指定資料庫路徑（預設跟
     database/db_manager.py 一樣，是 database/inventory.db）；`add`/`edit`
@@ -83,7 +89,7 @@ from typing import List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from database.db_manager import DBManager, Member, Product  # noqa: E402
+from database.db_manager import DBManager, Member, Product, Staff  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -510,6 +516,105 @@ def cmd_member_delete(db: DBManager, args, _gauge: Optional[WeightGauge] = None)
     print(f"已刪除會員：{args.member_id}　{existing.name}")
 
 
+# ----------------------------------------------------------------------
+# 店員工作證、協助請求、交易紀錄
+# ----------------------------------------------------------------------
+# 購物車畫面上的「呼叫店員協助」「取消本次結帳／需要協助」「重新校準歸零」
+# 都會寫一筆協助請求（沒有另外的店員通知系統），這裡就是店員看的地方。
+# 店員到購物車旁邊刷工作證，那台車的待處理請求會自動標成已處理；這裡的
+# assist-resolve 是給「不用到場就處理掉」的情況。
+def _fmt_t(t) -> str:
+    return "—" if t is None else time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
+
+
+def cmd_staff_list(db: DBManager, _args, _gauge: Optional[WeightGauge] = None) -> None:
+    staff = db.list_staff()
+    if not staff:
+        print("（目前沒有任何店員工作證）")
+        return
+    print(f"{'工作證代碼':<20} 姓名")
+    print("-" * 40)
+    for st in staff:
+        print(f"{st.staff_id:<20} {st.name}")
+
+
+def cmd_staff_add(db: DBManager, args, _gauge: Optional[WeightGauge] = None) -> None:
+    prefix = _staff_prefix()
+    staff_id = args.staff_id or input(f"工作證代碼（可直接刷；必須以 {prefix!r} 開頭）：").strip()
+    if not staff_id:
+        print("已取消（沒有輸入代碼）。")
+        return
+    if prefix and not staff_id.startswith(prefix):
+        print(f"[錯誤] 工作證代碼要以 {prefix!r} 開頭，購物車才認得出這是工作證"
+              "（config.json 的 state_machine.staff_barcode_prefix）。")
+        return
+    existing = db.get_staff(staff_id)
+    name = args.name or _prompt("姓名", existing.name if existing else None)
+    if not name:
+        print("已取消（沒有輸入姓名）。")
+        return
+    db.upsert_staff(Staff(staff_id=staff_id, name=name))
+    print(f"{'已更新' if existing else '已新增'}店員：{staff_id}　{name}")
+
+
+def cmd_staff_delete(db: DBManager, args, _gauge: Optional[WeightGauge] = None) -> None:
+    existing = db.get_staff(args.staff_id)
+    if existing is None:
+        print(f"[錯誤] 工作證 {args.staff_id} 不在資料庫裡")
+        return
+    if not args.yes and input(f"確定要刪除店員「{existing.name}」（{existing.staff_id}）？輸入 y 確認：").strip().lower() != "y":
+        print("已取消。")
+        return
+    db.delete_staff(args.staff_id)
+    print(f"已刪除店員：{args.staff_id}　{existing.name}")
+
+
+def cmd_assist_list(db: DBManager, args, _gauge: Optional[WeightGauge] = None) -> None:
+    reqs = db.list_assistance_requests(status=None if getattr(args, "all", False) else "open")
+    if not reqs:
+        print("（沒有待處理的協助請求）" if not getattr(args, "all", False) else "（沒有任何協助請求）")
+        return
+    for r in reqs:
+        status = "待處理" if r.status == "open" else f"已處理（{r.resolved_by}，{_fmt_t(r.resolved_at)}）"
+        cart = "、".join(f"{c['name']}×{c['quantity']}" for c in r.cart) or "（空）"
+        print(f"#{r.id}  {_fmt_t(r.created_at)}  {status}")
+        print(f"    原因：{r.reason}")
+        print(f"    會員：{r.member_id or '（未登入）'}　狀態：{r.sm_state}　畫面：{r.screen}")
+        print(f"    當時購物車：{cart}")
+
+
+def cmd_assist_resolve(db: DBManager, args, _gauge: Optional[WeightGauge] = None) -> None:
+    by = args.by or input("處理人（工作證代碼或姓名）：").strip()
+    if not by:
+        print("已取消（沒有輸入處理人）。")
+        return
+    ids = None if args.request_id == "all" else [int(args.request_id)]
+    n = db.resolve_assistance_requests(by, time.time(), ids)
+    print(f"已標記 {n} 筆為已處理。" if n else "沒有符合的待處理請求。")
+
+
+def cmd_tx_list(db: DBManager, args, _gauge: Optional[WeightGauge] = None) -> None:
+    txs = db.list_transactions(member_id=getattr(args, "member", None) or None,
+                               limit=getattr(args, "limit", None) or 20)
+    if not txs:
+        print("（沒有交易紀錄）")
+        return
+    for t in txs:
+        who = "訪客" if t.is_guest else t.member_id
+        print(f"#{t.id}  付款 {_fmt_t(t.paid_at)}　出場 {_fmt_t(t.exited_at)}　{who}　"
+              f"{t.item_count} 件　${t.total:.0f}　{t.payment_method or ''}")
+        for it in t.items:
+            print(f"    {it.name}（{it.barcode}）×{it.quantity}　${it.subtotal:.0f}")
+
+
+def _staff_prefix() -> str:
+    try:
+        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f).get("state_machine", {}).get("staff_barcode_prefix", "STAFF-")
+    except Exception:  # noqa: BLE001
+        return "STAFF-"
+
+
 def _login_prefix() -> str:
     """會員條碼前綴，讀 config.json 的 state_machine.login_barcode_prefix。"""
     try:
@@ -534,6 +639,12 @@ def _run_menu(db: DBManager, gauge: WeightGauge) -> None:
             "7) 列出所有會員\n"
             "8) 新增／修改會員（會員條碼可直接刷）\n"
             "9) 刪除會員\n"
+            "--- 店員／協助／交易 ---\n"
+            "10) 列出店員工作證\n"
+            "11) 新增／修改店員（工作證可直接刷）\n"
+            "12) 待處理的協助請求\n"
+            "13) 把協助請求標成已處理\n"
+            "14) 最近的交易紀錄\n"
             "0) 離開"
         )
         choice = input("請選擇：").strip()
@@ -568,6 +679,18 @@ def _run_menu(db: DBManager, gauge: WeightGauge) -> None:
         elif choice == "9":
             member_id = input("要刪除哪個會員代碼：").strip()
             cmd_member_delete(db, argparse.Namespace(member_id=member_id, yes=False))
+        elif choice == "10":
+            cmd_staff_list(db, None)
+        elif choice == "11":
+            cmd_staff_add(db, argparse.Namespace(staff_id=None, name=None))
+        elif choice == "12":
+            cmd_assist_list(db, argparse.Namespace(all=False))
+        elif choice == "13":
+            rid = input("請求編號（全部輸入 all）：").strip()
+            if rid:
+                cmd_assist_resolve(db, argparse.Namespace(request_id=rid, by=None))
+        elif choice == "14":
+            cmd_tx_list(db, argparse.Namespace(member=None, limit=20))
         else:
             print("看不懂這個選項，請輸入選單裡列出的數字。")
 
@@ -627,6 +750,24 @@ def _main() -> int:
     p_mdel.add_argument("member_id")
     p_mdel.add_argument("-y", "--yes", action="store_true", help="不詢問直接刪除")
 
+    sub.add_parser("staff-list", help="列出店員工作證")
+    p_sadd = sub.add_parser("staff-add", help="新增／修改店員（不加參數走互動輸入，工作證可直接刷）")
+    p_sadd.add_argument("--staff-id")
+    p_sadd.add_argument("--name")
+    p_sdel = sub.add_parser("staff-delete", help="刪除店員")
+    p_sdel.add_argument("staff_id")
+    p_sdel.add_argument("-y", "--yes", action="store_true", help="不詢問直接刪除")
+
+    p_alist = sub.add_parser("assist-list", help="待處理的協助請求")
+    p_alist.add_argument("--all", action="store_true", help="含已處理的")
+    p_ares = sub.add_parser("assist-resolve", help="把協助請求標成已處理")
+    p_ares.add_argument("request_id", help="請求編號，或 all")
+    p_ares.add_argument("--by", help="處理人")
+
+    p_tx = sub.add_parser("tx-list", help="最近的交易紀錄")
+    p_tx.add_argument("--member", help="只列這個會員代碼")
+    p_tx.add_argument("--limit", type=int, default=20)
+
     args = parser.parse_args()
     db = DBManager(args.db)
     # seed=False：只建表，不要灌測試資料。這支是「建立正式商品目錄」的後台，
@@ -646,6 +787,8 @@ def _main() -> int:
         "import": cmd_import, "export": cmd_export,
         "member-list": cmd_member_list, "member-add": cmd_member_add,
         "member-delete": cmd_member_delete,
+        "staff-list": cmd_staff_list, "staff-add": cmd_staff_add, "staff-delete": cmd_staff_delete,
+        "assist-list": cmd_assist_list, "assist-resolve": cmd_assist_resolve, "tx-list": cmd_tx_list,
     }
     try:
         if args.command is None:

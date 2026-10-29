@@ -158,6 +158,8 @@ ALERT_SHOPPING_IDLE = "shopping_idle_timeout"
 ALERT_LOGOUT_REJECTED_SESSION_NOT_CLOSED = "logout_rejected_session_not_closed"
 ALERT_FORCE_LOGOUT_WITH_ITEMS = "force_logout_with_items_abandoned"
 ALERT_UNEXPECTED_EVENT = "unexpected_event_for_state"
+ALERT_CHECKOUT_UNLOCKED = "checkout_unlocked"
+ALERT_STAFF_REZERO = "staff_rezero_authorized"
 
 # ----------------------------------------------------------------------
 # 事件——每一種外部輸入各自一個 dataclass（不是共用一個 type+payload 的通用
@@ -230,6 +232,33 @@ class VoidPendingItemRequested:
     timestamp: float
 
 @dataclass
+class UnlockCheckoutRequested:
+    """結帳畫面「返回繼續選購」：解除 LOCKED_FOR_CHECKOUT 回到 SHOPPING。
+
+    不會開防損漏洞：鎖定期間秤重讀數只更新 current_weight_g、不動
+    stable_weight_g（見 _on_weight_sample），所以解鎖後第一筆讀數就會拿去跟
+    「鎖定前的穩定重量」比，鎖定期間偷放／偷拿的東西一樣會被偵測成未掃碼的
+    重量變化（AWAITING_ITEM_SCAN）。
+    """
+
+    timestamp: float
+
+@dataclass
+class StaffRezeroAuthorized:
+    """秤重異常畫面「重新校準歸零」，而且店員已經刷工作證確認過。
+
+    效果：放棄待比對的那一筆（不加入也不移除），把目前重量當成新的穩定基準，
+    回到 SHOPPING。這等於「接受籃子裡現在的東西就是對的」，所以只有店員能做：
+    使用者自己按按鈕只會送出協助請求（ui/app_gui.py），要等店員刷了工作證
+    （config.json 的 state_machine.staff_barcode_prefix，staff 資料表裡有的代碼）
+    才會送出這個事件。店員代碼與前後重量都記進警告歷史（ALERT_STAFF_REZERO），
+    事後可以查是誰、在什麼情況下確認的。
+    """
+
+    staff_id: str
+    timestamp: float
+
+@dataclass
 class LogoutRequested:
     timestamp: float
 
@@ -265,6 +294,8 @@ CartEvent = Union[
     PaymentConfirmed,
     RetryWeightCheckRequested,
     VoidPendingItemRequested,
+    UnlockCheckoutRequested,
+    StaffRezeroAuthorized,
     LogoutRequested,
     ForceLogoutRequested,
     TimeoutTick,
@@ -365,6 +396,10 @@ class CartStateMachine:
             self._on_retry_weight_check(event)
         elif isinstance(event, VoidPendingItemRequested):
             self._on_void_pending_item(event)
+        elif isinstance(event, UnlockCheckoutRequested):
+            self._on_unlock_checkout(event)
+        elif isinstance(event, StaffRezeroAuthorized):
+            self._on_staff_rezero(event)
         elif isinstance(event, LogoutRequested):
             self._on_logout_requested(event)
         elif isinstance(event, ForceLogoutRequested):
@@ -763,6 +798,37 @@ class CartStateMachine:
         s.state = STATE_SHOPPING
         s.last_activity_at = event.timestamp
 
+    def _on_staff_rezero(self, event: StaffRezeroAuthorized) -> None:
+        s = self._session
+        if s.state != STATE_WEIGHT_MISMATCH_ERROR:
+            self._alert(
+                SEVERITY_INFO, ALERT_UNEXPECTED_EVENT,
+                f"狀態 {s.state} 不是秤重異常，忽略重新校準歸零",
+                event.timestamp,
+            )
+            return
+        if s.current_weight_g is None or not s.sensor_connected:
+            self._alert(
+                SEVERITY_WARNING, ALERT_SENSOR_DISCONNECTED,
+                "秤重資料還沒恢復，無法重新校準歸零",
+                event.timestamp,
+            )
+            return
+        old = s.stable_weight_g
+        pending = s.pending_item_barcode
+        self._clear_pending()
+        s.stable_weight_g = s.current_weight_g
+        s.state = STATE_SHOPPING
+        s.last_activity_at = event.timestamp
+        old_text = "（無）" if old is None else f"{old:.1f}g"
+        diff_text = "" if old is None else f"，差 {s.current_weight_g - old:+.1f}g"
+        self._alert(
+            SEVERITY_INFO, ALERT_STAFF_REZERO,
+            f"店員 {event.staff_id} 確認後重新校準歸零：基準 {old_text} → {s.current_weight_g:.1f}g{diff_text}"
+            + (f"；待比對的條碼 {pending} 不加入也不移除" if pending else ""),
+            event.timestamp,
+        )
+
     # ------------------------------------------------------------------
     # 感測器斷線/恢復
     # ------------------------------------------------------------------
@@ -821,6 +887,24 @@ class CartStateMachine:
                 f"狀態 {s.state} 不允許鎖定結帳",
                 event.timestamp,
             )
+
+    def _on_unlock_checkout(self, event: UnlockCheckoutRequested) -> None:
+        s = self._session
+        if s.state != STATE_LOCKED_FOR_CHECKOUT:
+            self._alert(
+                SEVERITY_INFO, ALERT_UNEXPECTED_EVENT,
+                f"狀態 {s.state} 沒有鎖定結帳，忽略解除鎖定",
+                event.timestamp,
+            )
+            return
+        s.state = STATE_SHOPPING
+        s.locked_at = None
+        s.last_activity_at = event.timestamp
+        self._alert(
+            SEVERITY_INFO, ALERT_CHECKOUT_UNLOCKED,
+            "解除結帳鎖定，回到購物中（鎖定期間的重量變化會在下一筆讀數重新核對）",
+            event.timestamp,
+        )
 
     def _on_payment_confirmed(self, event: PaymentConfirmed) -> None:
         s = self._session

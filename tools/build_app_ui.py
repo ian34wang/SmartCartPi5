@@ -14,7 +14,7 @@ DBManager 互動的單頁應用（SPA），而不是靜態範例資料。
 
 做法：
   1. 每個畫面的 <style> 內容，選擇器全部加上 #screen-<id> 前綴（body 規則變
-     成該畫面容器本身的樣式），避免 13 份原本各自獨立的 CSS 混在同一頁時互
+     成該畫面容器本身的樣式），避免 14 份原本各自獨立的 CSS 混在同一頁時互
      相污染 class 名稱。
   2. 每個畫面的內容，做少量針對性補丁：把原本示範用的假資料容器換成有 id
      的空容器（交給 JS render() 動態填）、把按鈕/選項加上 onclick 呼叫
@@ -45,6 +45,7 @@ SCREENS = [
     ("Shopping.dc.html", "shopping"),
     ("Navigation.dc.html", "navigation"),
     ("Promotions.dc.html", "promotions"),
+    ("Profile.dc.html", "profile"),
     ("WeightAlert.dc.html", "weight_alert"),
     ("Checkout.dc.html", "checkout"),
     ("ExitConfirm.dc.html", "exit_confirm"),
@@ -131,6 +132,32 @@ def remove_balanced_div(html, start_marker, count=1):
     return html
 
 
+def must_replace(html, old, new, count=1):
+    """跟 str.replace 一樣，但目標字串出現次數不對就直接報錯。
+
+    舊的補丁用 str.replace，找不到目標時安靜地什麼都不做（見檔案開頭的說明）；
+    2026-10-28 之後新增的補丁一律用這個，設計稿改了結構會在建置時就炸出來，
+    不會等到實機上才發現按鈕沒接上。
+    """
+    n = html.count(old)
+    if n != count:
+        raise ValueError(f"must_replace: 預期找到 {count} 次，實際 {n} 次：{old[:60]!r}")
+    return html.replace(old, new)
+
+
+def replace_balanced_div(html, start_marker, new):
+    """把從 start_marker 開始、配對到它自己結尾的整個 <div> 換成 new。"""
+    start = html.find(start_marker)
+    if start == -1:
+        raise ValueError(f"replace_balanced_div: 找不到起始標記 {start_marker!r}")
+    rest = remove_balanced_div(html[start:], start_marker)
+    return html[:start] + new + rest
+
+
+_NAV_TABS = ['data-tab="shopping"', 'data-tab="navigation"', 'data-tab="promotions"',
+             'data-tab="profile"', 'data-tab="checkout"']
+
+
 # ----------------------------------------------------------------------
 # 每個畫面的針對性補丁
 # ----------------------------------------------------------------------
@@ -170,6 +197,13 @@ def patch_loading_profile(body):
         '<div class="branch-cta">開始設定 →</div>',
         '<div class="branch-cta" onclick="APP.callApi(\'loading_profile_choice\',\'B\')">開始設定 →</div>',
     )
+    # 檢查清單改成依資料庫裡真的有沒有已儲存的設定動態產生（render() 填）
+    body = replace_balanced_div(body, '<div class="checklist">',
+                                '<div class="checklist" id="f-loading-checklist"></div>')
+    # 常購清單還沒有做，標題不要宣稱找得到
+    body = must_replace(body, "情況 A：找到已儲存的過敏原設定／常購清單", "情況 A：找到已儲存的偏好設定")
+    body = must_replace(body, '<div class="branch">\n      <div class="branch-title">情況 A',
+                        '<div class="branch" id="f-branch-a">\n      <div class="branch-title">情況 A')
     return body
 
 
@@ -354,13 +388,17 @@ def patch_weight_alert(body):
         '<button class="btn btn-primary">放棄此次動作</button>',
         '<button class="btn btn-primary" onclick="APP.callApi(\'void_pending\')">放棄此次動作</button>',
     )
-    body = body.replace(
+    # 重新校準歸零＝接受目前重量為正確基準，只送出申請，店員刷工作證才生效
+    body = must_replace(
+        body,
         '<button class="btn btn-dashed">重新校準歸零</button>',
-        '<button class="btn btn-dashed" onclick="APP.toast(\'重新校準歸零：尚未串接（規劃中）\')">重新校準歸零</button>',
+        '<button class="btn btn-dashed" onclick="APP.callApi(\'request_rezero\')">重新校準歸零</button>',
     )
-    body = body.replace(
-        '<button class="btn btn-dashed">呼叫店員協助</button>',
-        '<button class="btn btn-dashed" onclick="APP.toast(\'呼叫店員協助：尚未串接（規劃中）\')">呼叫店員協助</button>',
+    body = must_replace(
+        body,
+        '<button class="btn btn-dashed">呼叫店員協助</button>\n  </div>',
+        '<button class="btn btn-dashed" onclick="APP.callApi(\'request_assistance\',\'weight_alert\')">呼叫店員協助</button>\n  </div>\n'
+        '  <div id="f-wa-staff" style="font-size:18px;font-weight:700;margin-top:10px;"></div>',
     )
     return body
 
@@ -379,9 +417,10 @@ def patch_checkout(body):
         body,
         flags=re.S,
     )
-    body = body.replace(
+    body = must_replace(
+        body,
         '<button class="back-btn">✕ 返回繼續選購</button>',
-        '<button class="back-btn" onclick="APP.toast(\'目前狀態機還沒有「解除鎖定」事件，暫時無法從這裡返回——已知待補\')">✕ 返回繼續選購</button>',
+        '<button class="back-btn" onclick="APP.callApi(\'unlock_checkout\')">✕ 返回繼續選購</button>',
     )
     body = body.replace(
         '<div class="pay-btn selected">LINE Pay</div>',
@@ -391,9 +430,10 @@ def patch_checkout(body):
         '<div class="pay-btn">信用卡支付</div>',
         '<div class="pay-btn" onclick="APP.selectPay(this)">信用卡支付</div>',
     )
-    body = body.replace(
+    body = must_replace(
+        body,
         '<button class="btn-primary">確認付款，推車直接離場</button>',
-        '<button class="btn-primary" onclick="APP.callApi(\'confirm_payment\')">確認付款，推車直接離場</button>',
+        '<button class="btn-primary" onclick="APP.confirmPayment()">確認付款，推車直接離場</button>',
     )
     body = patch_nth_open_tags(
         body,
@@ -416,10 +456,37 @@ def patch_exit_confirm(body):
         '<span id="f-exit-amount">應付金額已成功扣款</span>',
     )
     body = body.replace('<div class="timer-count">02:57</div>', '<div class="timer-count" id="f-exit-timer">--:--</div>')
-    body = body.replace(
+    body = must_replace(
+        body,
         '<button class="btn-dashed">取消本次結帳／需要協助</button>',
-        '<button class="btn-dashed" onclick="APP.toast(\'需要協助：尚未串接店員通知系統（規劃中）\')">取消本次結帳／需要協助</button>',
+        '<button class="btn-dashed" onclick="APP.callApi(\'request_assistance\',\'exit_confirm\')">取消本次結帳／需要協助</button>',
     )
+    return body
+
+
+def patch_profile(body):
+    body = must_replace(body, '<span class="member-tag">會員</span>', '<span class="member-tag" id="f-pf-tag"></span>')
+    body = must_replace(body, '<div class="member-line">王小明　（MEMBER-0001）</div>',
+                        '<div class="member-line" id="f-pf-member"></div>\n    <div class="guest-note" id="f-pf-guest"></div>')
+    for label, value in (("$500", "500"), ("$1000", "1000"), ("$1500", "1500"), ("不限", "unlimited")):
+        body = re.sub(
+            r'<div class="opt( opt-selected)?">' + re.escape(label) + "</div>",
+            f'<div class="opt" data-value="{value}" onclick="APP.callApi(\'set_session_budget\',\'{value}\')">{label}</div>',
+            body, count=1,
+        )
+    if body.count('onclick="APP.callApi(\'set_session_budget\'') != 4:
+        raise ValueError("patch_profile: 預算選項沒有全部接上")
+    body = must_replace(
+        body, '<div class="custom-input">$ ____</div>\n      <div class="btn-small">設定</div>',
+        '<input id="f-pf-budget" class="custom-input" type="number" placeholder="輸入金額" '
+        'style="font:inherit;background:#fff;color:#1a1a1a;">\n'
+        '      <div class="btn-small" onclick="APP.profileCustomBudget()">設定</div>',
+    )
+    body = replace_balanced_div(body, '<div class="pref-list">', '<div class="pref-list" id="f-pf-prefs"></div>')
+    body = must_replace(body, '<div class="btn-outline">重新設定偏好 →</div>',
+                        '<div class="btn-outline" onclick="APP.callApi(\'edit_preferences\')">重新設定偏好 →</div>')
+    body = replace_balanced_div(body, '<div class="tx-list">', '<div class="tx-list" id="f-pf-tx"></div>')
+    body = patch_nth_open_tags(body, r'<div class="navitem( active)?( nav-badge)?">', _NAV_TABS)
     return body
 
 
@@ -434,6 +501,7 @@ PATCHERS = {
     "shopping": patch_shopping,
     "navigation": patch_navigation,
     "promotions": patch_promotions,
+    "profile": patch_profile,
     "weight_alert": patch_weight_alert,
     "checkout": patch_checkout,
     "exit_confirm": patch_exit_confirm,
@@ -500,6 +568,14 @@ TEMPLATE = r"""<!doctype html>
   }
   #f-toast.show { opacity:1; }
 
+  /* 有待處理的協助請求時一直顯示，直到店員刷工作證處理掉 */
+  #f-assist-banner {
+    position:absolute; left:12px; right:12px; bottom:96px; z-index:99996;
+    background:#fff8dc; border:2px solid #1a1a1a; border-radius:8px;
+    padding:10px 14px; font-size:17px; text-align:center;
+  }
+  #f-assist-banner[hidden] { display:none; }
+
   /* 開發測試面板：真實硬體（掃描器/UART/閘門）還沒做好之前，用這裡模擬事件 */
   #dev-panel {
     position:absolute; top:0; left:0; right:0; bottom:0; z-index:99997;
@@ -536,6 +612,7 @@ TEMPLATE = r"""<!doctype html>
 
 <div id="f-global-error" hidden></div>
 <div id="f-toast"></div>
+<div id="f-assist-banner" hidden></div>
 <div id="app-toolbar">
   <!-- 原本這兩顆用的是 emoji（🛠）。Pi OS 預設沒有裝彩色 emoji 字型，實機上
        會變成一個看不懂的豆腐方框，找不到開發面板在哪——改用純文字標籤。 -->
@@ -577,7 +654,7 @@ TEMPLATE = r"""<!doctype html>
 (function () {
   "use strict";
 
-  var SHOPPING_FAMILY = ["shopping", "navigation", "promotions"];
+  var SHOPPING_FAMILY = ["shopping", "navigation", "promotions", "profile"];
   var NAV_TABS = ["shopping", "navigation", "promotions", "profile", "checkout"];
   var currentTab = "shopping";
   var lastState = null;
@@ -600,7 +677,6 @@ TEMPLATE = r"""<!doctype html>
 
   function showTab(id) {
     if (id === "checkout") { callApi("lock_checkout"); return; }
-    if (id === "profile") { toast("「我的」功能尚未實作"); return; }
     currentTab = id;
     showScreen(id);
   }
@@ -656,6 +732,25 @@ TEMPLATE = r"""<!doctype html>
     callApi("set_budget", v);
   }
 
+  function confirmPayment() {
+    var sel = document.querySelector("#screen-checkout .pay-btn.selected");
+    callApi("confirm_payment", sel ? sel.textContent.trim() : "");
+  }
+
+  function profileCustomBudget() {
+    var el = document.getElementById("f-pf-budget");
+    if (!el || !el.value) { toast("請先輸入金額"); return; }
+    callApi("set_session_budget", el.value);
+    el.value = "";
+  }
+
+  var CHECK_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="3" ' +
+    'stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+  function checkRow(ok, text) {
+    return '<div class="check-row"><div class="check-circle">' + (ok ? CHECK_SVG : "") + '</div>' + esc(text) + '</div>';
+  }
+  function listText(arr) { return arr && arr.length ? arr.join("、") : "未設定"; }
+
   function selectPay(el) {
     var parent = el.parentElement;
     Array.prototype.forEach.call(parent.children, function (c) { c.classList.remove("selected"); });
@@ -676,9 +771,22 @@ TEMPLATE = r"""<!doctype html>
     }).join("");
   }
 
+  var lastScreen = null;
   function render(payload) {
     if (!payload) return;
+    var prevScreen = lastScreen;
+    lastScreen = payload.screen;
     lastState = payload;
+    if (payload.notice) toast(payload.notice);
+
+    var assistEl = document.getElementById("f-assist-banner");
+    if (payload.assist_open) {
+      assistEl.textContent = "已通知店員（" + payload.assist_open.time + "）：" + payload.assist_open.reason +
+        "——請在原地稍候，店員刷工作證即完成處理";
+      assistEl.hidden = false;
+    } else {
+      assistEl.hidden = true;
+    }
 
     var errEl = document.getElementById("f-global-error");
     if (payload.last_error) { errEl.textContent = payload.last_error; errEl.hidden = false; }
@@ -694,9 +802,34 @@ TEMPLATE = r"""<!doctype html>
       showScreen(payload.screen);
     }
 
-    // 載入會員資料
+    // 載入會員資料：依資料庫裡真的有沒有已儲存的設定
     var nameEl = document.getElementById("f-loading-member-name");
     if (nameEl) nameEl.textContent = payload.member_name || payload.member_id || "會員";
+    var sp = payload.saved_profile || {exists: false};
+    var checklist = document.getElementById("f-loading-checklist");
+    if (checklist) {
+      if (sp.exists) {
+        checklist.innerHTML =
+          checkRow(true, "過敏原：" + listText(sp.allergens)) +
+          checkRow(true, "葷素：" + (sp.diet || "未設定") + "　宗教飲食：" + listText(sp.religion)) +
+          checkRow(true, "上次預算：" + sp.budget_text + "（" + sp.updated + " 儲存）");
+      } else {
+        checklist.innerHTML = checkRow(false, payload.is_guest ?
+          "訪客身份：設定只用在這次購物，不會儲存" : "還沒有儲存過偏好設定");
+      }
+    }
+    var branchA = document.getElementById("f-branch-a");
+    if (branchA) branchA.style.opacity = sp.exists ? "1" : "0.45";
+
+    // 預算：剛進到預算這一步時，依目前的值（情境 A 讀回來的、或從「我的」改過的）預先選好
+    if (payload.screen === "budget" && prevScreen !== "budget") {
+      var b = payload.budget;
+      var preset = b == null ? "unlimited" : String(b);
+      var custom = document.getElementById("f-budget-custom");
+      var isPreset = ["500", "1000", "1500", "unlimited"].indexOf(preset) !== -1;
+      if (custom) custom.value = isPreset ? "" : preset;
+      budgetPick(preset);
+    }
 
     // 偏好精靈：反映目前已選項目
     document.querySelectorAll("#screen-allergens .chip[data-name]").forEach(function (el) {
@@ -779,6 +912,43 @@ TEMPLATE = r"""<!doctype html>
       waFacts.innerHTML = lines.map(function (l) { return "<div>" + l + "</div>"; }).join("");
     }
 
+    var waStaff = document.getElementById("f-wa-staff");
+    if (waStaff) {
+      waStaff.textContent = payload.staff_pending === "rezero" ?
+        "已送出歸零申請：等待店員刷工作證確認（確認後以目前重量為新基準）" : "";
+    }
+
+    // 我的
+    var pfTag = document.getElementById("f-pf-tag");
+    if (pfTag) pfTag.textContent = payload.is_guest ? "訪客" : "會員";
+    var pfMember = document.getElementById("f-pf-member");
+    if (pfMember) pfMember.textContent = (payload.member_name || "—") + "　（" + (payload.member_id || "未登入") + "）";
+    var pfGuest = document.getElementById("f-pf-guest");
+    if (pfGuest) pfGuest.textContent = payload.is_guest ?
+      "訪客身份：偏好只用在這次購物、不會儲存，也沒有消費紀錄" : "";
+    document.querySelectorAll("#screen-profile .opt[data-value]").forEach(function (el) {
+      var v = payload.budget == null ? "unlimited" : String(payload.budget);
+      el.classList.toggle("opt-selected", el.dataset.value === v);
+    });
+    var pfPrefs = document.getElementById("f-pf-prefs");
+    if (pfPrefs) {
+      var wp = payload.wizard_profile;
+      pfPrefs.innerHTML = [["過敏原", listText(wp.allergens)], ["葷素習慣", wp.diet || "未設定"],
+                           ["宗教飲食", listText(wp.religion)]].map(function (r) {
+        return '<div class="pref-row"><span class="pref-key">' + r[0] + '</span><span class="pref-val">' +
+          esc(r[1]) + '</span></div>';
+      }).join("");
+    }
+    var pfTx = document.getElementById("f-pf-tx");
+    if (pfTx) {
+      var txs = payload.recent_transactions || [];
+      pfTx.innerHTML = txs.length ? txs.map(function (t) {
+        return '<div class="tx-row"><span>' + esc(t.paid_at) + '　<span class="tx-meta">' + t.item_count + ' 件' +
+          (t.method ? "・" + esc(t.method) : "") + '</span></span><span>$' + t.total.toFixed(0) + '</span></div>';
+      }).join("") : '<div style="color:#999;padding:8px 0;">' +
+        (payload.is_guest ? "訪客沒有消費紀錄" : "還沒有消費紀錄") + '</div>';
+    }
+
     var exitAmount = document.getElementById("f-exit-amount");
     if (exitAmount) exitAmount.textContent = "應付金額 $" + payload.cart_total.toFixed(0) + " 已成功扣款";
     var exitTimer = document.getElementById("f-exit-timer");
@@ -843,6 +1013,7 @@ TEMPLATE = r"""<!doctype html>
     callApi: callApi, showTab: showTab, toast: toast, toggleDevPanel: toggleDevPanel,
     wizardToggle: wizardToggle, wizardSetDiet: wizardSetDiet,
     budgetPick: budgetPick, confirmBudget: confirmBudget, selectPay: selectPay,
+    confirmPayment: confirmPayment, profileCustomBudget: profileCustomBudget,
     render: render,
   };
 })();

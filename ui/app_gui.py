@@ -1,7 +1,7 @@
 """
 ui/app_gui.py
 
-Phase 5：把 13 頁 UI（`ui/templates/index.html`，由 `tools/build_app_ui.py`
+Phase 5：把 14 頁 UI（`ui/templates/index.html`，由 `tools/build_app_ui.py`
 從 `design-cart-ui/*.dc.html` 組裝而成）接上 `core.cart_state_machine`
 + `database.db_manager` + `core.cart_manager`，變成一支在 Pi 上執行的觸控應用。
 
@@ -36,13 +36,24 @@ evdev/鍵盤模式、秤重有展示模式、閘門有開發面板按鈕），�
       過敏原/飲食/宗教/預算 四步）不是 `CartStateMachine` 的狀態（那邊只有
       營運層級的狀態），所以用 `self._ui_stage` 另外疊一層。
 
-已知但這一版刻意不假裝做到的缺口（面板/按鈕會直接跳提示，不會靜悄悄地假裝成功）：
-    1. `members` 表只有 member_id/name，沒有欄位存過敏原/飲食/預算/常購清單
-       ——LoadingProfile 的「情境 A：找到已儲存設定」查不到真資料，選 A 一樣
-       會走精靈重問一次；精靈結果只存在這次執行的記憶體裡，關掉就不見。
-    2. Checkout 畫面「✕ 返回繼續選購」——狀態機沒有「解除鎖定」的事件。
-    3. WeightAlert 的「重新校準歸零」「呼叫店員協助」、ExitConfirm 的
-       「取消本次結帳／需要協助」——沒有對應的狀態機事件或店員通知系統。
+資料庫（database/db_manager.py）：
+    - 會員偏好：精靈走到「開始購物」時存進 member_preferences（訪客不存）。
+      LoadingProfile 選「情境 A」時讀回來，直接跳到預算那一步確認。
+      「我的」分頁可以看、改預算、重新走一次精靈。
+    - 交易紀錄：付款完成時寫 transactions + transaction_items，推車走出管制區
+      時補上出場時間。「我的」分頁列出這位會員最近幾筆。
+    - 協助請求：「呼叫店員協助」「取消本次結帳／需要協助」「重新校準歸零」
+      都寫一筆 assistance_requests（沒有另外的店員通知系統，後台用
+      `python3 -m tools.product_admin assist-list` 看）。店員到場刷工作證
+      （config.json 的 state_machine.staff_barcode_prefix）就標成已處理。
+
+店員工作證：條碼開頭符合 staff_barcode_prefix 時不當商品或會員碼，查 staff
+資料表確認身分。秤重異常時「重新校準歸零」會把目前重量當成正確的基準——等於
+接受籃子裡現在的東西，所以使用者按了只會送出申請，要店員刷工作證才會真的
+歸零（狀態機的 StaffRezeroAuthorized）。
+
+結帳「返回繼續選購」：狀態機的 UnlockCheckoutRequested。鎖定期間的重量變化
+在解鎖後的第一筆讀數就會被重新核對（見該事件的說明），不是漏洞。
 
 用法：
     python3 -m ui.app_gui                     # 三個硬體都要接好
@@ -68,14 +79,57 @@ import logging
 import os
 import queue
 import signal
+import sqlite3
 import threading
 import time
 from pathlib import Path
 from typing import List, Optional
 
-# 跟 WebKitGTK 有關：硬體合成在部分顯示環境（尤其遠端 VNC/螢幕分享）下容易
-# 花屏，要在 import webview 之前設，晚了沒用。
-os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
+# ----------------------------------------------------------------------
+# WebKitGTK 繪圖設定：固定一組，不吃外面殘留的環境變數
+# ----------------------------------------------------------------------
+# 2026-10-29 在 Pi 5 實測（Debian 13 trixie、labwc/Wayland、DSI-1 直接接螢幕、
+# Mesa 26.2.2、WebKitGTK 2.54.0），用 pywebview 開設計稿逐一切換：
+#     A 合成關 + DMABUF 關  正常       B 合成關 + DMABUF 開  花屏
+#     C 合成開 + DMABUF 關  正常       D 全部預設（DMABUF 開）花屏
+#     E GDK_BACKEND=x11      正常       F LIBGL_ALWAYS_SOFTWARE=1 正常
+# 花屏 ⇔ DMABUF 開 ∧ 硬體 GPU（V3D）∧ Wayland 原生，跟合成模式無關。
+#
+# 採用 C：關 DMA-BUF（網頁畫面改用共享記憶體交給 UI 行程，多一次複製，這個畫面量
+# 感覺不出來），合成模式保持 WebKit 預設的開啟，網頁由 GPU 繪製。版本都是最新的也會
+# 花屏，所以升級後不要拿掉。
+#
+# 為什麼是「強制設定 + 清掉其他的」而不是 setdefault：之前測試時在終端機設過的
+# WEBKIT_*、GDK_BACKEND、LIBGL_ALWAYS_SOFTWARE 如果被 export 了，會默默留在 shell
+# 裡，setdefault 會照單全收——結果同一支程式在不同終端機跑出不同的繪圖路徑，花屏
+# 時根本不知道是哪一組。現在不管外面設了什麼，app 一律跑 C，被清掉的變數在啟動時
+# 印出來。要再做繪圖實驗，用上面那種 pywebview 單行指令，不要改這裡。
+#
+# 改回 CPU 繪製（例如以後改用 VNC 看畫面又花屏）：在 _RENDER_ENV 加上
+# "WEBKIT_DISABLE_COMPOSITING_MODE": "1"（＝上面的 A）。
+_RENDER_ENV = {"WEBKIT_DISABLE_DMABUF_RENDERER": "1"}
+# 會改變繪圖路徑、但不在 _RENDER_ENV 裡的變數一律清掉（WEBKIT_ 開頭的全部算）
+_RENDER_ENV_CLEAR = ("GDK_BACKEND", "LIBGL_ALWAYS_SOFTWARE", "GALLIUM_DRIVER", "MESA_LOADER_DRIVER_OVERRIDE")
+
+
+def apply_render_env(environ) -> List[str]:
+    """把 environ 的繪圖相關變數設成固定的一組。回傳被清掉或改掉的「名稱=原值」。
+
+    要在 import webview 之前呼叫（WebKit 行程啟動時才讀），本檔載入時就會套用一次。
+    """
+    changed = []
+    for key in sorted(environ):
+        if (key.startswith("WEBKIT_") or key in _RENDER_ENV_CLEAR) and key not in _RENDER_ENV:
+            changed.append(f"{key}={environ[key]}")
+            del environ[key]
+    for key, value in _RENDER_ENV.items():
+        if key in environ and environ[key] != value:
+            changed.append(f"{key}={environ[key]}")
+        environ[key] = value
+    return changed
+
+
+_RENDER_ENV_CHANGED = apply_render_env(os.environ)
 
 from core.cart_manager import CartManager
 from core.cart_state_machine import (
@@ -101,15 +155,18 @@ from core.cart_state_machine import (
     STATE_SESSION_CLOSED,
     STATE_SHOPPING,
     STATE_WEIGHT_MISMATCH_ERROR,
+    StaffRezeroAuthorized,
     TimeoutTick,
+    UnlockCheckoutRequested,
     VoidPendingItemRequested,
     WeightSampleReceived,
     load_state_machine_config,
 )
 from core.gate_monitor import GATE_CROSSING_ENTERING, GateMonitor
+from core.gate_recorder import GateRecorder
 from core.landmark_correction import load_landmark_config
 from core.weight_convert import raw_to_grams
-from database.db_manager import DBManager, Member
+from database.db_manager import DBManager, Member, MemberPreferences, Transaction, TransactionItem
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +180,31 @@ SCREEN_H = 1280
 # 把畫面切到一個 index.html 裡根本不存在的 #screen-xxx（那會變成整頁空白，
 # 而不是一個看得出來的錯誤）。
 _WIZARD_STAGES = ("login", "loading_profile", "allergens", "diet", "religion", "budget")
+
+# 購物主畫面家族的狀態：在這些狀態下才可以從「我的」分頁重新走一次偏好精靈
+_SHOPPING_FAMILY_STATES = (
+    STATE_LOGGED_IN_OUTSIDE_ZONE,
+    STATE_SHOPPING,
+    STATE_AWAITING_WEIGHT_INCREASE,
+    STATE_AWAITING_WEIGHT_DECREASE,
+    STATE_AWAITING_ITEM_SCAN,
+)
+
+_ASSIST_REASONS = {
+    "weight_alert": "秤重異常：呼叫店員協助",
+    "exit_confirm": "付款後：取消本次結帳／需要協助",
+    "general": "呼叫店員協助",
+}
+_REZERO_REASON = "秤重異常：申請重新校準歸零（需店員刷工作證確認）"
+_RECENT_TX_LIMIT = 5
+
+
+def _fmt_time(t: Optional[float]) -> str:
+    return "" if t is None else time.strftime("%m/%d %H:%M", time.localtime(t))
+
+
+def _fmt_budget(b: Optional[float]) -> str:
+    return "不限" if b is None else f"${b:.0f}"
 
 _ALLERGEN_OPTIONS = (
     "堅果類", "甲殼類", "芒果", "花生", "牛奶／羊奶", "蛋",
@@ -160,6 +242,18 @@ class Bridge:
         prefix = self._login_prefix
         self._guest_member_id = f"{prefix}{_GUEST_SUFFIX}" if prefix else _GUEST_SUFFIX
         self.db.upsert_member(Member(member_id=self._guest_member_id, name="訪客"))
+        self._staff_prefix = cfg.get("staff_barcode_prefix", "STAFF-")
+
+        # 一次性的成功提示（前端用 toast 顯示），跟 _last_error 分開：成功的事
+        # 不該用紅色錯誤條顯示。
+        self._notice: Optional[str] = None
+        # 秤重異常時使用者申請了「重新校準歸零」，等店員刷工作證
+        self._staff_pending: Optional[str] = None
+        # 從「我的」分頁重新走精靈時為 True；取消時還原成進來之前的設定
+        self._editing_prefs = False
+        self._prefs_snapshot = None
+        # 這次付款寫進資料庫的交易編號，走出管制區時補出場時間
+        self._open_tx_id: Optional[int] = None
 
         # 診斷用計數器（唯讀診斷面板顯示）
         self._last_scan: Optional[str] = None
@@ -173,12 +267,42 @@ class Bridge:
         self._wizard_diet = None
         self._wizard_religion = []
         self._budget = None
+        self._editing_prefs = False
+        self._prefs_snapshot = None
+        self._staff_pending = None
+
+    def _is_guest(self) -> bool:
+        return self.sm.get_session().member_id == self._guest_member_id
+
+    def _saved_prefs(self) -> Optional[MemberPreferences]:
+        member_id = self.sm.get_session().member_id
+        if not member_id or self._is_guest():
+            return None
+        return self.db.get_preferences(member_id)
+
+    def _save_prefs(self) -> None:
+        """把目前的精靈結果與預算存起來（訪客不存）。寫入失敗要講出來，但不擋購物。"""
+        member_id = self.sm.get_session().member_id
+        if not member_id or self._is_guest():
+            return
+        try:
+            self.db.save_preferences(MemberPreferences(
+                member_id=member_id, allergens=list(self._wizard_allergens), diet=self._wizard_diet,
+                religion=list(self._wizard_religion), budget=self._budget, updated_at=time.time(),
+            ))
+        except sqlite3.Error as exc:
+            logger.exception("偏好設定存檔失敗")
+            self._last_error = f"偏好設定存檔失敗（這次購物照常，但下次不會記得）：{exc}"
 
     def _current_screen(self) -> str:
-        if self._ui_stage is not None:
-            return self._ui_stage
         s = self.sm.get_session()
         state = s.state
+        # 秤重異常永遠優先：就算使用者正在（重新）走偏好精靈，也要先處理異常，
+        # 不能讓精靈畫面蓋住防損畫面。處理完之後精靈從原本那一步繼續。
+        if state == STATE_WEIGHT_MISMATCH_ERROR:
+            return "weight_alert"
+        if self._ui_stage is not None:
+            return self._ui_stage
         if state in (
             STATE_SHOPPING,
             STATE_AWAITING_WEIGHT_INCREASE,
@@ -199,6 +323,12 @@ class Bridge:
             # 走出管制區後立刻登出、清空這次工作階段，回到歡迎頁讓下一位使用
             # 者不用等——CartStateMachine 不會自己做這件事（它只負責記錄「這
             # 一階段結束了」，重新開始要外部送 LogoutRequested）。
+            if self._open_tx_id is not None:
+                try:
+                    self.db.mark_transaction_exited(self._open_tx_id, s.last_activity_at or time.time())
+                except sqlite3.Error:
+                    logger.exception("交易 %s 的出場時間寫入失敗", self._open_tx_id)
+                self._open_tx_id = None
             self.sm.process_event(LogoutRequested(timestamp=time.time()))
             self._reset_wizard_profile()
             self._ui_stage = "main"
@@ -228,6 +358,9 @@ class Bridge:
         screen = self._current_screen()
         s = self.sm.get_session()
         items = self.sm.cart.list_items()
+        if s.state != STATE_WEIGHT_MISMATCH_ERROR:
+            self._staff_pending = None
+        notice, self._notice = self._notice, None
         return {
             "screen": screen,
             "last_error": self._last_error,
@@ -255,10 +388,51 @@ class Bridge:
             "exit_countdown": self._exit_countdown(),
             # 精靈做完了、但 BLE 還沒判定推車進入管制區
             "awaiting_gate_entry": self._ui_stage is None and s.state == STATE_LOGGED_IN_OUTSIDE_ZONE,
+            "notice": notice,
+            "staff_pending": self._staff_pending,
+            "assist_open": self._assist_open_payload(),
+            "is_guest": bool(s.member_id) and self._is_guest(),
+            "saved_profile": self._saved_profile_payload(),
+            "recent_transactions": self._recent_transactions_payload(),
             # 唯讀診斷用
             "last_scan": self._last_scan,
             "gate_events": self._gate_events,
         }
+
+    def _assist_open_payload(self) -> Optional[dict]:
+        try:
+            reqs = self.db.list_assistance_requests(status="open", limit=1)
+        except sqlite3.Error:
+            logger.exception("讀協助請求失敗")
+            return None
+        if not reqs:
+            return None
+        return {"reason": reqs[0].reason, "time": _fmt_time(reqs[0].created_at)}
+
+    def _saved_profile_payload(self) -> dict:
+        prefs = self._saved_prefs()
+        if prefs is None:
+            return {"exists": False}
+        return {
+            "exists": True,
+            "allergens": prefs.allergens,
+            "diet": prefs.diet,
+            "religion": prefs.religion,
+            "budget_text": _fmt_budget(prefs.budget),
+            "updated": _fmt_time(prefs.updated_at),
+        }
+
+    def _recent_transactions_payload(self) -> list:
+        member_id = self.sm.get_session().member_id
+        if not member_id or self._is_guest():
+            return []
+        try:
+            txs = self.db.list_transactions(member_id=member_id, limit=_RECENT_TX_LIMIT)
+        except sqlite3.Error:
+            logger.exception("讀交易紀錄失敗")
+            return []
+        return [{"id": t.id, "paid_at": _fmt_time(t.paid_at), "total": t.total, "item_count": t.item_count,
+                 "method": t.payment_method or ""} for t in txs]
 
     def _alert_marker(self):
         """記住「呼叫狀態機之前，最新的一筆警告是哪一個物件」。
@@ -359,14 +533,21 @@ class Bridge:
 
     def loading_profile_choice(self, choice: str) -> dict:
         self._reset_wizard_profile()
+        self._last_error = None
         if choice == "A":
-            self._last_error = (
-                "目前資料庫還沒有欄位可以存過敏原／飲食習慣／預算等個人化設定"
-                "（members 資料表只有代碼跟姓名），所以找不到「已儲存的設定」，"
-                "先照精靈重新設定一次——這次設定一樣只會留在這次購物，不會存起來"
-            )
-        else:
-            self._last_error = None
+            prefs = self._saved_prefs()
+            if prefs is not None:
+                # 沿用已儲存的設定，只要確認本次預算（設計稿情境 A 的流程）
+                self._wizard_allergens = list(prefs.allergens)
+                self._wizard_diet = prefs.diet
+                self._wizard_religion = list(prefs.religion)
+                self._budget = prefs.budget
+                self._ui_stage = "budget"
+                return self._state_payload()
+            if self._is_guest():
+                self._last_error = "訪客沒有已儲存的設定，請照精靈設定（訪客的設定只用在這次購物，不會存起來）"
+            else:
+                self._last_error = "這個會員還沒有儲存過設定，先照精靈設定一次——走完會自動存起來，下次選 A 就能直接沿用"
         self._ui_stage = "allergens"
         return self._state_payload()
 
@@ -402,26 +583,72 @@ class Bridge:
         if stage not in _WIZARD_STAGES:
             return self._fail(f"不認得的精靈步驟：{stage}")
         self._last_error = None
+        if stage == "login" and self._editing_prefs:
+            # 從「我的」進來重新設定，在第一步按「上一步」＝取消，還原原本的設定
+            self._wizard_allergens, self._wizard_diet, self._wizard_religion, self._budget = self._prefs_snapshot
+            self._editing_prefs = False
+            self._prefs_snapshot = None
+            self._ui_stage = None
+            return self._state_payload()
         self._ui_stage = stage
         return self._state_payload()
 
+    @staticmethod
+    def _parse_budget(value: str):
+        """回傳 (預算或 None=不限, 錯誤訊息或 None)。"""
+        value = (value or "").strip()
+        if value in ("unlimited", ""):
+            return None, None
+        try:
+            budget = float(value)
+        except (TypeError, ValueError):
+            return None, f"預算金額看不懂：{value!r}，請輸入數字或選擇「不限」"
+        if budget < 0:
+            return None, "預算不能是負數"
+        return budget, None
+
     def set_budget(self, value: str) -> dict:
         self._last_error = None
-        value = (value or "").strip()
-        if value == "unlimited" or value == "":
-            self._budget = None
-        else:
-            try:
-                budget = float(value)
-            except (TypeError, ValueError):
-                return self._fail(f"預算金額看不懂：{value!r}，請輸入數字或選擇「不限」")
-            if budget < 0:
-                return self._fail("預算不能是負數")
-            self._budget = budget
+        budget, err = self._parse_budget(value)
+        if err:
+            return self._fail(err)
+        self._budget = budget
+        was_editing = self._editing_prefs
+        self._editing_prefs = False
+        self._prefs_snapshot = None
+        self._save_prefs()
+        if was_editing and not self._last_error:
+            self._notice = "偏好設定已更新"
         # 精靈到此結束。**不會**在這裡自己觸發進場——進入管制區是由真的 BLE
         # 雙 Beacon 判定的（見 _GateConsumer），這裡只是把畫面交給購物主畫面，
         # 狀態機仍然停在「已登入、未進管制區」，畫面會顯示等待提示。
         self._ui_stage = None
+        return self._state_payload()
+
+    # ------------------------------------------------------------------
+    # 「我的」分頁
+    # ------------------------------------------------------------------
+    def set_session_budget(self, value: str) -> dict:
+        """購物中直接改本次預算（會員的話也存成下次的預設）。"""
+        self._last_error = None
+        budget, err = self._parse_budget(value)
+        if err:
+            return self._fail(err)
+        self._budget = budget
+        self._save_prefs()
+        if not self._last_error:
+            self._notice = f"本次預算改為 {_fmt_budget(budget)}"
+        return self._state_payload()
+
+    def edit_preferences(self) -> dict:
+        """從「我的」分頁重新走一次偏好精靈（過敏原 → 葷素 → 宗教 → 預算）。"""
+        if self._ui_stage is not None or self.sm.get_session().state not in _SHOPPING_FAMILY_STATES:
+            return self._fail("現在不能修改偏好設定（結帳、秤重異常處理中時請先完成）")
+        self._last_error = None
+        self._prefs_snapshot = (list(self._wizard_allergens), self._wizard_diet,
+                                list(self._wizard_religion), self._budget)
+        self._editing_prefs = True
+        self._ui_stage = "allergens"
         return self._state_payload()
 
     # ------------------------------------------------------------------
@@ -430,8 +657,104 @@ class Bridge:
     def lock_checkout(self) -> dict:
         return self._apply(LockForCheckoutRequested(timestamp=time.time()))
 
-    def confirm_payment(self) -> dict:
-        return self._apply(PaymentConfirmed(timestamp=time.time()))
+    def unlock_checkout(self) -> dict:
+        return self._apply(UnlockCheckoutRequested(timestamp=time.time()))
+
+    def confirm_payment(self, method: str = "") -> dict:
+        before = self.sm.get_session().state
+        self._apply(PaymentConfirmed(timestamp=time.time()))
+        s = self.sm.get_session()
+        if before == STATE_LOCKED_FOR_CHECKOUT and s.state == STATE_AWAITING_EXIT:
+            self._record_transaction(method)
+        return self._state_payload()
+
+    def _record_transaction(self, method: str) -> None:
+        s = self.sm.get_session()
+        items = self.sm.cart.list_items()
+        tx = Transaction(
+            member_id=s.member_id or "", is_guest=self._is_guest(),
+            session_started_at=s.session_started_at, zone_entered_at=s.zone_entered_at,
+            paid_at=s.payment_confirmed_at or time.time(),
+            total=self.sm.cart.total_price(), item_count=self.sm.cart.item_count(),
+            payment_method=(method or "").strip() or None, budget=self._budget,
+            items=[TransactionItem(barcode=it.barcode, name=it.name, unit_price=it.unit_price,
+                                   quantity=it.quantity, subtotal=it.subtotal) for it in items],
+        )
+        try:
+            self._open_tx_id = self.db.record_transaction(tx)
+        except sqlite3.Error as exc:
+            logger.exception("交易紀錄寫入失敗")
+            self._open_tx_id = None
+            self._last_error = f"付款完成，但交易紀錄寫入失敗（請通知店員記錄）：{exc}"
+
+    # ------------------------------------------------------------------
+    # 店員協助
+    # ------------------------------------------------------------------
+    def _create_request(self, reason: str) -> bool:
+        """寫一筆協助請求。同樣原因已經有一筆待處理的就不重複寫。回傳是否成功。"""
+        s = self.sm.get_session()
+        try:
+            if any(r.reason == reason for r in self.db.list_assistance_requests(status="open")):
+                self._notice = "已經通知過店員了，請在原地稍候"
+                return True
+            self.db.create_assistance_request(
+                created_at=time.time(), member_id=s.member_id, sm_state=s.state,
+                screen=self._current_screen(), reason=reason,
+                cart=[{"barcode": it.barcode, "name": it.name, "quantity": it.quantity}
+                      for it in self.sm.cart.list_items()],
+            )
+        except sqlite3.Error as exc:
+            logger.exception("協助請求寫入失敗")
+            self._last_error = f"通知店員失敗（資料庫寫入錯誤），請直接找店員：{exc}"
+            return False
+        return True
+
+    def request_assistance(self, kind: str = "general") -> dict:
+        if kind not in _ASSIST_REASONS:
+            return self._fail(f"不認得的協助類型：{kind}")
+        self._last_error = None
+        if self._create_request(_ASSIST_REASONS[kind]) and self._notice is None:
+            self._notice = "已通知店員，請在原地稍候（店員到場刷工作證即完成處理）"
+        return self._state_payload()
+
+    def request_rezero(self) -> dict:
+        if self.sm.get_session().state != STATE_WEIGHT_MISMATCH_ERROR:
+            return self._fail("目前不是秤重異常，不需要重新校準歸零")
+        self._last_error = None
+        if self._create_request(_REZERO_REASON):
+            self._staff_pending = "rezero"
+            if self._notice is None:
+                self._notice = "已送出歸零申請，請店員刷工作證確認"
+        return self._state_payload()
+
+    def on_staff_badge(self, code: str) -> None:
+        """店員刷工作證：確認身分 → 執行待確認的動作（重新校準歸零）→ 這台車的協助請求標成已處理。"""
+        staff = self.db.get_staff(code)
+        if staff is None:
+            self._last_error = (f"工作證 {code} 不在店員名單裡"
+                                "（用 python3 -m tools.product_admin staff-add 建檔）")
+            return
+        self._last_error = None
+        now = time.time()
+        done = []
+        if self._staff_pending == "rezero" and self.sm.get_session().state == STATE_WEIGHT_MISMATCH_ERROR:
+            marker = self._alert_marker()
+            self.sm.process_event(StaffRezeroAuthorized(staff_id=staff.staff_id, timestamp=now))
+            if self.sm.get_session().state == STATE_WEIGHT_MISMATCH_ERROR:
+                alert = self._new_alert_since(marker)
+                self._last_error = alert.message if alert else "重新校準歸零失敗"
+            else:
+                done.append("已重新校準歸零")
+            self._staff_pending = None
+        try:
+            n = self.db.resolve_assistance_requests(staff.staff_id, now)
+        except sqlite3.Error as exc:
+            logger.exception("協助請求標記失敗")
+            self._last_error = f"協助請求標記為已處理時失敗：{exc}"
+            n = 0
+        if n:
+            done.append(f"已處理 {n} 筆協助請求")
+        self._notice = f"店員 {staff.name}：" + ("、".join(done) if done else "目前沒有待處理的事項")
 
     def retry_weight(self) -> dict:
         return self._apply(RetryWeightCheckRequested(timestamp=time.time()))
@@ -446,6 +769,7 @@ class Bridge:
         self._apply(ForceLogoutRequested(timestamp=time.time(), reason=reason or "工作人員手動重置"))
         self.sm.cart.clear()
         self._reset_wizard_profile()
+        self._open_tx_id = None
         self._ui_stage = "main"
         return self._state_payload()
 
@@ -460,15 +784,18 @@ class Bridge:
     def on_hardware_barcode(self, code: str) -> None:
         """實體 USB 條碼掃描器掃到一組條碼。
 
-        分類規則跟 `tools/run_real_hardware_flow.py` 的 `classify_barcode()`
-        一致：開頭符合 config.json 的 `state_machine.login_barcode_prefix`
-        就是會員碼，否則當商品條碼。
+        分類規則：開頭符合 config.json 的 `state_machine.staff_barcode_prefix`
+        是店員工作證；符合 `login_barcode_prefix` 是會員碼（跟
+        `tools/run_real_hardware_flow.py` 的 `classify_barcode()` 一致）；
+        其他當商品條碼。
         """
         code = (code or "").strip()
         if not code:
             return
         self._last_scan = code
-        if self._login_prefix and code.startswith(self._login_prefix):
+        if self._staff_prefix and code.startswith(self._staff_prefix):
+            self.on_staff_badge(code)
+        elif self._login_prefix and code.startswith(self._login_prefix):
             self.login(code)
         else:
             # surface_info=True：刷條碼是使用者明確做的動作，任何被拒絕的原因
@@ -700,7 +1027,9 @@ def _main() -> int:
 
     landmark_cfg = load_landmark_config()
     try:
-        gate_monitor = GateMonitor.from_config(landmark_cfg)
+        # 每一筆 Beacon 讀數與判定結果都記錄到 data/gate_logs/（core/gate_recorder.py），
+        # 事後用 python3 -m tools.analyze_gate_log 分析
+        gate_monitor = GateMonitor.from_config(landmark_cfg, recorder=GateRecorder.for_runtime("app"))
     except ValueError as exc:
         return _fail(f"門口 Beacon 設定不完整：{exc}")
 
@@ -720,6 +1049,7 @@ def _main() -> int:
                     dev.stop()
                 except Exception:  # noqa: BLE001
                     pass
+        gate_monitor.close()
 
     # 1) 條碼掃描器
     try:
@@ -820,6 +1150,9 @@ def _main() -> int:
     # （GTK 主迴圈預設會吃掉 SIGINT）。
     signal.signal(signal.SIGINT, lambda *_: window.destroy())
 
+    if _RENDER_ENV_CHANGED:
+        print("[提醒] 忽略終端機殘留的繪圖設定（app 固定用 GPU 繪製、關 DMA-BUF）："
+              + "、".join(_RENDER_ENV_CHANGED))
     print(f"\n三個硬體都就緒。視窗 {SCREEN_W}x{SCREEN_H}，右上角 DEV 診斷面板 / ✕ 退出。\n")
     webview.start()
     _cleanup()
