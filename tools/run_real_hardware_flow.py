@@ -69,6 +69,7 @@ from core.odometry_engine import OdometryEngine
 from core.weight_convert import raw_to_grams
 from database.db_manager import DBManager
 from core.gate_monitor import GATE_CROSSING_ENTERING, GateMonitor
+from core.gate_recorder import GateRecorder
 from core.landmark_correction import load_landmark_config
 from drivers.barcode_scanner import BarcodeEvent, BarcodeScanner
 from drivers.ble_beacon_scanner import (
@@ -178,7 +179,8 @@ def _main() -> int:
 
     landmark_cfg = load_landmark_config()
     try:
-        gate_monitor = GateMonitor.from_config(landmark_cfg)
+        # 每一筆 Beacon 讀數與判定結果都記錄到 data/gate_logs/，事後用 tools.analyze_gate_log 分析
+        gate_monitor = GateMonitor.from_config(landmark_cfg, recorder=GateRecorder.for_runtime("flow"))
     except ValueError as exc:
         print(f"[錯誤] 門口 Beacon 設定不完整：{exc}")
         return 1
@@ -196,6 +198,7 @@ def _main() -> int:
                     dev.stop()
                 except Exception:  # noqa: BLE001
                     pass
+        gate_monitor.close()
 
     try:
         scanner = BarcodeScanner(device_name_hint=args.barcode_hint)

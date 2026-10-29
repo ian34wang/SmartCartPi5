@@ -1,0 +1,21 @@
+{
+  "kind": "calibration",
+  "started_at": "2026-10-28T20:13:02",
+  "params": {
+    "inside_id": "GATE-INSIDE",
+    "outside_id": "GATE-OUTSIDE",
+    "smoothing_sec": 1.0,
+    "estimator": "p75",
+    "min_samples": 3,
+    "hysteresis_dbm": 4.0,
+    "min_crossing_rssi_dbm": -60.0,
+    "min_confirm_samples": 3,
+    "offsets": {
+      "GATE-INSIDE": 0.0,
+      "GATE-OUTSIDE": 0.0
+    },
+    "exit_yaw_deg": null,
+    "heading_tolerance_deg": 45.0
+  },
+  "seconds_per_position": 15.0
+}

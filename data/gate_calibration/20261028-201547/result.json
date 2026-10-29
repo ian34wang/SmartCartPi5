@@ -1,0 +1,266 @@
+{
+  "verdict": "可以",
+  "error": null,
+  "params": {
+    "inside_id": "GATE-INSIDE",
+    "outside_id": "GATE-OUTSIDE",
+    "smoothing_sec": 1.5,
+    "estimator": "p75",
+    "min_samples": 3,
+    "hysteresis_dbm": 9.0,
+    "min_crossing_rssi_dbm": -63.5,
+    "min_confirm_samples": 3,
+    "offsets": {
+      "GATE-INSIDE": -3.5,
+      "GATE-OUTSIDE": 0.0
+    },
+    "exit_yaw_deg": null,
+    "heading_tolerance_deg": 45.0
+  },
+  "windows": [
+    {
+      "window": 1.0,
+      "interval": null,
+      "offset": -3.46875,
+      "min_crossing": -63.46875,
+      "plateaus": {
+        "plateau_out": -2.25,
+        "plateau_in": 9.1875,
+        "step": 11.4375
+      },
+      "stats": {
+        "out100": {
+          "delta": 1.25,
+          "noise": 2.0667132711790748,
+          "inside": -57.0,
+          "outside": -58.375,
+          "judged_ratio": 0.945054945054945,
+          "rate_in": 7.016944508734289,
+          "rate_out": 5.947695821689064
+        },
+        "out50": {
+          "delta": -5.75,
+          "noise": 1.8083290228482436,
+          "inside": -51.0,
+          "outside": -45.75,
+          "judged_ratio": 0.9882352941176471,
+          "rate_in": 6.503279824791273,
+          "rate_out": 5.966926849550755
+        },
+        "thr": {
+          "delta": 6.0,
+          "noise": 6.791105212428292,
+          "inside": -54.5,
+          "outside": -58.75,
+          "judged_ratio": 1.0,
+          "rate_in": 6.894070995987503,
+          "rate_out": 6.291676442940052
+        },
+        "in50": {
+          "delta": 11.125,
+          "noise": 2.6722484542255756,
+          "inside": -49.0,
+          "outside": -60.0,
+          "judged_ratio": 0.9629629629629629,
+          "rate_in": 6.471156239488879,
+          "rate_out": 7.204998699637103
+        },
+        "in100": {
+          "delta": 7.25,
+          "noise": 2.065810478818512,
+          "inside": -55.0,
+          "outside": -62.0,
+          "judged_ratio": 1.0,
+          "rate_in": 6.3497975050162605,
+          "rate_out": 6.884517294912366
+        },
+        "far": {
+          "delta": 11.25,
+          "noise": 4.369133840392619,
+          "inside": -59.0,
+          "outside": -70.0,
+          "judged_ratio": 0.9625,
+          "rate_in": 5.957920783269362,
+          "rate_out": 5.623206132523892
+        }
+      }
+    },
+    {
+      "window": 1.5,
+      "interval": [
+        7.75,
+        10.5
+      ],
+      "offset": -3.5,
+      "min_crossing": -63.5,
+      "plateaus": {
+        "plateau_out": -2.25,
+        "plateau_in": 9.25,
+        "step": 11.5
+      },
+      "stats": {
+        "out100": {
+          "delta": 1.25,
+          "noise": 0.8095992958383118,
+          "inside": -57.0,
+          "outside": -58.25,
+          "judged_ratio": 1.0,
+          "rate_in": 7.016944508734289,
+          "rate_out": 5.947695821689064
+        },
+        "out50": {
+          "delta": -5.75,
+          "noise": 1.6770951669565277,
+          "inside": -51.0,
+          "outside": -45.5,
+          "judged_ratio": 1.0,
+          "rate_in": 6.503279824791273,
+          "rate_out": 5.966926849550755
+        },
+        "thr": {
+          "delta": 4.0,
+          "noise": 6.244868253065521,
+          "inside": -53.5,
+          "outside": -55.0,
+          "judged_ratio": 1.0,
+          "rate_in": 6.894070995987503,
+          "rate_out": 6.291676442940052
+        },
+        "in50": {
+          "delta": 12.5,
+          "noise": 2.405515903599122,
+          "inside": -47.0,
+          "outside": -60.0,
+          "judged_ratio": 1.0,
+          "rate_in": 6.471156239488879,
+          "rate_out": 7.204998699637103
+        },
+        "in100": {
+          "delta": 6.0,
+          "noise": 1.9525496475330062,
+          "inside": -55.0,
+          "outside": -61.0,
+          "judged_ratio": 1.0,
+          "rate_in": 6.3497975050162605,
+          "rate_out": 6.884517294912366
+        },
+        "far": {
+          "delta": 11.5,
+          "noise": 4.1354935602469896,
+          "inside": -58.125,
+          "outside": -69.75,
+          "judged_ratio": 1.0,
+          "rate_in": 5.957920783269362,
+          "rate_out": 5.623206132523892
+        }
+      }
+    },
+    {
+      "window": 2.0,
+      "interval": [
+        7.5,
+        10.25
+      ],
+      "offset": -3.25,
+      "min_crossing": -63.25,
+      "plateaus": {
+        "plateau_out": -2.75,
+        "plateau_in": 9.25,
+        "step": 12.0
+      },
+      "stats": {
+        "out100": {
+          "delta": 1.0,
+          "noise": 0.5395779764810057,
+          "inside": -57.0,
+          "outside": -58.25,
+          "judged_ratio": 1.0,
+          "rate_in": 7.016944508734289,
+          "rate_out": 5.947695821689064
+        },
+        "out50": {
+          "delta": -6.5,
+          "noise": 1.5897079881812028,
+          "inside": -51.0,
+          "outside": -45.0,
+          "judged_ratio": 1.0,
+          "rate_in": 6.503279824791273,
+          "rate_out": 5.966926849550755
+        },
+        "thr": {
+          "delta": 3.0,
+          "noise": 5.6498122134325985,
+          "inside": -54.75,
+          "outside": -55.0,
+          "judged_ratio": 1.0,
+          "rate_in": 6.894070995987503,
+          "rate_out": 6.291676442940052
+        },
+        "in50": {
+          "delta": 12.75,
+          "noise": 2.1790851324414855,
+          "inside": -47.0,
+          "outside": -60.0,
+          "judged_ratio": 1.0,
+          "rate_in": 6.471156239488879,
+          "rate_out": 7.204998699637103
+        },
+        "in100": {
+          "delta": 5.75,
+          "noise": 1.6513991487490838,
+          "inside": -55.0,
+          "outside": -60.75,
+          "judged_ratio": 1.0,
+          "rate_in": 6.3497975050162605,
+          "rate_out": 6.884517294912366
+        },
+        "far": {
+          "delta": 11.0,
+          "noise": 3.6606888897269516,
+          "inside": -57.0,
+          "outside": -70.0,
+          "judged_ratio": 1.0,
+          "rate_in": 5.957920783269362,
+          "rate_out": 5.623206132523892
+        }
+      }
+    }
+  ],
+  "checks": {
+    "static": {
+      "out100": {
+        "events": [],
+        "dominant": null,
+        "ok": true
+      },
+      "out50": {
+        "events": [],
+        "dominant": "b",
+        "ok": true
+      },
+      "thr": {
+        "events": [],
+        "dominant": "a",
+        "ok": true
+      },
+      "in50": {
+        "events": [],
+        "dominant": "a",
+        "ok": true
+      },
+      "in100": {
+        "events": [],
+        "dominant": null,
+        "ok": true
+      }
+    },
+    "walk_in": [
+      "entering"
+    ],
+    "walk_out": [
+      "exiting"
+    ],
+    "to_far": [],
+    "passed": true
+  }
+}

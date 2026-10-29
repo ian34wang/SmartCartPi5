@@ -1,0 +1,629 @@
+{
+  "verdict": "可以",
+  "error": null,
+  "params": {
+    "inside_id": "GATE-INSIDE",
+    "outside_id": "GATE-OUTSIDE",
+    "smoothing_sec": 1.5,
+    "estimator": "p75",
+    "min_samples": 3,
+    "hysteresis_dbm": 6.0,
+    "min_crossing_rssi_dbm": -66.0,
+    "min_confirm_samples": 3,
+    "offsets": {
+      "GATE-INSIDE": 1.2,
+      "GATE-OUTSIDE": 0.0
+    },
+    "exit_yaw_deg": null,
+    "heading_tolerance_deg": 45.0
+  },
+  "candidates": [
+    {
+      "estimator": "p75",
+      "window": 1.0,
+      "confirm": 3,
+      "offset": 1.78125,
+      "min_crossing": -65.96875,
+      "interval": null,
+      "best_partial": [
+        3,
+        3.0,
+        "第 4 趟多判了一次 exiting"
+      ],
+      "info": {
+        "end_in": 4.25,
+        "end_out": -7.8125,
+        "step": 12.0625
+      }
+    },
+    {
+      "estimator": "p75",
+      "window": 1.0,
+      "confirm": 5,
+      "offset": 1.78125,
+      "min_crossing": -65.96875,
+      "interval": null,
+      "best_partial": [
+        3,
+        2.0,
+        "第 4 趟多判了一次 exiting"
+      ],
+      "info": {
+        "end_in": 4.25,
+        "end_out": -7.8125,
+        "step": 12.0625
+      }
+    },
+    {
+      "estimator": "p75",
+      "window": 1.0,
+      "confirm": 8,
+      "offset": 1.78125,
+      "min_crossing": -65.96875,
+      "interval": null,
+      "best_partial": [
+        8,
+        8.25,
+        ""
+      ],
+      "info": {
+        "end_in": 4.25,
+        "end_out": -7.8125,
+        "step": 12.0625
+      }
+    },
+    {
+      "estimator": "p75",
+      "window": 1.5,
+      "confirm": 3,
+      "offset": 1.15625,
+      "min_crossing": -65.96875,
+      "interval": [
+        2.25,
+        9.5
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 5.3125,
+        "end_out": -7.625,
+        "step": 12.9375
+      }
+    },
+    {
+      "estimator": "p75",
+      "window": 1.5,
+      "confirm": 5,
+      "offset": 1.15625,
+      "min_crossing": -65.96875,
+      "interval": [
+        2.0,
+        8.75
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 5.3125,
+        "end_out": -7.625,
+        "step": 12.9375
+      }
+    },
+    {
+      "estimator": "p75",
+      "window": 1.5,
+      "confirm": 8,
+      "offset": 1.15625,
+      "min_crossing": -65.96875,
+      "interval": [
+        2.0,
+        7.0
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 5.3125,
+        "end_out": -7.625,
+        "step": 12.9375
+      }
+    },
+    {
+      "estimator": "p75",
+      "window": 2.0,
+      "confirm": 3,
+      "offset": 0.25,
+      "min_crossing": -64.25,
+      "interval": [
+        2.5,
+        6.75
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 7.375,
+        "end_out": -7.875,
+        "step": 15.25
+      }
+    },
+    {
+      "estimator": "p75",
+      "window": 2.0,
+      "confirm": 5,
+      "offset": 0.25,
+      "min_crossing": -64.25,
+      "interval": [
+        2.25,
+        6.5
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 7.375,
+        "end_out": -7.875,
+        "step": 15.25
+      }
+    },
+    {
+      "estimator": "p75",
+      "window": 2.0,
+      "confirm": 8,
+      "offset": 0.25,
+      "min_crossing": -64.25,
+      "interval": [
+        2.0,
+        4.5
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 7.375,
+        "end_out": -7.875,
+        "step": 15.25
+      }
+    },
+    {
+      "estimator": "p90",
+      "window": 1.0,
+      "confirm": 3,
+      "offset": 2.5374999999999996,
+      "min_crossing": -64.1625,
+      "interval": null,
+      "best_partial": [
+        3,
+        3.75,
+        "第 4 趟多判了一次 exiting"
+      ],
+      "info": {
+        "end_in": 3.9999999999999964,
+        "end_out": -9.074999999999996,
+        "step": 13.074999999999992
+      }
+    },
+    {
+      "estimator": "p90",
+      "window": 1.0,
+      "confirm": 5,
+      "offset": 2.5374999999999996,
+      "min_crossing": -64.1625,
+      "interval": [
+        3.5,
+        7.75
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 3.9999999999999964,
+        "end_out": -9.074999999999996,
+        "step": 13.074999999999992
+      }
+    },
+    {
+      "estimator": "p90",
+      "window": 1.0,
+      "confirm": 8,
+      "offset": 2.5374999999999996,
+      "min_crossing": -64.1625,
+      "interval": [
+        2.0,
+        7.5
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 3.9999999999999964,
+        "end_out": -9.074999999999996,
+        "step": 13.074999999999992
+      }
+    },
+    {
+      "estimator": "p90",
+      "window": 1.5,
+      "confirm": 3,
+      "offset": 1.8874999999999993,
+      "min_crossing": -64.1625,
+      "interval": [
+        2.0,
+        6.25
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 5.175000000000001,
+        "end_out": -8.95,
+        "step": 14.125
+      }
+    },
+    {
+      "estimator": "p90",
+      "window": 1.5,
+      "confirm": 5,
+      "offset": 1.8874999999999993,
+      "min_crossing": -64.1625,
+      "interval": [
+        2.0,
+        5.75
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 5.175000000000001,
+        "end_out": -8.95,
+        "step": 14.125
+      }
+    },
+    {
+      "estimator": "p90",
+      "window": 1.5,
+      "confirm": 8,
+      "offset": 1.8874999999999993,
+      "min_crossing": -64.1625,
+      "interval": [
+        2.0,
+        5.5
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 5.175000000000001,
+        "end_out": -8.95,
+        "step": 14.125
+      }
+    },
+    {
+      "estimator": "p90",
+      "window": 2.0,
+      "confirm": 3,
+      "offset": 1.4374999999999982,
+      "min_crossing": -60.9625,
+      "interval": [
+        2.0,
+        6.0
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 7.1250000000000036,
+        "end_out": -10.0,
+        "step": 17.125000000000004
+      }
+    },
+    {
+      "estimator": "p90",
+      "window": 2.0,
+      "confirm": 5,
+      "offset": 1.4374999999999982,
+      "min_crossing": -60.9625,
+      "interval": [
+        2.0,
+        6.0
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 7.1250000000000036,
+        "end_out": -10.0,
+        "step": 17.125000000000004
+      }
+    },
+    {
+      "estimator": "p90",
+      "window": 2.0,
+      "confirm": 8,
+      "offset": 1.4374999999999982,
+      "min_crossing": -60.9625,
+      "interval": [
+        2.0,
+        6.0
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 7.1250000000000036,
+        "end_out": -10.0,
+        "step": 17.125000000000004
+      }
+    },
+    {
+      "estimator": "max",
+      "window": 1.0,
+      "confirm": 3,
+      "offset": 2.5,
+      "min_crossing": -63.5,
+      "interval": [
+        4.75,
+        9.5
+      ],
+      "best_partial": [
+        8,
+        2.75,
+        ""
+      ],
+      "info": {
+        "end_in": 4.5,
+        "end_out": -9.5,
+        "step": 14.0
+      }
+    },
+    {
+      "estimator": "max",
+      "window": 1.0,
+      "confirm": 5,
+      "offset": 2.5,
+      "min_crossing": -63.5,
+      "interval": [
+        3.75,
+        9.5
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 4.5,
+        "end_out": -9.5,
+        "step": 14.0
+      }
+    },
+    {
+      "estimator": "max",
+      "window": 1.0,
+      "confirm": 8,
+      "offset": 2.5,
+      "min_crossing": -63.5,
+      "interval": [
+        2.0,
+        7.5
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 4.5,
+        "end_out": -9.5,
+        "step": 14.0
+      }
+    },
+    {
+      "estimator": "max",
+      "window": 1.5,
+      "confirm": 3,
+      "offset": 2.75,
+      "min_crossing": -62.25,
+      "interval": [
+        2.0,
+        6.75
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 5.0,
+        "end_out": -10.5,
+        "step": 15.5
+      }
+    },
+    {
+      "estimator": "max",
+      "window": 1.5,
+      "confirm": 5,
+      "offset": 2.75,
+      "min_crossing": -62.25,
+      "interval": [
+        2.0,
+        6.75
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 5.0,
+        "end_out": -10.5,
+        "step": 15.5
+      }
+    },
+    {
+      "estimator": "max",
+      "window": 1.5,
+      "confirm": 8,
+      "offset": 2.75,
+      "min_crossing": -62.25,
+      "interval": [
+        2.0,
+        6.75
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 5.0,
+        "end_out": -10.5,
+        "step": 15.5
+      }
+    },
+    {
+      "estimator": "max",
+      "window": 2.0,
+      "confirm": 3,
+      "offset": 2.0,
+      "min_crossing": -59.0,
+      "interval": [
+        2.0,
+        7.0
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 7.0,
+        "end_out": -11.0,
+        "step": 18.0
+      }
+    },
+    {
+      "estimator": "max",
+      "window": 2.0,
+      "confirm": 5,
+      "offset": 2.0,
+      "min_crossing": -59.0,
+      "interval": [
+        2.0,
+        7.0
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 7.0,
+        "end_out": -11.0,
+        "step": 18.0
+      }
+    },
+    {
+      "estimator": "max",
+      "window": 2.0,
+      "confirm": 8,
+      "offset": 2.0,
+      "min_crossing": -59.0,
+      "interval": [
+        2.0,
+        6.0
+      ],
+      "best_partial": [
+        8,
+        2.0,
+        ""
+      ],
+      "info": {
+        "end_in": 7.0,
+        "end_out": -11.0,
+        "step": 18.0
+      }
+    }
+  ],
+  "check": {
+    "passed": true,
+    "reason": "",
+    "pass_results": [
+      9.039381265640259,
+      16.425008058547974,
+      7.351276397705078,
+      7.890028476715088,
+      6.984142065048218,
+      7.461591958999634,
+      7.705271005630493,
+      7.637173891067505
+    ],
+    "events": [
+      [
+        1793191186.063445,
+        "entering"
+      ],
+      [
+        1793191210.121377,
+        "exiting"
+      ],
+      [
+        1793191221.453548,
+        "entering"
+      ],
+      [
+        1793191242.999928,
+        "exiting"
+      ],
+      [
+        1793191253.861304,
+        "entering"
+      ],
+      [
+        1793191265.995089,
+        "exiting"
+      ],
+      [
+        1793191277.007805,
+        "entering"
+      ],
+      [
+        1793191289.545119,
+        "exiting"
+      ],
+      [
+        1793191304.307294,
+        "entering"
+      ]
+    ]
+  }
+}

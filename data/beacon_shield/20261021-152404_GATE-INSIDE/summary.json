@@ -1,0 +1,136 @@
+{
+  "meta": {
+    "beacon_id": "GATE-INSIDE",
+    "address": "AC:A7:04:33:C7:69",
+    "distance_cm": 100.0,
+    "seconds_per_condition": 30.0,
+    "note": "鐵盆",
+    "started_at": "2026-10-21T15:24:04",
+    "rssi_smoothing_sec": 0.4,
+    "rssi_min_samples": 3,
+    "rssi_estimator": "p75",
+    "tick_sec": 0.1,
+    "dropout_sec": 1.0
+  },
+  "conditions": {
+    "baseline": {
+      "duration_sec": 30.0,
+      "packets": 175,
+      "rate_pps": 5.83,
+      "rssi": {
+        "mean": -58.42,
+        "median": -55.0,
+        "p75": -53.0,
+        "p90": -53.0,
+        "max": -49,
+        "min": -70,
+        "stdev": 6.55
+      },
+      "gaps": {
+        "median_ms": 109.7,
+        "p95_ms": 417.1,
+        "max_ms": 642.9,
+        "dropouts": 0,
+        "dropout_time_ratio": 0.0
+      },
+      "repeat_ratio": 0.351,
+      "judgeable_ratio": 0.434,
+      "filtered": {
+        "method": "p75",
+        "mean": -56.5,
+        "min": -69.75,
+        "max": -51.0,
+        "stdev": 5.0
+      }
+    },
+    "open": {
+      "duration_sec": 30.0,
+      "packets": 199,
+      "rate_pps": 6.63,
+      "rssi": {
+        "mean": -49.58,
+        "median": -47.0,
+        "p75": -46.0,
+        "p90": -45.0,
+        "max": -45,
+        "min": -57,
+        "stdev": 4.72
+      },
+      "gaps": {
+        "median_ms": 107.5,
+        "p95_ms": 321.0,
+        "max_ms": 540.0,
+        "dropouts": 0,
+        "dropout_time_ratio": 0.0
+      },
+      "repeat_ratio": 0.303,
+      "judgeable_ratio": 0.582,
+      "filtered": {
+        "method": "p75",
+        "mean": -47.7,
+        "min": -57.0,
+        "max": -45.0,
+        "stdev": 3.19
+      }
+    },
+    "shield": {
+      "duration_sec": 30.0,
+      "packets": 192,
+      "rate_pps": 6.4,
+      "rssi": {
+        "mean": -57.42,
+        "median": -57.0,
+        "p75": -52.0,
+        "p90": -52.0,
+        "max": -49,
+        "min": -65,
+        "stdev": 4.69
+      },
+      "gaps": {
+        "median_ms": 107.8,
+        "p95_ms": 412.2,
+        "max_ms": 599.7,
+        "dropouts": 0,
+        "dropout_time_ratio": 0.0
+      },
+      "repeat_ratio": 0.335,
+      "judgeable_ratio": 0.576,
+      "filtered": {
+        "method": "p75",
+        "mean": -55.15,
+        "min": -64.0,
+        "max": -51.5,
+        "stdev": 3.14
+      }
+    }
+  },
+  "comparisons": {
+    "開口側 − 遮擋側": {
+      "rssi_mean_db": 7.84,
+      "rssi_median_db": 10.0,
+      "rssi_p75_db": 6.0,
+      "rssi_max_db": 4.0,
+      "filtered_mean_db": 7.45,
+      "rate_ratio": 1.04,
+      "judgeable_ratio_diff": 0.01
+    },
+    "無遮罩 − 開口側": {
+      "rssi_mean_db": -8.84,
+      "rssi_median_db": -8.0,
+      "rssi_p75_db": -7.0,
+      "rssi_max_db": -4.0,
+      "filtered_mean_db": -8.8,
+      "rate_ratio": 0.88,
+      "judgeable_ratio_diff": -0.15
+    },
+    "無遮罩 − 遮擋側": {
+      "rssi_mean_db": -1.0,
+      "rssi_median_db": 2.0,
+      "rssi_p75_db": -1.0,
+      "rssi_max_db": 0.0,
+      "filtered_mean_db": -1.35,
+      "rate_ratio": 0.91,
+      "judgeable_ratio_diff": -0.14
+    }
+  }
+}

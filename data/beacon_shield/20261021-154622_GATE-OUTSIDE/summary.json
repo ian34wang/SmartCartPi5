@@ -1,0 +1,48 @@
+{
+  "meta": {
+    "beacon_id": "GATE-OUTSIDE",
+    "address": "F4:2D:C9:A1:8E:FA",
+    "distance_cm": 100.0,
+    "seconds_per_condition": 30.0,
+    "note": "鐵盆",
+    "started_at": "2026-10-21T15:46:22",
+    "rssi_smoothing_sec": 1.0,
+    "rssi_min_samples": 3,
+    "rssi_estimator": "p75",
+    "tick_sec": 0.1,
+    "dropout_sec": 1.0
+  },
+  "conditions": {
+    "baseline": {
+      "duration_sec": 30.0,
+      "packets": 117,
+      "rate_pps": 3.9,
+      "rssi": {
+        "mean": -70.55,
+        "median": -69.0,
+        "p75": -67.0,
+        "p90": -66.0,
+        "max": -63,
+        "min": -85,
+        "stdev": 4.9
+      },
+      "gaps": {
+        "median_ms": 176.7,
+        "p95_ms": 582.7,
+        "max_ms": 1792.5,
+        "dropouts": 3,
+        "dropout_time_ratio": 0.154
+      },
+      "repeat_ratio": 0.207,
+      "judgeable_ratio": 0.756,
+      "filtered": {
+        "method": "p75",
+        "mean": -69.45,
+        "min": -82.5,
+        "max": -63.75,
+        "stdev": 4.29
+      }
+    }
+  },
+  "comparisons": {}
+}
