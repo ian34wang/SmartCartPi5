@@ -5,3 +5,7 @@ database/inventory.db
 logs/
 vision/camera_calibration.npz
 color_test.png
+# 執行期的門口記錄檔（每次啟動一份、每小時 2~3 MB），要分析時直接在 Pi 上看
+data/gate_logs/
+# tests/test_ui_layout.py 產生的截圖
+tests/shot_*.png
