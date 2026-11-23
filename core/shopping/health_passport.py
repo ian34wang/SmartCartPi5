@@ -1,9 +1,9 @@
 """
-core/health_passport.py
+core/shopping/health_passport.py
 
 健康護照：商品的成分標籤 × 會員的偏好（過敏原 / 葷素 / 宗教飲食）→ 這件商品有哪些衝突。
 
-純函式，沒有 I/O。ui/app_gui.py 在掃碼、畫購物清單、找貨、優惠推薦時呼叫；
+純函式，沒有 I/O。ui/bridge.py 在掃碼、畫購物清單、找貨、優惠推薦時呼叫；
 tools/product_admin.py 用 TAG_OPTIONS 讓店家幫商品勾標籤。
 
 標籤（products.tags，一個商品可以有好幾個）：

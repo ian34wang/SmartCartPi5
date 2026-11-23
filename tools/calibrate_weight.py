@@ -1,7 +1,7 @@
 """
 tools/calibrate_weight.py
 
-HX711 秤重校正。錄音與互動在這裡，計算在 core/weight_calibration.py（說明、符號、
+HX711 秤重校正。錄音與互動在這裡，計算在 core/shopping/weight_calibration.py（說明、符號、
 判讀標準都寫在那邊）。
 
 一次錄完五件事，全部存成原始讀數，事後可以用 --from-data 重算：
@@ -12,7 +12,7 @@ HX711 秤重校正。錄音與互動在這裡，計算在 core/weight_calibratio
     4. 籃子空的、照平常的方式推車          → 推車震動 → 未掃碼門檻 unscanned_change_threshold_g
     5. 掃碼後把砝碼像平常放商品一樣放進去  → 用執行期的狀態機重播，定「等讀數穩定」的參數
 
-參數不是用公式推的：第 4、5 步的讀數直接丟進 core/cart_state_machine.CartStateMachine
+參數不是用公式推的：第 4、5 步的讀數直接丟進 core/shopping/state_machine.CartStateMachine
 （跟 ui/app_gui.py 同一份程式）重播，看實際會不會誤報、會不會判錯。
 
 錄音存在 data/weight_calibration/<時間>/（samples.csv + samples.meta.json + result.json）。
@@ -34,7 +34,6 @@ scale 一改，那些數字就跟新的換算對不上——用 `python3 -m tool
 from __future__ import annotations
 
 import argparse
-import json
 import queue
 import sys
 import time
@@ -43,18 +42,18 @@ from typing import List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.cart_state_machine import load_state_machine_config  # noqa: E402
-from core.uart_recording import (  # noqa: E402
+from core import config  # noqa: E402
+from core.shopping.state_machine import load_state_machine_config  # noqa: E402
+from core.recording import (  # noqa: E402
     UartTap,
     countdown,
     load,
     new_session_dir,
     save_result,
     segment_stats_line,
-    update_config,
     wait_for_stream,
 )
-from core.weight_calibration import (  # noqa: E402
+from core.shopping.weight_calibration import (  # noqa: E402
     PRODUCT_TOLERANCE_RATIO,
     T_FLOOR,
     WeightCalibration,
@@ -63,16 +62,8 @@ from core.weight_calibration import (  # noqa: E402
 from database.db_manager import DBManager  # noqa: E402
 from drivers.uart_receiver import UartPacket, UartReceiver  # noqa: E402
 
-_REPO = Path(__file__).resolve().parent.parent
-_CONFIG_PATH = _REPO / "config.json"
-_ROOT = _REPO / "data" / "weight_calibration"
+_OUT_ROOT = config.DATA_DIR / "weight_calibration"
 
-
-def _rel(p: Path) -> str:
-    try:
-        return str(Path(p).resolve().relative_to(_REPO))
-    except ValueError:
-        return str(p)
 
 
 # ----------------------------------------------------------------------
@@ -160,7 +151,7 @@ def record(receiver, out_dir: Path, static_sec: float, push_sec: float, drops: i
             print("    放入測試完成，可以把砝碼拿出來了。")
     except KeyboardInterrupt:
         tap.stop()
-        print("\n中斷。已錄到的部分在", _rel(out_dir))
+        print("\n中斷。已錄到的部分在", config.rel(out_dir))
         return None
     tap.stop()
     return tap
@@ -262,10 +253,10 @@ def write_back(cal: WeightCalibration, source: str) -> None:
         values["settle_band_g"] = cal.settle_band_g
         comments["_settle_comment"] = (
             f"{stamp} tools/calibrate_weight.py：秤重比對、未掃碼偵測只用「穩定值」——最近 settle_window_sec 秒的讀數"
-            " 最大−最小 ≤ settle_band_g 時取中位數（core/cart_state_machine.py 開頭有定義）。band = max(2, 6σ_s)；"
+            " 最大−最小 ≤ settle_band_g 時取中位數（core/shopping/state_machine.py 開頭有定義）。band = max(2, 6σ_s)；"
             "window 是放入錄音重播時每一趟都正常加入、之後不誤報的最小值。0 = 不等（舊版行為）。")
-    update_config(_CONFIG_PATH, "weight", values, comments)
-    print(f"\n已寫回 {_CONFIG_PATH}")
+    config.update_section("weight", values, comments)
+    print(f"\n已寫回 {config.rel(config.CONFIG_PATH)}")
 
 
 def _products() -> dict:
@@ -279,10 +270,10 @@ def _products() -> dict:
 
 
 def finish(cal: WeightCalibration, out_dir: Path, dry_run: bool) -> int:
-    cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    cfg = config.load()
     print_report(cal, cfg.get("weight", {}))
     save_result(out_dir, result_dict(cal))
-    print(f"\n錄音與結果：{_rel(out_dir)}/")
+    print(f"\n錄音與結果：{config.rel(out_dir)}/")
     if cal.offset is None:
         return 1
     if dry_run:
@@ -291,13 +282,12 @@ def finish(cal: WeightCalibration, out_dir: Path, dry_run: bool) -> int:
     if input("\n要寫回 config.json 嗎？(y 確認，其他任何輸入都不寫)：").strip().lower() != "y":
         print("沒有寫回。")
         return 0
-    write_back(cal, _rel(out_dir))
-    print("接下來：python3 -m tools.verify_weight 用砝碼抽驗，再用 product_admin edit 重秤每個商品。")
+    write_back(cal, config.rel(out_dir))
     return 0
 
 
 def _main() -> int:
-    cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    cfg = config.load()
     ap = argparse.ArgumentParser(description="HX711 秤重校正（多點、雜訊、推車震動、放入測試）")
     ap.add_argument("--dry-run", action="store_true", help="錄音、計算，不寫回 config.json")
     ap.add_argument("--from-data", default=None, help="用存下來的錄音重算（目錄或 samples.csv）")
@@ -316,17 +306,17 @@ def _main() -> int:
         path = Path(args.from_data)
         rec = load(path)
         out_dir = path if path.is_dir() else path.parent
-        print(f"讀入 {_rel(out_dir)}：{sum(len(v) for v in rec.samples.values())} 筆、{len(rec.segments)} 段")
+        print(f"讀入 {config.rel(out_dir)}：{sum(len(v) for v in rec.samples.values())} 筆、{len(rec.segments)} 段")
         return finish(calibrate(rec, sm_cfg, _products(), args.t_floor), out_dir, args.dry_run)
 
-    receiver = UartReceiver(port=args.port, baudrate=args.baud)
+    receiver = UartReceiver.from_config(cfg, port=args.port, baudrate=args.baud)
     receiver.start()
     try:
         print(f"等待 UART 資料流（{args.port}）...", flush=True)
         if not wait_for_stream(receiver):
             print(f"[錯誤] 5 秒內沒有收到任何 UART 封包：確認下位機有在送、接線、config.json 的 serial.port（{args.port}）。")
             return 1
-        out_dir = new_session_dir(_ROOT)
+        out_dir = new_session_dir(_OUT_ROOT)
         push_sec, drops = (0.0, 0) if args.quick else (args.push_sec, args.drops)
         tap = record(receiver, out_dir, args.static_sec, push_sec, drops)
     finally:

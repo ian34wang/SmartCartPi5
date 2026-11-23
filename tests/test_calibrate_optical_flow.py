@@ -1,5 +1,5 @@
-"""光流與航向校正（core/flow_calibration.py、tools/calibrate_optical_flow.py）與
-core/odometry_engine.py 座標轉換的測試——不需要硬體。
+"""光流與航向校正（core/positioning/flow_calibration.py、tools/calibrate_optical_flow.py）與
+core/positioning/odometry.py 座標轉換的測試——不需要硬體。
 
 用合成封包（已知 k、安裝角 φ、鏡像 m、yaw 正負號）驗證：
     - 找回正確的 k、φ、m、yaw_sign
@@ -25,9 +25,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.flow_calibration import calibrate  # noqa: E402
-from core.odometry_engine import OdometryEngine, rotate_local_to_global, sensor_to_cart  # noqa: E402
-from core.uart_recording import Recording, Sample, Segment, load  # noqa: E402
+from core.positioning.flow_calibration import calibrate  # noqa: E402
+from core.positioning.odometry import OdometryEngine, rotate_local_to_global, sensor_to_cart  # noqa: E402
+from core.recording import Recording, Sample, Segment, load  # noqa: E402
 from drivers.uart_receiver import UartPacket  # noqa: E402
 
 FAILURES = []

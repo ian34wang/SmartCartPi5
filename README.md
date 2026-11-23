@@ -1,484 +1,541 @@
-# SmartCart_Pi5 — 開發紀錄與交接文件
+# SmartCart_Pi5：智慧購物車
 
-Raspberry Pi 5 智慧購物車（上位機）。下位機是 SAMD21（MCC 產生的韌體，不在這個 repo 裡），
-透過 UART 把 BNO080 姿態、PMW3901 光流、HX711 秤重三合一封包送上來。
-
-**這份文件的定位**：接手的人（或新開的聊天室）只讀這一份，就要能知道
-「現在做到哪、什麼是真的驗證過的、什麼還是假的、下一步該做什麼」。
-文件裡凡是寫「已在硬體上驗證」的，都是真的在實體 Pi 5（YichaoPi5）+ 真實硬體上
-跑過、修過踩到的坑；凡是還沒驗證的，都會明講，不會用模糊的講法帶過。
-
-最後更新：2026-09-15
+大同大學電機系畢業專題。推車上的 Raspberry Pi 5 接條碼掃描器、秤重、光流與姿態感測器、門口 BLE Beacon、前方相機，
+用「**掃碼 + 秤重比對**」防損、用「**光流 + IMU 里程計**」與「**地上定位點 + 貨架消失點**」在店面平面圖上標出推車位置，
+觸控畫面提供健康護照、錢包管家、找貨、優惠。
 
 ---
 
-## 一分鐘現況
+## 一分鐘現況（2026-11-23）
 
-| Phase | 內容 | 狀態 |
+**結論**：購物主流程已在推車上實機跑通（11-16），四個硬體全部接真的、沒有任何模擬路徑。11-23 加上的找貨（平面圖＋推車位置）、
+健康護照、錢包管家、優惠頁程式都完成、自動化測試全過；**定位這一塊（里程計準度、相機定位點、消失點）還沒用實際推車驗證過**，
+月底前剩下的主要是現場工作。
+
+| 部分 | 程式 | 驗證程度 |
 |---|---|---|
-| 1 | 環境建置、硬體可靠度驗證 | 完成，實機驗證過 |
-| 2 | 資料擷取驅動層（UART / 條碼 / 相機） | 完成，實機驗證過 |
-| 3 | 定位積分與視覺融合 | 部分完成：純 UART 里程計（邏輯測過、**未實機推車驗證**）、BLE 門口判定（真 Beacon 實測過；判定規則、校正、記錄、分析已統一成一套，2026-10-28 門口現場校正完成，反應約 1~2 秒）。前方相機：地上定位點標記對齊、貨架消失點修航向（2026-11-23，只在合成影像測過，**未實機驗證**，見「現場驗證：平面圖與前方相機」） |
-| 4 | 購物流程狀態機 | 完成，邏輯測試涵蓋完整，實機資料流跑過（`tools/run_real_hardware_flow.py`） |
-| 5 | 觸控 UI + 系統整合 | **主要工作完成**：14 頁 UI 全部接上狀態機與資料庫（含會員偏好、交易紀錄、店員協助、「我的」分頁）；條碼、秤重、閘門、前方相機四個硬體全部接真的，沒有任何模擬路徑。BLE 版完整購物流程 2026-11-16 實機跑通 |
-| 6 | AI（錢包管家 / 健康護照 / 即時優惠 / 異常偵測） | 健康護照、錢包管家、即時優惠：規則版完成（2026-11-23，商品標籤 × 會員偏好）。LLM 推薦與異常偵測未開始，`ai/` 只有空的 `__init__.py` |
-| 7 | 室內導航 | 找貨頁完成（店面平面圖、貨架路線、推車位置，2026-11-23）。依推車目前位置重新規劃路線未開始 |
+| 硬體與驅動（UART、條碼、BLE、相機） | 完成 | ✅ 實機 |
+| 購物流程狀態機（登入 → 進場 → 掃碼秤重 → 結帳 → 出場 → 登出） | 完成 | ✅ 實機（11-16 跑通） |
+| 觸控 UI 14 頁、會員偏好、交易紀錄、店員協助 | 完成 | ✅ 實機 |
+| 門口 BLE 進出場判定 | 完成，11-16 校正 | ✅ 實機（建議用新版校正重算一次，見待辦 1） |
+| 秤重、光流、航向校正 | 完成，11-16 校正 | ✅ 實機 |
+| 健康護照、錢包管家、優惠（規則式） | 完成 | ⚠️ 只有自動化測試；展示商品的標籤、貨架還沒建檔 |
+| 找貨頁（平面圖、路線、推車位置） | 完成 | ⚠️ 只有自動化測試；`store.unit_m` 沒填之前 app 不會啟動 |
+| 里程計準度（光流 + IMU） | 完成，軌跡工具已有 | ⚠️ 只用校正時同一份錄音重播過，沒有獨立驗證 |
+| 相機定位點、消失點修航向 | 完成 | ⚠️ 只在合成影像上測過 |
+| LLM 推薦、異常偵測、依推車位置重新規劃路線 | — | 未開始 |
 
-**現況（2026-11-23）**：全部硬體裝上推車並校正完（秤重、門口、光流），BLE 版完整購物流程
-2026-11-16 實機跑通。健康護照、錢包管家、找貨（照 11-23 構想圖的店面平面圖＋推車位置）、優惠頁 2026-11-23 改成真的資料驅動。
+**接下來要做的**（照順序）：
 
-**接下來要做的**（詳見最後一章「尚未完成的功能總表」）：
-
-1. 把展示要用的商品建檔，並用 `python3 -m tools.product_admin meta <條碼>` 設定成分標籤、
-   貨架位置（L1~R4，見下面「店面平面圖」）、折扣、搭配——健康護照、找貨、優惠頁都靠這些資料。
-2. 里程計軌跡驗證（不用等場地）：`python3 -m tools.track_odometry --grid-m 0.3` 推直線、L 形、繞一圈，
-   跟捲尺量的終點比（見「行駛軌跡視覺化」）。
-3. 場地鋪完後量一格多長，填 `config.json` 的 `store.unit_m`。**沒有預設值，沒填 app 不啟動**
-   （量法見「現場驗證：平面圖與前方相機」）。
-4. 定位點標記貼到地上，用 `python3 -m tools.verify_store_vision` 跟捲尺比對，再實際推一次看找貨頁的推車點（同一節）。
-5. Phase 6 的 LLM 與異常偵測、Phase 7 的路徑規劃還沒開始。
+1. **門口參數用新版校正重算**：`python3 -m tools.calibrate_gate_beacons --from-data data/gate_calibration/20261116-200255`。
+   新版多了確認時間 $T_c$ 與「執行期記錄不能來回跳」的檢查；用目前參數重播 11-16 之後的 9 份記錄，有 3 份會來回跳
+   （含 11-23 那份），建議參數全部 0 次（判讀「勉強」，可行遲滯範圍 0.75 dB）。看過建議值再回答 y 寫回。
+2. **里程計軌跡驗證**（不用等場地）：`python3 -m tools.track_odometry --grid-m 0.3`，推直線、L 形、繞一圈，跟捲尺量的終點比
+   （見〈定位：里程計〉）。11-16 三趟直推的終點都偏右 3~7%，這次要量終點的左右偏差。
+3. **展示商品建檔**：`python3 -m tools.product_admin meta <條碼>` 設貨架（`L1`~`R4`）、成分標籤、折扣、搭配。
+4. **場地鋪完後**：量一格多長填 `store.unit_m`、量相機高度、印定位點標記貼地上，`python3 -m tools.verify_store_vision` 跟捲尺比對
+   （見〈店面平面圖與推車位置〉）。
+5. **整趟實機彩排**：進門 → 找貨 → 掃碼 → 結帳 → 出場。
 
 ---
 
-## 目錄結構
+## 系統架構
+
+### 硬體
+
+| 元件 | 接在哪 | 做什麼 |
+|---|---|---|
+| MCU：SAM-IoT WG（SAMD21） | UART → Pi 5（`/dev/ttyAMA0`，115200，20 Hz） | 收集下面三個感測器、打包送給 Pi |
+| PMW3901 光流 | MCU（SPI） | 推車對地面的位移（里程計） |
+| BNO080 IMU | MCU | 航向角（相對航向，開機為 0） |
+| HX711 + 荷重元 | MCU | 籃子重量（秤重比對） |
+| Raspberry Pi 5 | — | 全部的軟體 |
+| USB 條碼掃描器 | Pi USB（evdev） | 商品條碼、會員卡、店員工作證 |
+| 門口 BLE Beacon ×2 | Pi 內建藍牙 | 門內 GATE-INSIDE（Arduino UNO R4 WiFi）、門外 GATE-OUTSIDE（ESP32） |
+| 官方廣角相機 | Pi CSI | 前方相機：地上定位點標記、貨架消失點 |
+| 7 吋觸控螢幕 | Pi DSI | 720×1280 直立 |
+
+MCU 腳位已經用滿，所以門口偵測不經過 MCU，直接用 Pi 的藍牙掃 Beacon，車上不用多裝東西。
+
+### 資料流
 
 ```
-SmartCart_Pi5/
-├── config.json               # 系統全域參數，含待校正值（標記 CALIBRATE_ME）
+ MCU ──UART 20 Hz──▶ drivers/uart_receiver ─┬─ hx711_raw ─▶ core/shopping/weight ─▶ 狀態機（秤重比對）
+                                             ├─ yaw ───────▶ core/gate/monitor（航向交叉驗證）
+                                             └─ dx,dy,yaw ─▶ core/positioning/odometry ─▶ 推車位置
+ 條碼掃描器 ─evdev─▶ drivers/barcode_scanner ──────────────▶ 狀態機（會員碼／商品碼／店員證）
+ 門口 Beacon ─BLE─▶ drivers/ble_beacon_scanner ─▶ core/gate/monitor ─▶ 狀態機（進場／出場）
+ 前方相機 ─CSI─▶ drivers/front_camera ─▶ core/store/vision ─▶ 定位點對齊、消失點修航向
+
+ ui/workers.py（背景執行緒）把以上事件交給 ui/bridge.py 的 Bridge
+   Bridge ─▶ core/shopping/state_machine（流程）、database（資料）、core/store/layout（平面圖）
+   Bridge ◀─▶ 觸控畫面 ui/templates/index.html（pywebview）
+```
+
+### 單一實體路徑原則
+
+**整個系統只走真實硬體，沒有任何模擬、退回或旁路。** 四個裝置都是 app 啟動時的硬性條件，任何一個接不上就印出原因、結束（exit 1）。
+以前每個裝置都有「接不到就退回模擬」的路徑（掃描器的鍵盤模式、秤重展示模式、開發面板的閘門按鈕、手打商品重量……），結果有兩個問題：
+出問題時第一件事是先搞清楚自己走在哪一條路上；更糟的是，**硬體沒在運作時畫面看起來一切正常**。寧可開不起來，也不要假裝正常。
+所以畫面右上角的 `DEV` 只是唯讀診斷面板，沒有任何能製造事件的按鈕；商品重量也只能在推車的秤上現場量。
+
+### 目錄結構
+
+```
+SmartCartPi5/
+├── config.json                 全域設定（讀寫都經過 core/config.py）
 ├── requirements.txt
-├── README.md                 # 本檔
-│
-├── drivers/                  # 硬體存取層（只管把資料讀進來，不含商業邏輯）
-│   ├── uart_receiver.py      # 背景執行緒 + Queue，含 checksum 驗證與可選 CSV logger
-│   ├── barcode_scanner.py    # evdev 獨佔 USB 條碼掃描器
-│   ├── ble_beacon_scanner.py # bleak 掃描 BLE Beacon RSSI（管制區門口判定的資料來源）
-│   ├── camera_stream.py      # picamera2 影像擷取 + 棋盤格畸變校正 + --color-test 診斷
-│   └── front_camera.py       # 找貨頁推車位置用：CameraStream 擷取 → 灰階 → 縮小 → 去畸變（只去一次）
-│
-├── core/                     # 商業邏輯與演算法（不碰硬體，可用假資料完整測試）
-│   ├── position_types.py     # 定位系統的輸出契約（PositionEstimate）
-│   ├── odometry_engine.py    # 純 UART dead-reckoning 里程計（感測器安裝角、鏡像、yaw 正負號、squal 過濾）
-│   ├── odometry_track.py     # 行駛軌跡：OdometryEngine 重播、誤差指標、畫圖（tools/track_odometry.py 用）
-│   ├── landmark_correction.py# BLE 地標校正的純演算法（峰值偵測、雙 Beacon 差分）
-│   ├── gate_model.py         # 門口判定的單一標準：參數、時間窗濾波、判定、重播
-│   ├── gate_monitor.py       # gate_model 的即時版本（執行期一筆一筆處理，並記錄下來）
-│   ├── gate_calibration.py   # 門口校正的計算：用實測資料重播判定規則挑參數
-│   ├── gate_recorder.py      # 門口記錄檔（執行期與校正量測同一種格式）
-│   ├── weight_convert.py     # HX711 raw -> 公克換算（校正/驗證/狀態機共用）
-│   ├── health_passport.py    # 健康護照：商品成分標籤 × 偏好（過敏原／葷素／宗教）→ 衝突
-│   ├── store_layout.py       # 店面平面圖、貨架代碼、路線、里程計 ↔ 平面圖對齊（定位點）
-│   ├── store_vision.py       # 機器視覺：定位點 ArUco 標記、貨架消失點 → 航向
-│   ├── uart_recording.py     # UART 校正錄音（秤重、光流共用的錄音格式與工具）
-│   ├── weight_calibration.py # 秤重校正的計算：多點擬合、狀態機重播定門檻
-│   ├── flow_calibration.py   # 光流與航向校正的計算：OdometryEngine 重播
-│   ├── cart_manager.py       # 購物清單資料結構（清單、數量、金額）
-│   └── cart_state_machine.py # 購物流程狀態機（登入~登出整趟流程的正確性保障）
-│
-├── database/
-│   ├── db_manager.py         # SQLite 存取層：商品、會員、偏好、交易、店員、協助請求
-│   └── inventory.db          # （執行時產生，不進版控）
-│
-├── ui/                       # Phase 5 觸控應用
-│   ├── app_gui.py            # pywebview 主程式 + Bridge（前端與狀態機的橋接）
-│   └── templates/index.html  # 14 頁單頁應用（**由腳本產生，不要手改**）
-│
-├── design-cart-ui/           # UI 視覺設計稿（*.dc.html），index.html 的來源
-│
-├── tools/
-│   ├── build_app_ui.py       # design-cart-ui/*.dc.html -> ui/templates/index.html
-│   ├── product_admin.py      # 資料庫後台 CLI（商品、會員、店員、協助請求、交易紀錄）
-│   ├── make_anchor_marker.py # 產生定位點 ArUco 標記圖（印出來貼在長廊末端）
-│   ├── run_real_hardware_flow.py  # 純終端機的實機整合測試（三個硬體全接真的）
-│   ├── calibrate_weight.py   # 秤重校正：多點擬合、推車震動、放入測試（狀態機重播）
-│   ├── calibrate_optical_flow.py  # 光流與航向校正：px_to_mm、安裝角、鏡像、yaw 正負號
-│   ├── calibrate_gate_beacons.py  # 門口 Beacon 校正（推車走過門口錄音）/靜止剖面/即時監看（兩顆都要有電）
-│   ├── analyze_gate_log.py   # 分析門口記錄檔：重播、核對、換參數試算
-│   ├── measure_beacon_shield.py   # 單顆 Beacon 遮罩量測：開口側 vs 遮擋側
-│   ├── measure_beacon_rotation.py # Beacon 組轉角度量測：找極化對齊的安裝角度
-│   ├── verify_weight.py      # 重量校正「驗證」工具：只讀不寫
-│   ├── verify_optical_flow.py# 光流校正「驗證」工具：只讀不寫
-│   ├── verify_store_vision.py# 前方相機（定位點標記、消失點）現場驗證：只讀不寫
-│   └── track_odometry.py     # 里程計行駛軌跡視覺化（即時畫線、跟捲尺比、存圖）：只讀不寫
-│
-├── tests/
-│   ├── test_app_gui_bridge.py# Bridge 端對端（純 Python，必跑）
-│   ├── test_gate_model.py    # 即時判定 = 重播 = 記錄檔重播（純 Python，必跑）
-│   ├── test_gate_monitor.py  # BLE 門口判定邏輯（純 Python，必跑）
-│   ├── test_measure_beacon_shield.py  # 遮罩量測的統計邏輯（純 Python）
-│   ├── test_measure_beacon_rotation.py # 轉角度量測的計算邏輯（純 Python）
-│   ├── test_calibrate_gate_beacons.py  # 門口校正的計算邏輯（純 Python）
-│   ├── test_calibrate_weight.py        # 秤重校正（純 Python，含假 UART 端對端）
-│   ├── test_calibrate_optical_flow.py  # 光流與航向校正、里程計座標轉換（純 Python）
-│   ├── test_odometry_track.py # 行駛軌跡重播與誤差指標（純 Python）
-│   └── test_ui_layout.py     # 14 頁版面與按鈕接線（需要 playwright，選用）
-│
-├── vision/
-│   └── camera_calibration.npz# 相機內參校正結果（已產生，reprojection error 0.2026）
-│
-└── ai/                       # Phase 6，目前只有空的 __init__.py
+├── core/                       演算法與流程（純邏輯，不碰硬體，可以用錄音或合成資料測）
+│   ├── config.py               專案路徑、config.json 讀寫、視覺預設值
+│   ├── angles.py               角度包裝 wrap／unwrap
+│   ├── recording.py            UART 錄音格式（秤重、光流校正、軌跡共用）
+│   ├── shopping/               購物
+│   │   ├── state_machine.py    購物流程狀態機
+│   │   ├── cart.py             購物清單
+│   │   ├── weight.py           HX711 讀數 → 公克
+│   │   ├── weight_calibration.py  秤重校正的計算
+│   │   └── health_passport.py  健康護照規則
+│   ├── positioning/            定位
+│   │   ├── odometry.py         里程計（光流 + IMU）
+│   │   ├── track.py            行駛軌跡：重播、誤差指標、畫圖
+│   │   └── flow_calibration.py 光流與航向校正的計算
+│   ├── gate/                   門口 BLE 判定
+│   │   ├── detector.py         RSSI 平滑、雙 Beacon 差分、航向交叉驗證
+│   │   ├── model.py            判定規則的唯一標準（即時、校正、分析共用）
+│   │   ├── monitor.py          即時版本（一筆一筆處理並記錄）
+│   │   ├── recorder.py         執行期記錄檔
+│   │   └── calibration.py      門口校正的計算
+│   └── store/                  店面
+│       ├── layout.py           平面圖、貨架代碼、路線、里程計 ↔ 平面圖
+│       └── vision.py           ArUco 定位點、貨架消失點
+├── drivers/                    硬體存取（只把資料讀進來）
+│   ├── uart_receiver.py        MCU 封包（也是 UART 硬體測試工具）
+│   ├── barcode_scanner.py      USB 條碼掃描器（evdev 獨佔）
+│   ├── ble_beacon_scanner.py   門口 Beacon（bleak）
+│   ├── camera_stream.py        相機擷取（picamera2）＋棋盤格校正
+│   └── front_camera.py         前方相機：灰階、縮小、去畸變
+├── database/db_manager.py      SQLite：商品、會員、偏好、交易、店員、協助請求
+├── ui/
+│   ├── app_gui.py              主程式：檢查設定、接硬體、開視窗
+│   ├── bridge.py               畫面與流程的橋（Bridge）、前端 API（JsApi）
+│   ├── workers.py              背景執行緒
+│   └── templates/index.html    14 頁單頁應用（產生的，不要手改）
+├── design-cart-ui/*.dc.html    畫面設計稿（index.html 的來源）
+├── tools/                      終端機工具（校正、驗證、後台、分析）
+├── tests/                      自動化測試（都不需要硬體）；run_all.py 一次跑完
+├── vision/camera_calibration.npz   相機內參（不進版控）
+└── data/                       校正錄音、執行期記錄、軌跡圖
 ```
 
-**執行方式一律用 `python3 -m`，而且要在專案根目錄下**（除了 `product_admin.py`
-自己有加 `sys.path` 引導之外，其他模組都沒有，直接 `python3 tools/xxx.py` 會 import 失敗）：
+### 執行緒
 
-```bash
-cd ~/SmartCartPi5
-python3 -m ui.app_gui
-python3 -m tools.product_admin
-```
+app 有 7 條背景執行緒（`ui/workers.py`）：條碼、UART（20 Hz）、BLE、相機、每秒逾時檢查、畫面推送、推車位置推送。
+前端按鈕也從 pywebview 的執行緒呼叫進來。**`Bridge` 的公開方法全部在同一把 `RLock` 裡執行**，所以狀態機一次只處理一個事件
+（`tests/test_app_gui_bridge.py` 第 34 項用 4 條執行緒同時打，驗證同一時間最多一個事件在狀態機裡）。
+硬體事件造成畫面變化時只「要求推送」，由 `StatePusher` 在鎖外呼叫 `evaluate_js`，連續的變化合併成一次。
+前端看得到的方法只有 `JsApi` 列出的 21 個（pywebview 會把 js_api 物件的公開屬性遞迴展開，所以不直接交出 `Bridge`）。
 
 ---
 
-## CLI 指令總覽（速查）
+## 快速上手
 
-全部都要在專案根目錄下、用 `python3 -m <模組路徑>` 執行。
-需要硬體的指令接不到裝置時一律直接報錯結束，不會退回模擬。
-
-### 日常操作
-
-| 指令 | 用途 | 需要的硬體 |
-|---|---|---|
-| `python3 -m ui.app_gui --fullscreen` | **主程式**：14 頁觸控 UI，完整購物流程 | 掃描器 + UART + BLE 三個都要 |
-| `python3 -m tools.product_admin` | 商品/會員資料庫後台（互動選單） | 加/改商品時需要秤；其他指令不用 |
-| `python3 -m tools.run_real_hardware_flow` | 純終端機跑完整流程，順便看定位座標 | 掃描器 + UART + BLE 三個都要 |
-
-### 資料庫
-
-| 指令 | 用途 |
-|---|---|
-| `python3 -m database.db_manager --init` | 建表 + 寫入測試資料（5 筆商品、2 筆會員） |
-| `python3 -m database.db_manager --list` | 列出所有商品與會員 |
-| `python3 -m tools.product_admin list` | 列出所有商品 |
-| `python3 -m tools.product_admin add` | 新增商品（條碼直接刷、重量現場秤、容差自動 10%） |
-| `python3 -m tools.product_admin add --barcode X --name Y --price 39` | 同上，但條碼/名稱/單價先用參數給（重量仍要現場秤） |
-| `python3 -m tools.product_admin edit <barcode>` | 修改商品（Enter 保留原值） |
-| `python3 -m tools.product_admin delete <barcode> [-y]` | 刪除商品 |
-| `python3 -m tools.product_admin import <file.csv>` | CSV 批次匯入/更新 |
-| `python3 -m tools.product_admin export <file.csv>` | 匯出成 CSV（備份用） |
-| `python3 -m tools.product_admin member-list` | 列出所有會員 |
-| `python3 -m tools.product_admin member-add --member-id MEMBER-0003 --name "王小明"` | 新增/修改會員 |
-| `python3 -m tools.product_admin member-delete <member_id> [-y]` | 刪除會員 |
-| `python3 -m tools.product_admin meta <barcode>` | 成分標籤、貨架位置、折扣、搭配（不用秤） |
-| `python3 -m tools.product_admin staff-list` / `staff-add` / `staff-delete <id>` | 店員工作證（前綴 `STAFF-`） |
-| `python3 -m tools.product_admin assist-list [--all]` | 購物車送出的協助請求（預設只列待處理） |
-| `python3 -m tools.product_admin assist-resolve <id\|all> --by <處理人>` | 不到場直接標成已處理 |
-| `python3 -m tools.product_admin tx-list [--member MEMBER-0001] [--limit 20]` | 交易紀錄與明細 |
-
-共用參數：`--db <路徑>`、`--port <序列埠>`、`--baud <鮑率>`
-
-### 硬體單獨測試（診斷用）
-
-| 指令 | 用途 |
-|---|---|
-| `python3 -m drivers.uart_receiver --port /dev/ttyAMA0` | 看 UART 即時封包（dx/dy/squal/yaw/hx711_raw） |
-| `python3 -m drivers.uart_receiver --csv-log` | 同上並寫 CSV（Phase 6 訓練資料） |
-| `sudo venv/bin/python3 -m drivers.barcode_scanner --list` | 列出所有輸入裝置，找掃描器的裝置名稱 |
-| `sudo venv/bin/python3 -m drivers.barcode_scanner --device-hint USBKey` | 刷條碼看解析結果 |
-| `sudo venv/bin/python3 -m drivers.barcode_scanner --device-hint USBKey --debug` | 同上並印原始鍵碼（換掃描器時用） |
-| `python3 -m drivers.ble_beacon_scanner --list` | 掃 10 秒，列出附近所有 BLE 裝置與位址 |
-| `python3 -m drivers.ble_beacon_scanner` | 持續印門口那兩顆的**原始** RSSI（未濾波，抖動大是正常的） |
-| `python3 -m tools.measure_beacon_shield --beacon GATE-OUTSIDE --distance-cm 100` | **單顆** Beacon 遮罩量測：無遮罩／開口側／遮擋側的 RSSI、封包量、斷訊、可判定時間比例，存到 `data/beacon_shield/` |
-| `python3 -m tools.measure_beacon_rotation --distance-cm 100` | 門口 Beacon 組**轉角度**量測：找出兩顆極化都跟 Pi 對齊的安裝角度，存到 `data/beacon_rotation/` |
-| `python3 -m drivers.camera_stream --preview` | 測試相機擷取 |
-| `python3 -m drivers.camera_stream --color-test` | 拍一張存檔，肉眼確認色彩通道順序 |
-
-### 校正（都會問過才寫回 `config.json`，加 `--dry-run` 只看不寫）
-
-| 指令 | 校正什麼 | 何時要跑 |
-|---|---|---|
-| `python3 -m tools.calibrate_gate_beacons --monitor` | 即時看「原始 vs 濾波後」的值與判定結果 | 推車走動、或想確認濾波有沒有在作用時 |
-| `python3 -m tools.calibrate_gate_beacons --survey` | 門口 5 個位置的靜止剖面：各位置強度、差分、雜訊，指出哪一側不夠寬（不挑參數） | 改 Beacon 擺法/遮罩的**前後各跑一次**比較 |
-| `python3 -m tools.calibrate_gate_beacons --dry-run` | 推車實際來回走過門口（預設 4 次，`--trips` 改）、停門檻線 20 秒，重播挑出估計量/窗口/確認筆數/偏移/遲滯/絕對門檻，**不寫回** | 正式校正前先跑 |
-| `python3 -m tools.calibrate_gate_beacons` | 同上，最後問要不要寫回 | **Beacon 裝好後必跑**，否則出場判定幾乎不會觸發 |
-| `python3 -m tools.calibrate_gate_beacons --from-data data/gate_calibration/<時間>` | 用存下來的錄音重算（校正錄音→挑參數；剖面→印剖面），不用硬體 | 換了判定規則或想核對時 |
-| `python3 -m tools.analyze_gate_log` | 分析最新一份門口記錄檔（執行期自動產生）：事件、一致性、差分分布 | 實際推車測試之後；加 `--set hysteresis_dbm=6` 試別的參數 |
-| `python3 -m tools.calibrate_weight` | `hx711_offset` / `hx711_scale` / `unscanned_change_threshold_g` | 秤重機構裝好或改過後（之後要重秤商品） |
-| `python3 -m tools.calibrate_optical_flow` | `optical_flow_px_to_mm` / `flow_rotation_deg` / `flow_mirror` / `yaw_sign` | PMW3901 裝好或改過後 |
-| `python3 -m drivers.camera_stream --calibrate --num-images 15 --square-size-mm 24` | 相機內參 | **已完成**（error 0.2026） |
-
-### 驗證（只讀 `config.json` 現有值，不會修改）
-
-| 指令 | 驗證什麼 |
-|---|---|
-| `python3 -m tools.verify_weight` | 放上已知重量的物品，看換算誤差幾 % |
-| `python3 -m tools.verify_optical_flow` | 推一段已知距離，看推估誤差幾 % |
-| `python3 -m tools.track_odometry [--grid-m 0.3]` | 里程計（光流 + IMU）行駛軌跡：推車時即時畫線，推完輸入捲尺量的終點與轉角，算誤差、存圖到 `data/odometry_tracks/`；沒有桌面加 `--no-window`、事後重算 `--from-data <目錄>` |
-| `python3 -m tools.verify_store_vision` | 前方相機：定位點標記算出的前方距離、相機高度跟捲尺比；貨架消失點的 $\delta$、俯角 $\beta$；標註影像存到 `data/vision_check/` |
-
-### 建置與測試
-
-| 指令 | 用途 |
-|---|---|
-| `python3 tools/build_app_ui.py` | 從 `design-cart-ui/*.dc.html` 重新產生 `ui/templates/index.html` |
-| `python3 tests/test_app_gui_bridge.py` | Bridge 端對端（純 Python，必跑） |
-| `python3 tests/test_gate_model.py` | 即時判定 = 重播 = 記錄檔重播（純 Python，必跑） |
-| `python3 tests/test_gate_monitor.py` | BLE 門口判定邏輯（純 Python，必跑） |
-| `python3 tests/test_measure_beacon_shield.py` | 遮罩量測的統計邏輯（純 Python） |
-| `python3 tests/test_measure_beacon_rotation.py` | 轉角度量測的計算邏輯（純 Python） |
-| `python3 tests/test_calibrate_gate_beacons.py` | 門口校正的計算邏輯（純 Python） |
-| `python3 tests/test_calibrate_weight.py` | 秤重校正（純 Python） |
-| `python3 tests/test_calibrate_optical_flow.py` | 光流與航向校正、里程計座標轉換（純 Python） |
-| `python3 tests/test_odometry_track.py` | 行駛軌跡重播與誤差指標（純 Python） |
-| `python3 tests/test_ui_layout.py` | 14 頁版面與按鈕接線（需要 playwright，選用） |
-
-`test_app_gui_bridge.py` 測的是流程邏輯，每次只餵一筆秤重讀數，所以把秤重穩定窗關掉（`settle_window_sec = 0`，
-其他參數照 `config.json`）；正式設定在 11-16 校正後是 0.3 秒，單筆讀數永遠湊不出穩定值。穩定窗本身由
-`test_calibrate_weight.py` 用真實錄音重播驗證。平面圖用 `unit_m = 0.5` 的測試值。
-
-### 一次性權限設定（各做一次就好）
+### 第一次安裝（每台 Pi 做一次）
 
 ```bash
-sudo usermod -aG input $USER     # evdev 讀條碼掃描器，重新登入後生效
+# 1. 關掉序列埠的登入 shell、打開硬體 UART
+sudo raspi-config        # Interface Options → Serial Port → login shell: No, hardware: Yes
+#    /boot/firmware/config.txt 要有 dtparam=uart0=on
+
+# 2. 套件（venv 要 --system-site-packages，才看得到 apt 裝的 picamera2 與 gi）
+cd ~/SmartCartPi5
+python3 -m venv --system-site-packages venv
+source venv/bin/activate
+pip install -r requirements.txt
+sudo apt install -y python3-picamera2 --no-install-recommends
+sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1   # 找不到 4.1 就裝 4.0
+
+# 3. 權限
+sudo usermod -aG input $USER     # 條碼掃描器（evdev），重新登入生效
 sudo rfkill unblock bluetooth    # 藍牙打不開時
-sudo raspi-config                # Serial Port -> login shell: No, hardware: Yes
+
+# 4. 資料庫（--init 會寫入 5 筆測試商品、2 筆測試會員；正式商品用 product_admin 建）
+python3 -m database.db_manager --init
 ```
 
-## 快速上手：在 Pi 上把整套跑起來
+### 每天開機
 
 ```bash
-cd ~/SmartCartPi5
-source venv/bin/activate
-
-# 1. 建資料庫（第一次才需要；--init 會寫入 5 筆測試商品與 2 筆測試會員）
-python3 -m database.db_manager --init
-
-# 2. 把真的商品建檔（測試商品刷不到真的條碼，見「商品資料庫後台」章）
-python3 -m tools.product_admin
-
-# 3. 開主程式
+cd ~/SmartCartPi5 && source venv/bin/activate
 python3 -m ui.app_gui --fullscreen
 ```
 
-開起來之後：畫面右上角有兩顆按鈕，`DEV` 打開唯讀診斷面板，`✕` 退出
-（鍵盤 `Esc` 也可以；真的卡住就另開終端機 `pkill -f ui.app_gui`）。
+啟動時依序檢查並印出 `[1/4]`～`[4/4]`（掃描器、UART、Beacon、相機），任何一個接不上就印出怎麼修、結束。
+**開 app 時推車要在門外**（門口判定第一次確認的那一側只當起點；登入時已經在門內的話，登入當下直接算進場）。
+退出：右上角 `✕`、鍵盤 `Esc`、終端機 `Ctrl+C`；卡住就另開終端機 `pkill -f ui.app_gui`。
 
-**常用參數**：
+### 指令速查
 
-```bash
-python3 -m ui.app_gui --fullscreen          # 全螢幕（螢幕本身是 720x1280 時建議）
-python3 -m ui.app_gui --db /path/to.db      # 指定資料庫
-python3 -m ui.app_gui --port /dev/ttyAMA0 --baud 115200   # UART
-python3 -m ui.app_gui --scanner-hint USBKey # 條碼掃描器裝置名稱關鍵字
-python3 -m ui.app_gui --adapter hci0        # 藍牙介面
-python3 -m ui.app_gui --beacon-timeout 30   # 開機時等 Beacon 現身的秒數
+所有指令都在專案根目錄、venv 裡執行。
+
+**日常**
+
+| 指令 | 用途 |
+|---|---|
+| `python3 -m ui.app_gui [--fullscreen]` | 開 app（其他參數：`--db`、`--port`、`--baud`、`--scanner-hint`、`--adapter`、`--beacon-timeout`） |
+| `python3 -m tools.product_admin` | 資料庫後台互動選單（指令見〈資料庫與後台〉） |
+| `python3 -m tools.analyze_gate_log [--events]` | 分析最新一份門口記錄 |
+
+**硬體測試**
+
+| 指令 | 用途 |
+|---|---|
+| `python3 -m drivers.uart_receiver [--quiet]` | 看 MCU 有沒有正常送封包：印每一筆，每秒一行統計（包數、壞封包） |
+| `sudo venv/bin/python3 -m drivers.barcode_scanner --list` | 列出輸入裝置，找掃描器名稱 |
+| `sudo venv/bin/python3 -m drivers.barcode_scanner --device-hint USBKey [--debug]` | 刷條碼看解析結果（`--debug` 印原始鍵碼） |
+| `python3 -m drivers.ble_beacon_scanner [--list]` | 列出附近 BLE 裝置／印門口兩顆的原始 RSSI |
+| `python3 -m drivers.camera_stream --preview` | 相機擷取 |
+| `python3 -m drivers.camera_stream --color-test` | 拍一張存 PNG，確認色彩通道 |
+
+**校正**（都會問過才寫回 `config.json`；加 `--dry-run` 只看不寫；`--from-data <目錄>` 用錄音重算）
+
+| 指令 | 定出什麼 |
+|---|---|
+| `python3 -m tools.calibrate_weight` | 秤重 offset、scale、未掃碼門檻、穩定窗 |
+| `python3 -m tools.calibrate_gate_beacons` | 門口的估計量、窗口、確認時間、偏移、遲滯、絕對門檻 |
+| `python3 -m tools.calibrate_gate_beacons --monitor` | 即時看原始值、濾波值、判定 |
+| `python3 -m tools.calibrate_gate_beacons --survey` | 門口 5 個位置的靜止剖面（改佈署前後比較，不挑參數） |
+| `python3 -m tools.calibrate_optical_flow` | 光流 px→mm、安裝角、鏡像、yaw 正負號 |
+| `python3 -m drivers.camera_stream --calibrate --num-images 15 --square-size-mm 24` | 相機內參（已完成，error 0.2026） |
+| `python3 -m tools.make_anchor_marker` | 產生地上定位點的 ArUco 標記圖 |
+
+**驗證**（只讀 `config.json`，不寫）
+
+| 指令 | 驗證什麼 |
+|---|---|
+| `python3 -m tools.verify_weight` | 放已知重量的東西，看換算誤差 |
+| `python3 -m tools.track_odometry [--grid-m 0.3]` | 里程計行駛軌跡：即時畫線，推完跟捲尺量的終點比；`--no-window`、`--from-data` |
+| `python3 -m tools.verify_store_vision` | 前方相機：定位點距離、相機高度、消失點角度 |
+
+**測試**
+
+| 指令 | 用途 |
+|---|---|
+| `python3 tests/run_all.py` | 跑完全部測試，列出每一支的結果 |
+| `python3 tools/build_app_ui.py` | 從設計稿重新產生 `ui/templates/index.html` |
+
+
+---
+
+## 購物流程（`core/shopping/state_machine.py`）
+
+狀態機保障整趟流程的正確性：掃碼、秤重比對、防損、進出管制區。純邏輯，除了查資料庫沒有 I/O。
+
+### 狀態
+
+```
+UNAUTHENTICATED ─刷會員卡／訪客─▶ LOGGED_IN_OUTSIDE_ZONE ─BLE 判定進場─▶ SHOPPING
+SHOPPING ⇄ AWAITING_ITEM_SCAN              重量先變了，等掃碼指認是哪一件
+SHOPPING ⇄ AWAITING_WEIGHT_INCREASE / _DECREASE   掃碼了，等重量變化
+以上出錯 ─▶ WEIGHT_MISMATCH_ERROR           重試／放棄／店員歸零
+SHOPPING ─鎖定結帳─▶ LOCKED_FOR_CHECKOUT ─付款─▶ AWAITING_EXIT ─BLE 判定出場─▶ SESSION_CLOSED ─▶ 自動登出
 ```
 
-**第一次跑之前要做的兩件權限設定**（各做一次就好）：
+錯誤分兩種：
+
+- **軟體擋得下來的**（條碼查無資料、秤重對不上）：擋下動作、發警告、提供重試／放棄。
+- **可能是防損事件的**（沒結帳就出場、未登入就進場）：發 CRITICAL 警告，狀態不自動改，交給畫面與店員處理。狀態機攔不住人，這是軟體的邊界。
+
+被拒絕的事件**不丟例外**，只記一筆警告（`CartAlert`，代碼是 `ALERT_*` 常數）。所以上層一定要比對前後的警告，把結果顯示出來，
+不然使用者會看到「按了、畫面沒反應、也沒有錯誤」。`Bridge` 比的是「最後一筆警告物件是不是同一個」，不是筆數——
+警告歷史有 200 筆上限，滿了之後筆數不再變多。刷條碼這種使用者明確做的動作，連 INFO 等級的拒絕原因也會顯示。
+
+### 加入與移除：誰先發生
+
+加入／移除不是使用者切換模式，是看「掃碼」與「重量變化」誰先發生——跟真實的動作順序一致：
+
+- **加入**：先掃碼、再放進籃子。掃碼當下重量還沒變 → `AWAITING_WEIGHT_INCREASE`，基準 $b$ = 掃碼當下的穩定重量。
+- **移除**：先拿出來、再掃碼。重量先變 → `AWAITING_ITEM_SCAN`，記下變化前的基準 $b$；掃碼時依目前重量比 $b$ 輕或重決定移除或加入，基準用 $b$。
+- `AWAITING_ITEM_SCAN` 期間重量自己回到 $b$ 附近（手滑碰到籃子）→ 自動解除；超過 `unscanned_change_timeout_sec`（8 秒）沒掃碼 → 異常（「只做一半」）。
+
+### 秤重比對
+
+令
+
+- $b$：基準重量（g）
+- $\tilde w$：目前的穩定讀數（g，定義見下一節）
+- $m$：商品的標準重量 `standard_weight_g`（g）
+- $\tau$：容許誤差 `weight_tolerance_g`（g）
+- $e$：預期變化，加入 $e = +m$、移除 $e = -m$
+- $\delta = \tilde w - b$：實測變化
+
+則
+
+| 條件 | 結果 |
+|---|---|
+| $\lvert \delta - e \rvert \le \tau$ | 比對成功，寫入購物清單 |
+| $\operatorname{sign}\delta \ne \operatorname{sign} e$ 且 $\lvert\delta\rvert > \tau$ | 方向相反（可能同時動了別的東西）→ 異常（CRITICAL） |
+| $\operatorname{sign}\delta = \operatorname{sign} e$ 且 $\lvert\delta\rvert > \lvert e\rvert + \tau$ | 超出上限（拿了不只一件或拿錯）→ 異常 |
+| 其他 | 還在放／拿的過程中，繼續等；超過 `weight_match_timeout_sec`（5 秒）→ 異常 |
+
+購物中 $\lvert \tilde w - \text{穩定重量} \rvert$ 小於未掃碼門檻 $T$（`unscanned_change_threshold_g`，10 g）視為雜訊，並讓穩定重量跟上小幅漂移；
+超過 $T$ 就是「重量變了但沒掃碼」。比 $T$ 輕的商品不掃碼放進去偵測不到。
+
+### 等讀數穩定才比
+
+令 $W_s$ = `settle_window_sec`（0.3 秒）、$B_s$ = `settle_band_g`（3 g），最近 $W_s$ 秒內的讀數為 $w_1, \dots, w_n$。若
+
+$$n \ge 3,\qquad t_n - t_1 \ge 0.8\,W_s,\qquad \max_i w_i - \min_i w_i \le B_s$$
+
+則穩定讀數 $\tilde w = \operatorname{median}(w_1, \dots, w_n)$；否則這一刻「還沒穩」，只更新目前重量、不做任何判斷。
+
+為什麼：放入商品時讀數會先衝過頭、晃一下才停（11-16 實測衝擊最多多了 69 g）。每一筆都直接比的話，剛好經過容差範圍的那一筆就被判成加入，
+之後讀數繼續往穩定值走，多出來的 10~20 g 又觸發「未掃碼的重量變化」。11-16 的放入錄音：不等時 0/3 趟正常，$W_s \ge 0.2$ 秒起 3/3。
+
+### 逾時與其他事件
+
+| 參數（`config.json`） | 預設 | 逾時後 |
+|---|---|---|
+| `weight.weight_match_timeout_sec` | 5 秒 | 掃碼後等不到正確的重量變化 → 異常 |
+| `weight.unscanned_change_timeout_sec` | 8 秒 | 重量變了沒掃碼 → 異常 |
+| `state_machine.zone_entry_timeout_sec` | 120 秒 | 登入後一直沒進場 → 提醒一次 |
+| `state_machine.shopping_idle_timeout_sec` | 600 秒 | 購物中沒動作 → 每隔這麼久提醒 |
+| `state_machine.exit_timeout_after_checkout_sec` | 180 秒 | 付款後沒出場 → 提醒一次（結帳畫面顯示倒數） |
+
+逾時由 `TimeoutTick` 事件驅動（app 每秒送一次），所以逾時邏輯也能用指定時間的事件測試。
+
+- **感測器斷線**：UART 超過 `stale_data_timeout_sec`（0.5 秒）沒封包 → `SensorDisconnected`；秤重流程進行中的話直接轉異常（斷線期間的比對不可信）。
+- **鎖定結帳期間**只更新目前重量、不動穩定重量；「返回繼續選購」解鎖後第一筆穩定讀數就跟鎖定前比，鎖定期間放進或拿出的東西一樣抓得到。
+- **沒結帳就出場**：已進場、還沒付款（購物中、等掃碼、等重量、異常、鎖定中）時判定出場 → CRITICAL `exit_without_checkout`。
+- **登入時推車已經在門內**（門口判定已確認在門內那一側）→ 登入當下直接算進場，不然要等下一次穿越門口。
+- **同一會員在別台推車登入**：單機資料庫看不到，不處理。
+
+### 秤重異常的處理
+
+| 畫面按鈕 | 效果 | 要店員嗎 |
+|---|---|---|
+| 重新比對 | 用目前重量當新基準，再等一次 | 不用 |
+| 放棄此次動作（掃過碼、比對不符的那一筆） | 不加入也不移除；穩定基準沒變，東西還在籃子裡的話下一筆讀數就會抓成未掃碼的重量變化 | 不用 |
+| 放棄此次動作（沒掃碼、逾時的那種） | 等於接受目前重量 | **要**：只送出申請，店員刷工作證才生效 |
+| 重新校準歸零 | 放棄待比對的那一筆，目前重量當新的穩定基準（接受籃子裡現在的東西） | **要**：同上；哪位店員、前後重量記進警告歷史 |
+| 呼叫店員協助 | 寫一筆協助請求 | — |
+
+店員工作證：條碼前綴 `state_machine.staff_barcode_prefix`（`STAFF-`），要在 `staff` 資料表裡。刷了就執行待確認的動作，並把這台車的協助請求標成已處理。
+沒有另外的店員通知系統，後台用 `product_admin assist-list` 看。
+
+---
+
+## 觸控畫面（`ui/`）
+
+### 14 頁畫面怎麼決定
+
+| 畫面 | `screen` | 由什麼決定 |
+|---|---|---|
+| 待機 | `main` | 精靈階段（出場後自動登出也回這裡） |
+| 會員登入、載入會員資料 | `login`、`loading_profile` | 精靈階段 |
+| 過敏原、葷素、宗教、預算 | `allergens`、`diet`、`religion`、`budget` | 精靈階段 |
+| 購物主畫面 | `shopping` | `SHOPPING`、`AWAITING_*`、還沒進場的 `LOGGED_IN_OUTSIDE_ZONE`（顯示等待進入管制區） |
+| 找貨、優惠、我的 | `navigation`、`promotions`、`profile` | 底部導覽列分頁 |
+| 秤重異常 | `weight_alert` | `WEIGHT_MISMATCH_ERROR`（永遠優先，就算正在走精靈） |
+| 結帳 | `checkout` | `LOCKED_FOR_CHECKOUT` |
+| 離場確認 | `exit_confirm` | `AWAITING_EXIT` |
+
+精靈（歡迎 → 登入 → 讀取設定 → 過敏原 → 葷素 → 宗教 → 預算）是畫面流程、不是營運狀態，`Bridge` 用 `_ui_stage` 另外記。
+
+### 會員偏好與交易紀錄
+
+- **偏好**：精靈走完時存（訪客不存）。「載入會員資料」選「沿用上次設定」直接跳到預算確認；沒存過就說明並改走精靈。「我的」分頁可以改本次預算或重走精靈（第一步按上一步＝取消，還原原本的設定）。
+- **交易**：付款時寫一筆（會員、金額、件數、付款方式、預算、進場時間、明細），出場時補出場時間。寫入失敗會在畫面上說（付款照走，請店員手動記錄）。
+
+### 改畫面
+
+**`ui/templates/index.html` 是產生出來的，不要手改**，下次重跑就被蓋掉：
 
 ```bash
-sudo usermod -aG input $USER     # 讓 evdev 讀得到條碼掃描器，重新登入後生效
-sudo rfkill unblock bluetooth    # 藍牙打不開時
+python3 tools/build_app_ui.py     # design-cart-ui/*.dc.html → ui/templates/index.html
 ```
 
-啟動時會依序檢查三個硬體並印出 `[1/3]`～`[3/3]`，任何一個接不上就會印出
-該怎麼修然後結束——不會半殘地開起來。
+- 各畫面的視覺（字級、間距、顏色）→ 改 `design-cart-ui/<畫面>.dc.html`。
+- 前端行為（JS）、共用樣式、診斷面板 → 改 `tools/build_app_ui.py` 的 `TEMPLATE`。
+- 哪些假資料要換成動態內容 → 改 `tools/build_app_ui.py` 的 `patch_<畫面>()`。
 
-## 單一實體路徑原則（2026-09-15 重構）
+補丁跟設計稿的 HTML 結構綁在一起（`must_replace()` 找不到會報錯）。改完設計稿一定要重跑、開畫面確認，並跑 `tests/test_ui_layout.py`。
+每個畫面的 CSS 會被加上 `#screen-<id>` 前綴，14 份 CSS 放在同一頁不會互相污染。
 
-**整個系統只走真實硬體，沒有任何模擬、退回或旁路。** 三個裝置都是啟動時必須連上
-的硬性條件，任何一個接不上就直接印出原因並結束（exit 1），不會半殘地開起來：
+### 唯讀診斷面板（右上角 `DEV`）
 
-| 裝置 | 唯一路徑 | 接不上會怎樣 |
-|---|---|---|
-| 條碼掃描器 | `drivers/barcode_scanner.py`（evdev 獨佔 `/dev/input/event*`） | 印出安裝/權限/裝置名稱三項檢查清單後結束 |
-| 秤重 | `drivers/uart_receiver.py` 的 `hx711_raw` → `core/weight_convert.py` | 序列埠開不了、或 5 秒內收不到合法封包就結束 |
-| 管制區閘門 | `drivers/ble_beacon_scanner.py` → `core/gate_monitor.py`（BLE 雙 Beacon 差分） | 藍牙打不開、或指定秒數內沒掃到門口那兩顆 Beacon 就結束 |
+- **最近收到的條碼**：刷一下有變 = 條碼有進到程式（問題在商品資料或秤重）；沒變 = 掃描器沒接好或 evdev 抓錯裝置。這行是「刷了沒反應」的分水嶺。
+- **秤重**：目前公克數與連線狀態。沒數字或不會跳 = UART 斷了，這時候掃碼一定會被擋（沒重量就無法驗證）。
+- **門口判定次數**與是否在等待進場。
 
-### 為什麼要這樣訂
+---
 
-之前每個裝置都有兩三種「接不到就退回模擬」的路徑：掃描器有 evdev／鍵盤 wedge
-兩種模式、秤重有展示模式（掃碼後自動補一筆假讀數）、閘門有開發面板按鈕、
-`product_admin` 的重量可以手打、`run_real_hardware_flow` 有 `--no-scanner`。
-結果是兩件事同時發生：
+## 健康護照、錢包管家、找貨、優惠
 
-1. **出問題時第一件事不是查硬體，而是要先搞清楚自己現在走在哪一條路上。**
-2. **畫面會在硬體其實沒在運作的情況下看起來一切正常**——最糟的一種失敗。
+全部由商品資料驅動（`products` 表的 `tags`、`shelf`、`discount_pct`、`pairs_with`），用 `product_admin meta` 或 CSV 設定。
 
-寧可開不起來，也不要假裝正常。所以現在拿掉的東西：
+### 健康護照（`core/shopping/health_passport.py`）
 
-- `ui/app_gui.py`：`--scanner auto/keyboard/evdev/none` 四種模式 → 只剩 evdev；
-  `--demo-weight`、`--no-weight` 與整套秤重展示模式 → 全部移除；
-  前端的 keyboard wedge（把按鍵拼成條碼）與焦點警告 → 移除；
-  所有 `simulate_*` 方法（模擬掃碼、模擬秤重、模擬閘門、模擬感測器斷線）→ 移除。
-- 登入畫面的「手動輸入會員代碼」輸入框 → 移除（刷實體會員卡，或走「以訪客身份繼續」）。
-- 開發測試面板 → 改成**唯讀診斷面板**，沒有任何能製造事件的按鈕。
-- `tools/product_admin.py`：`--no-scale` 與手動輸入公克數的退路 → 移除，
-  重量只能從秤現場量（`add --weight` 這個參數也一併拿掉）。
-- `tools/run_real_hardware_flow.py`：`--no-scanner`、`b`（手動輸入條碼）、
-  `e`/`x`（鍵盤模擬閘門進出）→ 移除，閘門改接真的 BLE。
-- `core/cart_state_machine.py --simulate`、`core/landmark_correction.py --simulate`
-  → 移除（兩支都改成純邏輯模組，沒有 CLI）。
-- 刪除檔案：`tools/mock_uart_generator.py`、`tools/mock_barcode_input.py`、
-  `tools/preview_ui.py`、`tools/ui_preview/`。
+衝突 = 商品標籤 ∩ 這條規則禁止的標籤。**只提醒、不阻擋**（可能是幫別人買）：掃碼時跳提醒，比對中區塊、購物清單、找貨、優惠都標出來。
 
-`run_real_hardware_flow.py` 裡還是用鍵盤輸入的那幾個指令（鎖定結帳、確認付款、
-登出、強制登出、重試/放棄比對）**不算旁路**——那些在正式產品裡本來就是觸控螢幕
-上的按鈕、由人操作，不是硬體感測器。那支是純終端機工具，鍵盤就是它的介面。
+| 偏好 | 禁止的標籤 |
+|---|---|
+| 過敏原（12 種，跟精靈選項一字不差） | 勾的每一項 |
+| 全素（純素） | 肉、海鮮、蛋、奶、五辛 |
+| 蛋奶素 | 肉、海鮮、五辛 |
+| 奶素 | 肉、海鮮、蛋、五辛 |
+| 蛋素 | 肉、海鮮、奶、五辛 |
+| 五辛素（植物五辛素） | 肉、海鮮、蛋、奶 |
+| 鍋邊素（可接受海鮮／肉湯） | 肉（看不出是肉塊還是肉湯，一律提醒） |
+| 伊斯蘭教（清真） | 豬肉、酒精 |
+| 印度教、台灣民俗不食牛 | 牛肉 |
 
-### 這次一併修掉的「無聲失敗」
+「肉」= 豬肉、牛肉、其他肉類；「海鮮」= 海鮮、魚類、甲殼類；「奶」= 牛奶／羊奶。
 
-`CartStateMachine` 設計上「被拒絕的事件」不會拋例外，只會記一筆警告然後 return。
-所以任何上層如果不主動去比對 `get_alerts()`，使用者就會看到「操作了、畫面完全
-沒反應、也沒有任何錯誤訊息」。這一輪修了三個這類的洞：
+### 錢包管家
 
-- **警告歷史塞滿 200 筆之後錯誤訊息會消失**：`Bridge` 原本用「呼叫前後警告筆數
-  有沒有變多」判斷，但清單有上限，滿了之後每新增一筆就砍掉最舊一筆、**總長度
-  不變**。一台整天開著的購物車跑滿 200 筆不難，跑滿之後這個 bug 會自己復發。
-  改成比對「最後一筆警告物件是不是同一個」，跟清單長度無關。
-- **已登入時又刷一張無效會員卡會被誤判成登入成功**：`Bridge.login()` 原本靠
-  「狀態有沒有變」判斷，這個情境下狀態本來就不會變。改成靠「有沒有新警告」。
-- **還沒進管制區就刷條碼會完全沒反應**：狀態機那種拒絕只記 INFO 等級的警告，
-  而 Bridge 預設會過濾 INFO（那多半是背景事件被忽略的雜訊）。現在刷條碼這個
-  動作特別設成連 INFO 也要顯示——使用者明確做了一個動作，任何被拒絕的原因都
-  必須講出來。
+比對中顯示「加入後總額、預算剩多少」；總額往上跨過預算的 80%、100% 各提醒一次（降回去再上來會再提醒）；
+進度條超過預算變全黑並顯示超出多少；結帳頁列原價、特價折抵、應付、預算剩餘。
 
-### 順帶修掉的其他問題
+### 找貨
 
-- **`tools/product_admin.py` 會把測試資料灌進正式商品庫**：原本是
-  `db.init_db(seed=True)`，每次對一個全新資料庫開這支後台工具，就會先被塞進
-  5 筆假的測試商品，自己加的第一筆真商品變成第 6 筆。改成 `seed=False`。
-- **無法登錄真實會員卡**：`DBManager` 早就有 `upsert_member()`/`delete_member()`，
-  但兩支 CLI 都沒有指令呼叫得到——資料庫裡能存在的會員只有寫死的兩筆測試會員。
-  補上 `member-add` / `member-list` / `member-delete`。
-- **底部導覽列被裁掉**：每個畫面的 CSS 從設計稿的 `body { height:1280px }` 換算
-  而來，寫死 1280px；實際視窗可視高度常常小於 1280（標題列吃掉幾十 px），
-  固定高度 + `overflow:hidden` 就讓最底下的導覽列看不到。改成填滿實際可視高度。
-- **`🛠` 圖示在 Pi 上變成豆腐方框**（沒裝彩色 emoji 字型），找不到面板入口。
-  改成純文字 `DEV`。
+點商品名稱 → 平面圖畫出從門口過去的路線、標出那個角落，文字指引例如「進門沿長廊直走到定位點 → 往左走到左架 → 繞到貨架後側右邊那角」。
+觸控螢幕沒有鍵盤，所以不做打字搜尋。推車位置見〈店面平面圖與推車位置〉。
 
-## Phase 5：觸控 UI（`ui/app_gui.py` + `ui/templates/index.html`）
+### 優惠
 
-14 頁畫面全部接上真實的 `CartStateMachine` + `DBManager` + `CartManager`，
-是一支可以直接在 Pi 上執行的觸控應用。
+- **特價**：有折扣的商品（已在購物車的標「已套用」）。
+- **搭配**：購物車裡商品的 `pairs_with`，還沒拿的。
+- **推薦**：跟偏好沒衝突、在剩餘預算內、有貨架位置、還沒拿的，依折扣與價格排序。
 
-### 架構分工
+健康護照有衝突的不出現在搭配與推薦。每張卡片可以「導航去貨架」，最多 6 張。
 
-- **`Bridge`（`ui/app_gui.py`）**：pywebview 的 `js_api` 物件。只做
-  「前端呼叫 → 轉成 `CartStateMachine` 事件 → 組出前端要畫的完整畫面狀態
-  （`_state_payload()`）再丟回去」，不含任何 UI 邏輯。
-- **前端（`index.html`）**：畫面切換、選取樣式、鍵盤條碼攔截全部在 JS 裡做。
-  每次 `APP.callApi(name, ...)` 拿到 payload 就直接 `render()`，不需要再問一次狀態。
-- **背景執行緒推播**：硬體事件（掃描器、UART 秤重、逾時計時器）是背景執行緒
-  單方面發生的，沒有對應的前端呼叫可以掛 `.then()`，所以由 Python 主動呼叫
-  `window.evaluate_js("window.APP.render(...)")` 把狀態推過去（`Bridge._push_state()`）。
-  秤重是 20Hz 連續送值，**只有真的造成狀態變化或新警告才推**，否則畫面每秒重畫
-  20 次會閃爍、還會打斷開發面板正在打字的輸入框。
-- **精靈流程不在狀態機裡**：歡迎頁 → 登入 → 讀取個人化設定 → 過敏原/飲食/宗教/預算
-  四步精靈，這些不是 `CartStateMachine` 的狀態（那邊只有「未登入/購物中/…」這種
-  營運層級的狀態），所以用 `Bridge._ui_stage` 另外疊一層。使用者完成預算設定後
-  觸發 `GateEntryDetected`，才正式交給狀態機的 `STATE_SHOPPING` 接手。
+---
 
-### 14 頁畫面與狀態機的對應
+## 資料庫與後台（`database/db_manager.py`、`tools/product_admin.py`）
 
-| 畫面 | `screen` 代號 | 由什麼決定 |
-|---|---|---|
-| 待機/喚醒 | `main` | `_ui_stage`（或狀態機回到 `SESSION_CLOSED` 後自動登出） |
-| 會員登入 | `login` | `_ui_stage` |
-| 載入會員資料 | `loading_profile` | `_ui_stage` |
-| 過敏原 / 葷素 / 宗教 / 預算 | `allergens` `diet` `religion` `budget` | `_ui_stage` |
-| 購物主畫面 | `shopping` | `STATE_SHOPPING` / `AWAITING_ITEM_SCAN` / `AWAITING_WEIGHT_*` |
-| 找貨（導航） | `navigation` | 底部導覽列分頁：點商品 → 店面平面圖畫出路線、文字指引、推車位置（商品的 `shelf`） |
-| 優惠 | `promotions` | 底部導覽列分頁：特價、搭配、依偏好與預算推薦（全部從資料庫算） |
-| 我的 | `profile` | 底部導覽列分頁：會員資料、改本次預算、重新設定偏好、最近消費紀錄 |
-| 秤重異常 | `weight_alert` | `STATE_WEIGHT_MISMATCH_ERROR` |
-| 結帳 | `checkout` | `STATE_LOCKED_FOR_CHECKOUT` |
-| 離場確認 | `exit_confirm` | `STATE_AWAITING_EXIT` |
+| 資料表 | 內容 |
+|---|---|
+| `products` | 條碼、名稱、單價、標準重量與容差、成分標籤、貨架、折扣、搭配 |
+| `members` | 會員代碼與名稱（登入是刷會員條碼，沒有密碼） |
+| `member_preferences` | 過敏原、葷素、宗教飲食、上次預算 |
+| `transactions`、`transaction_items` | 交易與明細，出場時間 |
+| `staff` | 店員工作證 |
+| `assistance_requests` | 協助請求與處理人 |
 
-`STATE_WEIGHT_MISMATCH_ERROR` 永遠優先：就算正在走偏好精靈（例如從「我的」重新設定），
-也會先切到秤重異常畫面，處理完再回到精靈原本那一步。
-
-「秤重比對中」的三個狀態在 UI 上仍然是購物主畫面——掃碼/等待放入的提示框是
-購物畫面內的一個區塊（`#f-pending-box-wrap`），不是獨立畫面。
-
-### UI 怎麼改（重要）
-
-**`ui/templates/index.html` 是產生出來的，不要直接手改**，下次重跑腳本就會被蓋掉。
+建表都是 `CREATE TABLE IF NOT EXISTS`，舊資料庫缺的表、欄位在 app 或後台啟動時自動補上，不用重建。時間一律存 epoch 秒。
+**沒建檔的條碼刷了就是「查無此商品」**——這是正常的，展示要用的商品要先建好。
 
 ```bash
-python3 tools/build_app_ui.py     # design-cart-ui/*.dc.html -> ui/templates/index.html
+python3 -m tools.product_admin                       # 互動選單
+python3 -m tools.product_admin list
+python3 -m tools.product_admin add                   # 互動：條碼直接刷、重量放上推車的秤現場量
+python3 -m tools.product_admin add --barcode 4710018001234 --name "豆漿" --price 25   # 重量一樣要現場量
+python3 -m tools.product_admin edit <條碼>            # Enter 保留原值；標籤、貨架等沿用
+python3 -m tools.product_admin meta <條碼>            # 成分標籤、貨架 L1~R4、折扣 %、搭配條碼（不用秤）
+python3 -m tools.product_admin delete <條碼>
+python3 -m tools.product_admin import products.csv   # CSV 批次匯入／更新
+python3 -m tools.product_admin export backup.csv
+python3 -m tools.product_admin member-list | member-add | member-delete <代碼>
+python3 -m tools.product_admin staff-list  | staff-add  | staff-delete <代碼>
+python3 -m tools.product_admin assist-list [--all]
+python3 -m tools.product_admin assist-resolve <id|all> --by STAFF-0001
+python3 -m tools.product_admin tx-list [--member MEMBER-0001] [--limit 20]
 ```
 
-- 要改**各畫面的視覺樣式**（字級、間距、顏色）→ 改 `design-cart-ui/<畫面>.dc.html`，重跑腳本。
-- 要改**前端行為（JS）、共用樣式、開發面板** → 改 `tools/build_app_ui.py` 裡的
-  `TEMPLATE` 字串，重跑腳本。
-- 要改**哪些假資料要被換成動態容器** → 改 `tools/build_app_ui.py` 裡對應的
-  `patch_<畫面>()` 函式。
+所有指令都可以加 `--db <路徑>`；`add`、`edit` 可以加 `--port`、`--baud` 指定秤的 UART。
 
-> **腳本的補丁是跟目前 HTML 結構綁定的**：`str.replace()` 找不到目標字串時會安靜地
-> 什麼都不做，所以改完設計稿一定要實際跑一次、開畫面確認，不要只看腳本沒報錯就當成功。
-> `scope_css()` 會把每個畫面的 CSS 選擇器加上 `#screen-<id>` 前綴，避免 14 份獨立 CSS
-> 混在同一頁時互相污染。
+- **重量只能現場量**：`add`、`edit` 會請你把商品放上推車的秤（同一顆 HX711、同一份校正值），量到的值當標準重量，容差預設 10%。
+  秤連不上就報錯結束，沒有手打的退路——手打的數字跟這台秤量出來的差多少沒人知道。
+- **會員代碼**要以 `state_machine.login_barcode_prefix`（`MEMBER-`）開頭，否則登入時會被當成「不是會員碼」。
+- **CSV**：`barcode,name,unit_price,standard_weight_g,weight_tolerance_g,tags,shelf,discount_pct,pairs_with`；後四欄可省略
+  （已設好的標籤等不會被清掉），`tags`、`pairs_with` 用分號隔開；CSV 的容差必填（沒有自動 10%）。
 
-### 唯讀診斷面板（右上角 `DEV` 按鈕）
+---
 
-**沒有任何能製造事件的按鈕**——這支程式只走真實硬體，如果面板上按一下就能生出
-一筆掃碼或秤重，那就等於又多了一條旁路。面板上只有三行即時狀態加一份完整的
-狀態 JSON：
+## 定位：里程計（`core/positioning/odometry.py`）
 
-- **最近收到的條碼**：實體掃描器刷一下，這行有變 = 條碼有進到程式（問題在後面的
-  商品資料或秤重）；沒變 = 條碼根本沒進來（掃描器沒接好、evdev 抓錯裝置）。
-  這一行就是診斷「掃碼沒反應」的分水嶺。
-- **秤重**：目前公克數 + 感測器連線狀態。沒有數字或不會跳動 = UART 斷了，
-  這時候掃碼一定會被狀態機擋下來（沒有重量就無法驗證掃了什麼）。
-- **門口 BLE 判定次數**：以及目前是不是還在「等待進入管制區」。
+光流量推車對地面的位移、IMU 給航向，一筆一筆累加成位置。app 在 UART 執行緒每收到一筆封包算一次。
 
-面板裡也寫了刷條碼沒反應時的四步檢查順序。
+**座標**：車身座標前方 $f$、左方 $l$；全域座標 $(X, Y)$（mm），原點是 app 啟動那一刻；航向 $\psi$ 逆時針為正（左轉為正）。
+BNO080 的 `yaw_deg` 是相對航向（開機為 0），所以全域座標的方向每次開機都不同——要跟店面對齊得靠門口進場與地上定位點（下一章）。
 
-### 會員偏好、交易紀錄、店員協助（2026-10-28）
+一筆封包 $(dx, dy, \text{squal}, \text{yaw})$：
 
-**會員偏好**（`member_preferences` 表）：偏好精靈走到「開始購物」時存起來，訪客不存。
-登入後的「載入會員資料」畫面依資料庫顯示已儲存的內容；選「情境 A」直接跳到預算那一步
-（預先選好上次的預算），沒有已儲存設定時會說明並改走精靈。「我的」分頁可以改本次預算
-（會員的話也存成下次預設）或重新走一次精靈（第一步按「上一步」＝取消，還原原本的設定）。
+1. 感測器軸 → 車身（PMW3901 不一定跟車身對齊，從下往上看還會左右顛倒）：
 
-**交易紀錄**（`transactions` + `transaction_items`）：付款完成時寫一筆（會員、金額、件數、
-付款方式、預算、進場時間、明細），推車走出管制區時補上出場時間。狀態機拒絕付款時不寫。
-寫入失敗會在畫面上講出來（付款流程照走，請店員手動記錄）。後台：`product_admin tx-list`。
+$$s = (dx,\ m\,dy),\qquad \begin{bmatrix} f \\ l \end{bmatrix} = \begin{bmatrix} \cos\varphi & \sin\varphi \\ -\sin\varphi & \cos\varphi \end{bmatrix} s$$
 
-**店員協助**（`assistance_requests` + `staff`）：沒有另外的店員通知系統，所以「呼叫店員協助」
-「取消本次結帳／需要協助」都是寫一筆待處理的請求，畫面底部持續顯示「已通知店員」，同一個
-原因不會重複寫。店員到場刷工作證（條碼前綴 `config.json` 的 `state_machine.staff_barcode_prefix`，
-預設 `STAFF-`，要在 `staff` 表裡）就把這台車的待處理請求標成已處理。後台：`product_admin assist-list`。
+2. 車身 → 全域，用**上一筆**的航向 $\psi$（區間起點的航向），再乘上換算係數 $k$：
 
-**結帳「返回繼續選購」**：狀態機的 `UnlockCheckoutRequested`，`LOCKED_FOR_CHECKOUT → SHOPPING`。
-鎖定期間秤重讀數只更新目前重量、不更新穩定基準，所以解鎖後第一筆讀數就會跟鎖定前的重量比，
-鎖定期間偷放／偷拿的東西會被抓成未掃碼的重量變化。
+$$\Delta X = k\,(f\cos\psi - l\sin\psi),\qquad \Delta Y = k\,(f\sin\psi + l\cos\psi)$$
 
-**秤重異常「重新校準歸零」**：效果是放棄待比對的那一筆、把目前重量當成新的基準——等於接受
-籃子裡現在的東西，所以**使用者按了只會送出申請**（同時寫一筆協助請求），要店員刷工作證才會
-送出狀態機的 `StaffRezeroAuthorized` 真的歸零。是哪位店員、前後重量都記進警告歷史
-（`staff_rezero_authorized`）。異常如果被使用者自己用其他按鈕解除了，申請自動取消。
+3. 更新航向 $\psi = \sigma \cdot \text{yaw}$。
 
-**秤重異常「放棄此次動作」**（2026-11-23 改）：掃過碼、重量不符的那一筆，直接放棄（不加入、
-不移除；穩定基準沒變，東西還在籃子裡的話下一筆讀數就會被抓成未掃碼的重量變化）。從頭到尾沒掃碼
-（拿取／放入後忘記掃碼逾時）的那種，放棄等於接受目前重量，跟歸零一樣只送出申請，要店員刷工作證。
-
-**登入時推車已經在門內**（2026-11-23）：BLE 判定目前確認在門內那一側的話，登入當下直接算進場。
-不然要等下一次穿越門口，人已經在店裡了等不到（11-16 實測卡在這裡）。
-
-### 健康護照、錢包管家、找貨、優惠（2026-11-23）
-
-全部由商品資料驅動，商品表多了四個欄位（舊資料庫啟動時自動補上）：
-
-| 欄位 | 用途 | 怎麼設 |
+| 符號 | 意義 | `config.json`（11-16 校正值） |
 |---|---|---|
-| `tags` | 成分標籤：12 種過敏原（跟偏好精靈一樣）＋豬肉、牛肉、其他肉類、海鮮、五辛、酒精 | `product_admin meta <條碼>` 或 CSV |
-| `shelf` | 貨架代號＋角落，例如 `M3` = 中架左下（見下面「店面平面圖」） | 同上 |
-| `discount_pct` | 折扣百分比（50 = 5 折），結帳金額直接套用 | 同上 |
-| `pairs_with` | 搭配推薦的條碼 | 同上 |
+| $k$ | 光流 count → mm | `odometry.optical_flow_px_to_mm` = 0.74674 |
+| $\varphi$ | 安裝角：直推時感測器量到的方向角 | `odometry.flow_rotation_deg` = 94.2° |
+| $m$ | 鏡像：側推方向在直推方向 −90° 時為 −1 | `odometry.flow_mirror` = true（$m=-1$） |
+| $\sigma$ | yaw 正負號：原地左轉時 yaw 增加為 +1 | `odometry.yaw_sign` = +1 |
 
-- **健康護照**（`core/health_passport.py`）：商品標籤 × 偏好（過敏原、葷素、宗教）→ 衝突。掃碼時跳提醒、
-  比對中區塊與購物清單標出來、找貨與優惠頁也標。**只提醒不阻擋**（可能是幫別人買）。葷素規則：全素禁肉／海鮮／蛋／奶／五辛，
-  蛋奶素禁肉／海鮮／五辛，奶素再禁蛋，蛋素再禁奶，五辛素允許五辛，鍋邊素只提醒肉；清真禁豬肉、酒精，印度教與不食牛禁牛肉。
-- **錢包管家**：比對中顯示「加入後總額、預算剩多少」；總額往上跨過 80%、100% 各提醒一次；進度條超過預算變全黑並顯示超出多少；
-  結帳頁顯示原價、特價折抵、應付、預算剩餘。
-- **找貨**：點商品名稱 → 平面圖畫出從門口過去的虛線路線、標出那個角落，文字指引例如
-  「進門沿長廊直走到定位點 → 往左走到左架 → 繞到貨架後側（靠後牆）右邊那角」。觸控螢幕沒有鍵盤，所以不用打字搜尋。
-  推車位置是實心圓點（已在定位點對齊）或空心圓點（約略），見下面「店面平面圖」。
-- **優惠**：特價（有折扣的商品，在購物車裡的標「已套用」）、搭配（購物車裡商品的 `pairs_with`）、推薦（跟偏好沒衝突、
-  在剩餘預算內、有貨架位置的）；每張卡片可以「導航去貨架」。健康護照衝突的不推薦。
+squal（PMW3901 追蹤品質 0~255）低於 `min_squal` 的那一筆位置不累加（航向照樣更新）。app 用 `min_squal = 0`（不過濾），
+11-16 實測 squal 中位數約 120、最低 5% 約 110。
 
-### 店面平面圖與推車位置（`core/store_layout.py`，2026-11-23 構想圖）
+### 行駛軌跡驗證（`tools/track_odometry.py`）
+
+推車的同時在螢幕上即時畫出里程計算出來的軌跡，推完輸入捲尺量的終點與實際轉角，算誤差、存圖。
+位置的算法就是 app 的 `OdometryEngine`（`config.json` 的 `odometry` 參數、`min_squal = 0`），
+所以這裡看到的準不準就是找貨頁推車點的準不準。純邏輯在 `core/positioning/track.py`。
+
+```bash
+python3 -m tools.track_odometry --grid-m 0.3     # Pi 桌面上跑；格線 0.3 m 對照地上的格子
+python3 -m tools.track_odometry --no-window      # SSH：終端機顯示，一樣存圖
+python3 -m tools.track_odometry --from-data data/odometry_tracks/<時間>   # 用錄音重算（改過參數後比較）
+```
+
+app 開著時序列埠被佔用，要先關 app。每一趟存在 `data/odometry_tracks/<開始時間>/`：原始封包（可以重算）、
+`run<k>.png` 軌跡圖、`result.json` 指標。
+
+**座標**：原點是起點，$f$ 軸是起點時的車頭方向（圖上朝上），$l$ 軸是起點時的左方，單位公尺。
+里程計全域位置 $(X_i, Y_i)$、航向 $\psi_i$（左轉為正），$i = 0 \dots N$ 是這一趟的第一筆到最後一筆：
+
+$$\begin{bmatrix} f_i \\ l_i \end{bmatrix} = \begin{bmatrix} \cos\psi_0 & \sin\psi_0 \\ -\sin\psi_0 & \cos\psi_0 \end{bmatrix}\begin{bmatrix} X_i - X_0 \\ Y_i - Y_0 \end{bmatrix}$$
+
+**指標**：
+
+$$L = \sum_{i=1}^{N} \left\lVert (X_i, Y_i) - (X_{i-1}, Y_{i-1}) \right\rVert,\qquad D = \left\lVert (f_N, l_N) \right\rVert,\qquad \Delta\psi = \sum_{i=1}^{N} \operatorname{wrap}(\psi_i - \psi_{i-1})$$
+
+$$\mathbf{e} = (f_N - f^*,\ l_N - l^*),\qquad \frac{\lVert \mathbf{e} \rVert}{L},\qquad e_\psi = \Delta\psi - \Delta\psi^*$$
+
+- $L$：路徑長；$D$：起點到終點的直線距離；$\Delta\psi$：總轉角（$\operatorname{wrap}$ 把角度差包到 $(-180^\circ, 180^\circ]$，所以繞一圈是 $360^\circ$）
+- $(f^*, l^*)$：捲尺量的終點（起點座標）；繞回起點時是 $(0, 0)$，$\lVert \mathbf{e} \rVert$ 就是閉合誤差
+- $\lVert \mathbf{e} \rVert / L$：每走一公尺差多少；$\Delta\psi^*$：實際轉角
+
+**建議的推法**（起點、終點都選地上格子的交點，捲尺好量）：
+
+| 路線 | 量什麼 | 主要看 |
+|---|---|---|
+| 沿格線直推 3 m | $(f^*, l^*) = (3, 0)$ | $f_N$ 誤差 → `px_to_mm`；$l_N$ 偏多少 → 直線會不會越推越歪 |
+| L 形（前 2 m、左轉、前 1 m） | $(2, 1)$、$\Delta\psi^* = 90^\circ$ | 轉彎後方向對不對 |
+| 繞一圈回起點（例如 2 m × 1 m 長方形） | $(0, 0)$、$\Delta\psi^* = 360^\circ$ | 閉合誤差 $\lVert \mathbf{e} \rVert / L$ |
+
+**11-16 校正錄音的重播**（`--from-data data/flow_calibration/20261116-201342`；同一份資料校正又重播，偏樂觀）：
+
+| 段落 | 實際 | $D$ | $(f_N, l_N)$ | $\Delta\psi$ |
+|---|---|---|---|---|
+| 直推 1 | 5 m | 5.051 m | (+5.046, −0.214) m | −5.6° |
+| 直推 2 | 5 m | 5.081 m | (+5.079, −0.161) m | −4.0° |
+| 直推 3 | 5 m | 4.896 m | (+4.884, −0.342) m | −4.9° |
+| 原地左轉 | 90° | — | — | +91.0° |
+
+距離 ±2%、轉角差 1°。但三趟直推的終點都偏右 0.16~0.34 m（路徑長的 3~7%），IMU 也說右轉了 4~6°：
+可能是人推的時候真的偏了，也可能是 IMU 航向漂移——那次沒量終點的左右位置，分不出來。
+新的推車驗證**記得量 $l^*$**（終點離起點那條格線多遠）。
+
+---
+
+## 店面平面圖與推車位置（`core/store/layout.py`、`core/store/vision.py`）
+
 
 ```
             ┌────────────────────────────────┐  y = 8（後牆）
@@ -503,7 +560,7 @@ python3 tools/build_app_ui.py     # design-cart-ui/*.dc.html -> ui/templates/ind
 ```
 
 （`slots` 的名稱含「左／右」決定靠哪一邊、含「上／下」決定在貨架後側／前側；`hall`、`corridor`、`anchor`、
-`shelves` 也都可以覆蓋，格式見 `core/store_layout.DEFAULT_LAYOUT`。）
+`shelves` 也都可以覆蓋，格式見 `core/store/layout.DEFAULT_LAYOUT`。）
 
 **長廊與定位點**：長廊用來**鎖住移動方向**——推車在長廊裡只能朝店內直走，所以航向就是平面圖的 $+y$、
 橫向位置就是長廊中線。長廊末端的**定位點**地上平貼一張 ArUco 標記（`python3 -m tools.make_anchor_marker` 產生，
@@ -529,7 +586,7 @@ $(x_a, y_a) = (0, 4.25)$ 是定位點（標記）在平面圖上的位置，$\el
 （判定比實際穿越晚 1~2 秒，預設 1 格）。登入時推車已經在店裡也一樣：推到定位點前面讓相機看到標記；
 標記被擋住的話，找貨頁有「**我在定位點**」按鈕（推車正好停在標記上時按）。走出門口、登出時位置作廢。
 
-**標記 → 推車位置**（`core/store_vision.py`）：標記四個角 → `cv2.solvePnP`（`IPPE_SQUARE`）→ 標記在相機座標
+**標記 → 推車位置**（`core/store/vision.py`）：標記四個角 → `cv2.solvePnP`（`IPPE_SQUARE`）→ 標記在相機座標
 （$x$ 右、$y$ 下、$z$ 沿光軸）裡的旋轉 $R$、位置 $\mathbf{t}$（相機 → 標記中心）。標記貼在地上，所以 $R$ 的第三欄
 $\mathbf{n}$ 就是「往上」：
 
@@ -586,7 +643,7 @@ $c_y = 406.6$ 比 $H_c/2 = 360$ 偏 47 px，現場驗證時如果相機高度 $h
 
 **誤差**：長廊 2 格寬，定位點橫向最多差 1 格；位移量隨里程計累積（直線實測 ±2%），航向由消失點拉回。
 
-### 現場驗證：平面圖與前方相機
+### 現場驗證
 
 標記與消失點目前只在合成影像上測過，下面是實機要做的，照順序：
 
@@ -625,1238 +682,429 @@ $\hat{\ell}_f$ 是程式量的中位數，$\delta$ 是消失點方向跟光軸�
 2. 離標記約 1.5 m 以內，終端機出現「看到定位點標記（前方 … m、右方 … m、相機高 … m），地圖對齊完成」，點變實心。
 3. 推到某個貨架角落的停車點（例如 `M3` 中架左下），看地圖上的點有沒有落在那附近；再往左右各推一段，看方向對不對。
 
-**6. 商品資料**：`python3 -m tools.product_admin meta <條碼>` 設貨架（`L1`~`R4`）、成分標籤、折扣、搭配（見「商品資料庫後台」）。
-
-### 已知缺口
-
-1. 位置（不是航向）只在定位點對齊，之後靠里程計累積；店裡沒有第二個位置校正點。路線是固定的「門 → 定位點 → 貨架」，
-   不會依推車目前位置重新規劃。
-2. 消失點、標記偵測只在合成影像上測過（俯角 25°~35°），還沒在實體貨架前驗證。相機位置當成推車位置（光流感測器跟相機前後差幾公分不計）。
-3. 多件優惠（第 2 件 5 折這種）沒有做，只有單件折扣。
-4. 常購清單沒有做（載入會員資料畫面已經不再宣稱找得到）。
+**6. 商品資料**：`python3 -m tools.product_admin meta <條碼>` 設貨架（`L1`~`R4`）、成分標籤、折扣、搭配（見〈資料庫與後台〉）。
 
 ---
 
-## Phase 4：購物流程狀態機（`core/cart_state_machine.py`、`core/cart_manager.py`）
+## 門口進出場判定（`core/gate/`）
 
-涵蓋的完整流程：**登入帳號 → 進入管制區 → 購物（掃碼加入/移除 + 秤重比對）
-→ 鎖定結帳 → 付款 → 走出管制區 → 登出帳號**。這支是「底層架構的支持」，
-只管流程本身正不正確，不含 LLM 推薦、預算分析這類進階功能（那些排 Phase 6）。
+**結論**：門內、門外各一顆 BLE Beacon，比較兩顆平滑後的 RSSI 誰強——強的那側就是推車靠的那側，佔優勢的一側翻轉就是一次穿越。
+11-16 裝上推車校正，錄音重播 8 趟全部判對、停門檻線與店內深處沒有來回跳（10-28 那次實測反應約 1~2 秒）。判定規則只有一套（`core/gate/model.py`），
+執行期、校正、事後分析都用它，所以「校正時重播通過」跟「實際跑起來」是同一件事。
 
-### 加入/移除是自動判斷，不是手動切換模式
+為什麼用差分不用絕對門檻：車體金屬、人的遮擋造成的衰減會同時影響兩顆，相減可以抵掉。
+為什麼不用 RSSI 算連續座標：室內多路徑讓 RSSI 抖 ±10~15 dB，換成距離誤差好幾公尺。
+誠實的限制：RSSI 沒有方向性，物理上量不到「有沒有真的穿過那個開口」，跟光電閘門比先天有模糊地帶，要靠佈署（擺法、遮罩）與絕對門檻配合。
 
-這是設計上特別要注意的一點。兩個方向的實際操作順序本來就不一樣——加入商品是
-「先掃碼、再把商品放進車」；移除商品是「先把商品拿起來（重量先變）、再掃碼」。
-所以狀態機分別處理這兩種順序：
+### 判定規則（每收到一筆觀測做一次）
 
-- 購物中（`SHOPPING`）掃到碼、當下重量還沒變 → 一律當「加入」，基準值是掃碼當下的重量。
-- 購物中重量自己先變了（超過 `weight.unscanned_change_threshold_g` 的雜訊門檻）
-  但還沒掃碼 → 進入 `AWAITING_ITEM_SCAN`，記錄「變化前」的重量當基準值，
-  並發出 `unscanned_weight_change`（warning）提醒補掃；這時候才掃到碼，就用目前重量
-  跟這個基準值的方向（變輕＝移除、變重＝加入）自動推斷模式。
-- 在 `AWAITING_ITEM_SCAN` 期間，如果重量自己飄回基準值附近（例如手滑碰到籃子），
-  視為虛驚一場，自動解除回 `SHOPPING`（info 等級的 `unscanned_weight_auto_resolved`）。
-- 如果超過 `weight.unscanned_change_timeout_sec` 都沒補掃碼——也就是「只做一半」的情境
-  ——升級成 `WEIGHT_MISMATCH_ERROR`，發出 critical 等級的 `unscanned_weight_timeout`。
-  這是舊版邏輯完全偵測不到的漏洞（舊版對「購物中發生了解釋不了的重量變化」直接忽略，
-  等於防損上的一個洞）。
+令
 
-因此 `ItemScanned` 事件**不帶 `mode` 欄位**，模式永遠是狀態機自己推斷的。
+- $W$：平滑窗口長度 `rssi_smoothing_sec`（秒）
+- $s_{in}, s_{out}$：門內、門外 Beacon 窗口內 RSSI 經估計量（`rssi_estimator`）壓成的值，再各加上自己的偏移 `rssi_offset_db`（dBm）
+- $d = s_{in} - s_{out}$：差分（dB），$d > 0$ 代表比較靠門內
+- $H$：遲滯 `gate_hysteresis_dbm`（dB）
+- $R_{\min}$：絕對門檻 `gate_min_crossing_rssi_dbm`（dBm）
+- $n_c$、$T_c$：確認筆數 `gate_min_confirm_samples`、確認時間 `gate_min_confirm_sec`（秒）
 
-### 狀態一覽
+步驟：
 
-`UNAUTHENTICATED`（未登入）→ `LOGGED_IN_OUTSIDE_ZONE`（已登入未進管制區）
-→ `SHOPPING`（購物中）↔ `AWAITING_ITEM_SCAN`（重量已變但還沒掃碼）
-↔ `AWAITING_WEIGHT_INCREASE`/`AWAITING_WEIGHT_DECREASE`（掃碼後等秤重比對）
-↔ `WEIGHT_MISMATCH_ERROR`（秤重異常或補掃逾時，需要重試或放棄該筆）
-→ `LOCKED_FOR_CHECKOUT`（鎖定結帳）→ `AWAITING_EXIT`（付款完成，等走出管制區）
-→ `SESSION_CLOSED`（已結束，可登出回到 `UNAUTHENTICATED`）。
+1. 這顆 Beacon 的原始 RSSI 放進它自己的歷史；兩顆都只留 $t_{now} - W < t \le t_{now}$ 的樣本。
+2. 任一顆窗內少於 `rssi_min_samples` 筆 → 這一刻不判定。
+3. 算 $s_{in}$、$s_{out}$、$d$。
+4. $d \ge +H$ 視為偏門內，$d \le -H$ 視為偏門外，中間不改判定；偏的那一側強度要 $\ge R_{\min}$。
+5. 連續 $n_c$ 筆、**而且**從第一筆算起持續 $T_c$ 秒都偏同一側才確認；確認的一側跟上次不同 → 一次 `entering`／`exiting`。
+6. `gate_exit_yaw_deg` 有填時，再用 IMU 航向交叉驗證（見下）。
 
-### 秤重比對邏輯
+| 誰在用 | 怎麼用 |
+|---|---|
+| 執行期 `core/gate/monitor.py` | 一筆一筆即時跑（app、`--monitor`），每一筆都記到 `data/gate_logs/` |
+| 校正 `core/gate/calibration.py` | 候選參數丟進這套規則，重播實測錄音，行為對才採用 |
+| 分析 `tools/analyze_gate_log.py` | 用記錄檔重播，核對、換參數試算 |
 
-掃碼當下記錄目前重量當基準值，之後每筆新秤重讀數跟基準值的差，拿去跟這個商品在
-資料庫登記的 `standard_weight_g`（加入為正、移除為負）±`weight_tolerance_g` 比對：
+`tests/test_gate_model.py` 驗證三者算出來的事件、每一筆差分值都一模一樣。
 
-- 容差內 → 比對成功，商品進/出購物清單。
-- 方向相反且超出容差 → 「方向不符」（可能有其他商品同時被拿動），critical。
-- 方向對但超出容差上限 → 「重量不符」（可能拿了不只一件），warning。
-- 方向對且還沒超標 → 視為還在放/拿的過程中，繼續等到成功或
-  `weight.weight_match_timeout_sec` 逾時。
+**為什麼要 $T_c$**：判定每收到一筆觀測就做一次，兩顆加起來每秒約 13 筆，$n_c = 3$ 筆只有 0.2 秒；而 max 估計量會被一筆特別強的封包撐住一整個窗口，
+這 3 筆用的其實是同一筆封包——等於一筆封包就能確認。11-16 的實際記錄裡「進場 0.5 秒後又出場」就是這樣來的。要求持續 $T_c$ 秒，跟封包率無關。$T_c = 0$ 是不看時間。
 
-### 遇到問題怎麼處理
+**航向交叉驗證不會啟用**：BNO080 給的是相對航向（開機為 0），同一個出場方向每次開機對應的 yaw 都不同，填不出固定角度，所以 `gate_exit_yaw_deg` 維持 `null`。
+要用的話得改成相對判斷（出場時跟上一次進場時差約 180°），還沒做。程式保留，有填才生效。
 
-分兩種：
+### 濾波器怎麼選
 
-**(a) 軟體層能擋下來/引導重試的**（條碼查無資料、秤重沒對上、逾時、感測器斷線……）
-——狀態機會擋下錯誤動作、發出對應的 `CartAlert`（含 severity：info/warning/critical），
-並提供 `RetryWeightCheckRequested`（重試）/`VoidPendingItemRequested`（放棄這筆）的路徑。
+實測 RSSI 的雜訊是**單邊的**：很少突然變強（最多 +1 dB），常常突然變弱 6 dB——多路徑破壞性干涉的典型特徵。所以上包絡線才接近真正的直達路徑。
+各估計量在靜止時的殘餘抖動（窗口 5 筆，2026-09-15 實測）：
 
-**(b) 沒辦法只靠軟體解決、代表可能有防損疑慮的**（例如結帳前就走出管制區、
-強制登出時清單裡還有商品）——狀態機**不會**假裝沒事發生、自己把狀態轉成正常結束，
-只會發出最高等級（critical）的警告，交給上層（UI、警報硬體、店員）處理。
-這是軟體邊界，狀態機本身沒辦法真的攔住一個人。
+| 估計量 | INSIDE | OUTSIDE | 可靠需要的 ΔRSSI（3σ） |
+|---|---|---|---|
+| median | 2.29 dB | 0.60 dB | 7.1 dB（最差） |
+| mean | 0.89 dB | 0.80 dB | 3.6 dB |
+| p75 | 0.00 dB | 0.53 dB | 1.6 dB |
+| p90 | 0.29 dB | 0.46 dB | 1.6 dB |
+| max | 0.49 dB | 0.49 dB | 2.1 dB |
 
-> **設計上的重要特性**：被拒絕的事件**不會拋例外**，只會呼叫 `_alert()` 記一筆警告
-> 然後直接 return。所以任何呼叫 `process_event()` 的上層，如果不主動去比對
-> `get_alerts()`，使用者就會看到「操作了、畫面完全沒反應、也沒有任何錯誤訊息」
-> ——這正是 2026-09-15 那個 bug 的其中一半。寫新的上層時務必記得這件事。
+中位數對單邊雜訊會被下半部的衰減拉著跑，樣本雙峰分布時還會在兩群之間跳。實際用哪一個由校正從 p75／p90／max 裡挑（11-16 選到 max）。
 
-完整的警告代碼列在 `core/cart_state_machine.py` 開頭的 `ALERT_*` 常數，設計成之後
-Phase 6 的異常偵測可以直接依代碼分類統計，不用解析訊息文字。
+**代價是延遲**：取上包絡線的估計量在訊號下降時會黏在窗口內最強（最舊）的那筆，延遲約等於一整個窗口，所以
 
-### 跟硬體現況的對應
+$$W \approx \frac{\text{可接受的判定延遲距離}}{\text{推車速度}}$$
 
-- **登入**：目前硬體只有 USB 條碼掃描器，所以是「掃會員條碼/QR code」（不是密碼、
-  不是 RFID）。條碼格式用 `config.json` 的 `state_machine.login_barcode_prefix`
-  （預設 `"MEMBER-"`）跟商品條碼區分，避免誤掃。
-- **進入/走出管制區**：確定的方向是 BLE Beacon 雙標籤差分（見 `landmark_correction.py`
-  章節），不經過已經滿載的 MCU、直接用 Pi5 內建藍牙。但真正的 BLE 掃描驅動還沒寫，
-  **現在這兩個事件只能靠 UI 模擬觸發**（`ui/app_gui.py` 在使用者設定完預算後自動觸發
-  `GateEntryDetected`，離場則是開發面板的按鈕）。
-- **鎖定結帳**：純軟體狀態鎖，沒有實體鎖車機構，UI 進到這個狀態要自己擋掉繼續增減商品。
-- **同一會員是否已在別台購物車登入**：單機 SQLite 看不到其他購物車的狀態，
-  需要中央伺服器/共用資料庫才能做，目前架構沒有這塊，暫不處理。
+例如 1 m/s 配 1 秒窗口 = 判定晚約 1 m。延遲兩邊對稱（兩顆用同一個估計量），只會變晚、不會判錯方向——安全的失效方向。
+窗口用**時間**而不是筆數：兩顆的廣播間隔差了 3 倍，固定筆數會讓慢的那顆涵蓋 3 倍的時間、系統性落後。
 
-### 這支沒有 CLI
+濾波的效果（同一組靜止資料）：差分的標準差從原始的 3.19 dB 降到 0.17 dB，遠小於 $H = 4$ dB，靜止時不可能誤翻。
+`drivers.ble_beacon_scanner` 印的是原始讀數，系統真正用的數字用 `calibrate_gate_beacons --monitor` 看。
 
-`core/cart_state_machine.py` 是純邏輯模組，沒有互動模擬入口（原本的 `--simulate`
-已移除，理由見「單一實體路徑原則」那章）。要跑完整流程用
-`tools/run_real_hardware_flow.py`（終端機）或 `python3 -m ui.app_gui`（觸控畫面），
-兩邊都是真硬體。純邏輯的回歸測試在 `tests/test_app_gui_bridge.py`。
+### Beacon 佈署指南
 
-邏輯測試涵蓋：正常 ADD/REMOVE 全流程、只做一半逾時升級、逾時後重試/放棄、
-重量自動飄回解除、雜訊門檻內忽略，以及 17 種錯誤情境（查無會員、未登入闖入、
-查無商品、秤重逾時/方向不符/超出容差、移除不存在的商品、鎖定中掃碼、結帳前走出
-管制區、登出前未結案、強制登出殘留商品、感測器斷線恢復……），全部通過。
+**軟體校正只能修兩顆的基準差，修不了「位置變化造成的差分小於雜訊」——那是佈署問題。**
+判定準不準取決於「走幾步讓 $d$ 變多少」相對於「站著不動時 $d$ 自己抖多少」。
 
-## 商品與會員資料庫後台（`tools/product_admin.py`）
-
-**資料庫裡目前只有出廠寫死的 5 筆測試商品與 2 筆測試會員。刷任何真實商品條碼都會
-顯示「查無此商品」**——這是正常行為，不是 bug。要用真的商品，得先建檔。
-
-```bash
-python3 -m tools.product_admin                      # 互動選單（最常用）
-python3 -m tools.product_admin list
-python3 -m tools.product_admin add                  # 互動：條碼可直接刷、重量可直接秤
-python3 -m tools.product_admin add --barcode 4710018001234 --name "豆漿" --price 25 --weight 320
-python3 -m tools.product_admin edit <barcode>
-python3 -m tools.product_admin delete <barcode> [-y]
-python3 -m tools.product_admin import products.csv  # CSV 批次匯入/更新
-python3 -m tools.product_admin export products.csv
-
-python3 -m tools.product_admin member-list
-python3 -m tools.product_admin member-add --member-id MEMBER-0003 --name "王小明"
-python3 -m tools.product_admin member-delete MEMBER-0003 [-y]
-
-python3 -m tools.product_admin staff-list
-python3 -m tools.product_admin staff-add --staff-id STAFF-0002 --name "店員乙"
-python3 -m tools.product_admin staff-delete STAFF-0002 [-y]
-python3 -m tools.product_admin assist-list [--all]           # 購物車送出的協助請求
-python3 -m tools.product_admin assist-resolve 3 --by STAFF-0001
-python3 -m tools.product_admin tx-list --member MEMBER-0001  # 交易紀錄與明細
-```
-
-舊的資料庫不用重建：新的表（`member_preferences`、`transactions`、`transaction_items`、
-`staff`、`assistance_requests`）在 `app_gui` 或 `product_admin` 下次啟動時自動補上。
-既有的資料庫不會自動多出測試店員，要用 `staff-add` 建一張工作證。
-
-CSV 欄位為 `barcode,name,unit_price,standard_weight_g,weight_tolerance_g,tags,shelf,discount_pct,pairs_with`；
-後四欄可以省略（舊格式照樣能匯入，已設好的標籤等不會被清掉），`tags`、`pairs_with` 用分號隔開。
-
-```bash
-python3 -m tools.product_admin meta /3R8T2CX   # 成分標籤（輸入編號）、貨架 L1~R4、折扣 %、搭配條碼；不用秤
-```
-
-`edit` 重秤商品時，標籤、貨架、折扣、搭配會沿用原本的。
-
-### 設計上的兩個重點
-
-**條碼欄位就是普通的 `input()`**——USB 掃描器是鍵盤裝置，刷一下就等於把條碼打進去
-再按 Enter，不需要任何特殊處理。之前有做過一個 evdev 版的「自動掃描模式」，
-那個反而是有害的：`grab()` 獨佔裝置之後，終端機自己就收不到實體按鍵了，
-結果是刷完條碼整個操作卡住。已經移除。
-
-**重量是真的秤出來的，容差自動抓 10%**：`add`/`edit` 互動流程走到重量那一步時，
-把商品放上秤重感應區、按 Enter 就會即時量測（重用已經硬體驗證過的
-`UartReceiver` + `raw_to_grams` + `collect_hx711_samples`）。量到之後自動算
-`容差 = 量到的重量 × 10%` 當預設值，直接按 Enter 接受，也可以自己改。
-沒有接秤的時候（或加 `--no-scale`）會自動退回手動輸入公克數，不會卡住。
-
-```bash
-python3 -m tools.product_admin --no-scale     # 不連秤，重量一律手動輸入
-python3 -m tools.product_admin --port /dev/ttyAMA0 --baud 115200
-```
-
-### 會員代碼的格式限制
-
-會員代碼必須以 `config.json` 的 `state_machine.login_barcode_prefix`（預設 `MEMBER-`）
-開頭，否則登入時會被狀態機判定成「不是會員碼格式」而拒絕。`member-add` 會在代碼
-不符時印警告但仍然寫入（有時候只是要先建資料）。要改格式是改 config，不是改程式。
-
----
-
-## Phase 3：定位
-
-### 輸出契約（`core/position_types.py`）
-
-`PositionEstimate` 這個 dataclass 是「定位系統最終要交給 UI/AI/商業邏輯的東西
-長什麼樣子」的契約，欄位不會因為底層是純 UART 算的、還是之後接了視覺融合而改變：
-
-```python
-@dataclass
-class PositionEstimate:
-    x_mm: float                    # 全域座標系位置，公釐
-    y_mm: float
-    yaw_deg: float                 # 全域座標系航向角，度，逆時針為正
-    position_source: str           # "optical_flow" 或（之後）"floor_optical_flow_fallback"
-    yaw_source: str                # "imu" 或（之後）"imu+vision"
-    sample_count: int
-    skipped_low_confidence_count: int
-    timestamp: Optional[float]
-    last_landmark_id: Optional[str]         # 最近一次地標校正（除錯/UI 用）
-    last_landmark_correction_at: Optional[float]
-```
-
-兩個確認過的決定：
-
-1. **座標系原點**是程式啟動（或 `reset()`）當下車子的位置與朝向，**不是店面地圖上的
-   固定座標**。畫的是「這台車今天這趟的軌跡」。要對齊店面地圖需要另外的初始定位機制。
-2. `is_best_effort_estimate()` 現階段會**一直回傳 `True`**（因為視覺融合還沒做），
-   這是如實反映現況、不是 bug。但也代表**下游現在拿它當旗標等於毫無鑑別力**，
-   `vanishing_point.py` / `floor_optical_flow.py` 補上之前不要用它做 UI 判斷。
-
-### 基礎里程計（`core/odometry_engine.py`）
-
-拿 `UartReceiver` 收到的 PMW3901 `dx`/`dy`（乘上 `optical_flow_px_to_mm` 換算成公釐）
-跟 BNO080 的 `yaw_deg`，套 2D 旋轉矩陣把車身局部座標系的位移轉成全域座標系再累加。
-`squal` 信心值低於門檻的那一筆位移不計入累積位置（但 yaw 照樣更新，因為 yaw 是
-BNO080 給的，跟光流追蹤品質無關）。
-
-```bash
-python3 -m core.odometry_engine                  # 用 config.json 設定即時監看
-python3 -m core.odometry_engine --min-squal 30   # 過濾信心值低於 30 的光流樣本
-python3 -m core.odometry_engine --px-to-mm 1.42  # 手動覆蓋（還沒校正時測試用）
-```
-
-**驗證狀態**（2026-11-23 更新）：2026-11-16 裝上推車做過光流與航向校正（`px_to_mm`、安裝角、鏡像、
-yaw 正負號都寫回 `config.json`）。校正那份錄音的重播結果見下面「行駛軌跡視覺化」；但那是用**同一份資料**
-校正又驗證，獨立的推車驗證要用 `tools/track_odometry.py` 推新的路線。
-
-**一個已知的小落差**（實機驗證時留意）：`process_packet()` 旋轉位移時用的是
-**上一筆封包的 yaw**（`self._state.yaw_deg` 在該行之後才更新成這筆的值），
-而 docstring 寫的是「用封包裡的 yaw」。20Hz 下差一個取樣週期影響很小，
-而且用區間起點的航向本身也是合理的積分近似，但開機後的第一筆位移會用初始
-`yaw_deg=0.0` 而不是真實航向來旋轉。等實機推車驗證時如果發現方向有系統性偏差，
-這裡是第一個要看的地方。
-
-### 行駛軌跡視覺化（`tools/track_odometry.py`，2026-11-23）
-
-推車的同時在螢幕上即時畫出里程計算出來的軌跡，推完輸入捲尺量的終點與實際轉角，算誤差、存圖。
-位置的算法就是 app 的 `OdometryEngine`（`config.json` 的 `odometry` 參數、`min_squal = 0`），
-所以這裡看到的準不準就是找貨頁推車點的準不準。純邏輯在 `core/odometry_track.py`。
-
-```bash
-python3 -m tools.track_odometry --grid-m 0.3     # Pi 桌面上跑；格線 0.3 m 對照地上的格子
-python3 -m tools.track_odometry --no-window      # SSH：終端機顯示，一樣存圖
-python3 -m tools.track_odometry --from-data data/odometry_tracks/<時間>   # 用錄音重算（改過參數後比較）
-```
-
-app 開著時序列埠被佔用，要先關 app。每一趟存在 `data/odometry_tracks/<開始時間>/`：原始封包（可以重算）、
-`run<k>.png` 軌跡圖、`result.json` 指標。
-
-**座標**：原點是起點，$f$ 軸是起點時的車頭方向（圖上朝上），$l$ 軸是起點時的左方，單位公尺。
-里程計全域位置 $(X_i, Y_i)$、航向 $\psi_i$（左轉為正），$i = 0 \dots N$ 是這一趟的第一筆到最後一筆：
-
-$$\begin{bmatrix} f_i \\ l_i \end{bmatrix} = \begin{bmatrix} \cos\psi_0 & \sin\psi_0 \\ -\sin\psi_0 & \cos\psi_0 \end{bmatrix}\begin{bmatrix} X_i - X_0 \\ Y_i - Y_0 \end{bmatrix}$$
-
-**指標**：
-
-$$L = \sum_{i=1}^{N} \left\lVert (X_i, Y_i) - (X_{i-1}, Y_{i-1}) \right\rVert,\qquad D = \left\lVert (f_N, l_N) \right\rVert,\qquad \Delta\psi = \sum_{i=1}^{N} \operatorname{wrap}(\psi_i - \psi_{i-1})$$
-
-$$\mathbf{e} = (f_N - f^*,\ l_N - l^*),\qquad \frac{\lVert \mathbf{e} \rVert}{L},\qquad e_\psi = \Delta\psi - \Delta\psi^*$$
-
-- $L$：路徑長；$D$：起點到終點的直線距離；$\Delta\psi$：總轉角（$\operatorname{wrap}$ 把角度差包到 $(-180^\circ, 180^\circ]$，所以繞一圈是 $360^\circ$）
-- $(f^*, l^*)$：捲尺量的終點（起點座標）；繞回起點時是 $(0, 0)$，$\lVert \mathbf{e} \rVert$ 就是閉合誤差
-- $\lVert \mathbf{e} \rVert / L$：每走一公尺差多少；$\Delta\psi^*$：實際轉角
-
-**建議的推法**（起點、終點都選地上格子的交點，捲尺好量）：
-
-| 路線 | 量什麼 | 主要看 |
+| 做法 | 對梯度 | 對「店裡別處不要誤判」 |
 |---|---|---|
-| 沿格線直推 3 m | $(f^*, l^*) = (3, 0)$ | $f_N$ 誤差 → `px_to_mm`；$l_N$ 偏多少 → 直線會不會越推越歪 |
-| L 形（前 2 m、左轉、前 1 m） | $(2, 1)$、$\Delta\psi^* = 90^\circ$ | 轉彎後方向對不對 |
-| 繞一圈回起點（例如 2 m × 1 m 長方形） | $(0, 0)$、$\Delta\psi^* = 360^\circ$ | 閉合誤差 $\lVert \mathbf{e} \rVert / L$ |
+| 兩顆的間距與擺法 | **決定性的** | 中等 |
+| 加指向性（金屬盒、反射板） | **有效** | 有效 |
+| 提高廣播頻率、加大窗口 | 不變，但雜訊變小 → 等效變好 | 無 |
+| 調低發射功率 | **完全無效**（兩顆一起降，相減抵消） | 有效（縮小範圍） |
+| 軟體偏移 `rssi_offset_db` | 不變，只把判定邊界挪到正確位置 | 無 |
 
-**11-16 校正錄音的重播**（`--from-data data/flow_calibration/20261116-201342`；同一份資料校正又重播，偏樂觀）：
+**擺法**：兩顆沿**行進方向**前後擺（一顆門內、一顆門外），推車從兩顆中間穿過；左右分兩側擺的話差分不會翻轉。
+高度跟推車上 Pi 的天線差不多（裝天花板等於多一段固定距離，梯度被稀釋），天線同方向（極化差 90° 會有 10~20 dB 損耗）。
 
-| 段落 | 實際 | $D$ | $(f_N, l_N)$ | $\Delta\psi$ |
-|---|---|---|---|---|
-| 直推 1 | 5 m | 5.051 m | (+5.046, −0.214) m | −5.6° |
-| 直推 2 | 5 m | 5.081 m | (+5.079, −0.161) m | −4.0° |
-| 直推 3 | 5 m | 4.896 m | (+4.884, −0.342) m | −4.9° |
-| 原地左轉 | 90° | — | — | +91.0° |
+間距 $D$ 與梯度（推車沿連線通過，中線附近走 25 cm 的差分變化）：
 
-距離 ±2%、轉角差 1°。但三趟直推的終點都偏右 0.16~0.34 m（路徑長的 3~7%），IMU 也說右轉了 4~6°：
-可能是人推的時候真的偏了，也可能是 IMU 航向漂移——那次沒量終點的左右位置，分不出來。
-新的推車驗證**記得量 $l^*$**（終點離起點那條格線多遠）。
-
-### BLE 地標校正（`core/landmark_correction.py`）
-
-用低成本 BLE Beacon 同時解決兩個原本分開卡住的問題——Phase 4 的
-`GateEntryDetected`/`GateExitDetected` 沒有硬體來源、Phase 7 室內導航卡在
-「浮動座標系怎麼對齊店面地圖」。兩個問題本質上是同一種：都需要「已知絕對座標的
-地標點」讓車子經過時把座標釘回去，只是門口多需要一個「方向」。
-
-**關鍵設計原則**：不要用 RSSI 算連續座標——室內多路徑反射環境下 RSSI 抖動可達
-±10~15 dBm，換算距離誤差 2~4 公尺，比沒校正的 IMU 漂移還糟。改成把訊號峰值當
-「離散觸發點」，車子經過已知座標的 Beacon 附近時觸發一次校正，把 dead-reckoning
-累積誤差拉回去。兩次校正之間的位置完全還是靠里程計積分撐著。
-
-**兩種偵測器**：
-
-- `RssiPeakDetector`——給一般地標點用（走道轉角、貨架節點），只需要知道「經過了」。
-  偵測訊號「從上升轉為下降」的瞬間（局部極大值），同一個峰值只觸發一次。
-- `GateCrossingDetector`——管制區門口專用，需要方向。門內門外各放一顆 Beacon
-  （約 1.5~2 公尺），比較兩者訊號的**相對大小**而不是絕對值（可以抵消車體金屬造成的
-  固定衰減），哪邊持續佔優勢翻轉到另一邊就是一次穿越，回傳 `entering`/`exiting`。
-
-三層防誤判（這是修正過一次設計漏洞後的結果）：第一版只看「訊號有沒有先升後降」，
-抓不住「車子只是在 Beacon 附近晃過、根本沒有真的靠近/穿越」的情況——晃近一點點
-一樣會有升降曲線，形狀上跟真的經過沒有差別。所以加了：
-
-1. **絕對訊號強度門檻**（`peak_min_rssi_dbm` / `gate_min_crossing_rssi_dbm`）：
-   峰值本身要夠強，代表車子當下真的夠靠近。
-2. **連續樣本確認**（`gate_min_confirm_samples`，門口預設 3）：過濾單一雜訊樣本
-   造成的瞬間翻轉。
-3. **航向交叉驗證**（`is_heading_consistent()`）：BLE 訊號沒有方向性，量不到
-   「有沒有真的通過那個實體開口」，所以門口判定理論上還要拿 IMU 航向角交叉驗證。
-   **這個函式寫好測過了，但還沒有任何地方呼叫它**——把 BLE 判定跟 IMU 朝向 AND 起來
-   才採信的組合邏輯，要等真實資料流接上時才能發揮作用。
-
-**誠實講這個限制**：這三層防護能大幅降低誤判機率，但沒辦法做到零誤判——BLE RSSI
-是全向、無方向性的訊號強弱量測，物理上量不到「有沒有真的通過那個實體開口」，
-跟光電閘門、地埋迴路線這種「物理上一定要真的通過某個窄通道才會觸發」的機制比，
-先天就有模糊地帶。額外能做但程式碼本身做不到的事：**部署時把 Beacon 發射功率調低**，
-讓有效偵測範圍實際侷限在門口通道附近。軟體門檻要跟實體佈署互相配合。
-
-**Beacon 選型建議**：因為上述物理侷限，**不要**選發射功率大、涵蓋範圍遠的產品
-——功率越小越好，等於用硬體本身幫軟體判斷分擔一部分工作。拿一顆 ESP32
-（BLE 廣播模式模擬 iBeacon/Eddystone）、或一支不用的舊手機當 Beacon 都可以，
-不需要買訂製的商用 Beacon。
-
-### 資料流：從 BLE 廣播到狀態機事件
-
-```
-drivers/ble_beacon_scanner.py   bleak 背景掃描，產生一筆筆 BeaconObservation(beacon_id, rssi)
-    -> core/gate_monitor.py     core/gate_model.py 那套規則的即時版本：時間窗 + p75 平滑、
-                                偏移量、遲滯、絕對門檻、連續確認、IMU 航向交叉驗證
-                                （每一筆都記錄到 data/gate_logs/）
-    -> core/cart_state_machine  GateEntryDetected / GateExitDetected
-```
-
-`core/gate_monitor.py` 這一層是後來補的：`GateCrossingDetector` 只負責「兩顆平滑後
-的 RSSI 誰佔優勢、什麼時候翻轉」，它不知道 RSSI 從哪來、不做平滑、也不碰 IMU。
-中間那些事原本只存在「之後接 main.py 時再做」的口頭約定裡，沒有實作，而
-`ui/app_gui.py` 跟 `tools/run_real_hardware_flow.py` 兩邊都需要，所以收斂成一支共用。
-
-**Beacon 怎麼認**：`config.json` 的 `landmarks.points[]` 每個點有 `beacon_id`。
-比對方式兩種，優先用前者——
-(1) `address`（選填）：BLE MAC 位址，最可靠，用 `--list` 掃出來抄進去；
-(2) 廣播名稱等於 `beacon_id`：拿 ESP32 自己刷 Beacon 韌體的話，把廣播名稱設成
-`GATE-INSIDE` / `GATE-OUTSIDE` 就不用填 address，換一顆板子也不用改設定。
-
-```bash
-python3 -m drivers.ble_beacon_scanner --list   # 掃 10 秒，列出附近所有 BLE 裝置
-python3 -m drivers.ble_beacon_scanner          # 持續印出門口那兩顆的即時 RSSI
-```
-
-**航向交叉驗證什麼時候生效**：只有 `config.json` 的 `landmarks.gate_exit_yaw_deg`
-**有填實測值**時才啟用。還沒量的話那欄是 `null`，這一層自動不啟用——拿一個沒校正
-過的角度去擋，只會把真的穿越也一起擋掉。量到之後填數字進去就會自動生效。
-
-### 2026-09-15 第一次實測 RSSI：發現三個問題
-
-第一次接上真的 Beacon 掃到的資料（車子距 GATE-OUTSIDE 1.7 m、距 GATE-INSIDE 3.6 m）：
-
-| | 中位數 | 標準差 | 範圍 | 廣播筆數 |
-|---|---|---|---|---|
-| GATE-INSIDE (`AC:A7:04:33:C7:69`) | −64 dBm | 2.8 dB | −70 ~ −63 | 14 |
-| GATE-OUTSIDE (`F4:2D:C9:A1:8E:FA`) | −70 dBm | 2.4 dB | −76 ~ −69 | 43 |
-
-**問題一：兩顆 Beacon 的基準差 12.5 dB，而且方向相反（最嚴重）。**
-車子離 OUTSIDE 近 2.1 倍，照自由空間路徑損耗算，OUTSIDE 應該比 INSIDE 強約
-6.5 dB；實測卻是 INSIDE 比 OUTSIDE 強 6.0 dB。兩者相加就是 12.5 dB 的系統性偏差
-——兩顆是不同廠牌（MAC 前綴不同）、發射功率差很多。
-
-這直接打破差分判定的核心假設（「訊號比較強＝比較近」）。後果是：**車子站在門外側
-附近，系統仍會認為它穩穩地在門內側，「出場」判定永遠不會觸發。** 這不是把門檻值
-調一調能解決的，必須量出差多少再補回去。
-
-修法：每顆 Beacon 新增 `rssi_offset_db`，比較訊號強弱之前先加上去，用
-`tools/calibrate_gate_beacons.py` 錄推車實際走過門口算出來（見下方「門口校正怎麼做」）。
-
-**問題二：遲滯 2 dB 蓋不過雜訊。** 車子完全靜止時，單筆 RSSI 的峰對峰抖動就有
-7 dB、標準差 2.4~2.8 dB；經 window=5 的中位數平滑後殘餘標準差仍有約 1.6 dB。
-原本的 `gate_hysteresis_dbm = 2.0` 比雜訊還小，停在門口不動也會反覆翻轉判定。
-先提高到 4.0，正式值由校正工具依實測雜訊算。
-
-**問題三：絕對門檻 −65 dBm 實務上過不了。** 距離 Beacon 1.7 m 時只有 −70 dBm，
-等於要求貼著 Beacon 才算數。這個值必須在真正的門檻線上量過才有意義。
-
-**另外發現**：兩顆的廣播間隔差 3 倍（OUTSIDE 的筆數是 INSIDE 的 3.1 倍），而且
-任一顆走出範圍後就不再有新讀數。所以 `GateMonitor` 加了新鮮度檢查
-（`gate_max_sample_age_sec`，預設 5 秒）——兩顆的最近一筆讀數都要夠新才判定，
-否則舊值會一直被當成「現在的訊號強度」拿去比較。
-
-### Beacon 實體佈署指南（決定成敗的一章）
-
-這一段是 2026-09-15 實測之後整理的。**軟體校正只能修正兩顆的基準差，修不了
-「位置變化造成的訊號差異小於雜訊」這件事**——那是佈署問題，只能用實體佈署解決。
-
-#### 先搞清楚：什麼會讓梯度變陡，什麼不會
-
-差分判定看的是 `ΔRSSI = RSSI內 − RSSI外`。判定準不準，取決於「走幾步路會讓
-ΔRSSI 變多少」相對於「站著不動時 ΔRSSI 自己抖多少」。
-
-| 做法 | 對梯度的影響 | 對「不要在店裡別處誤判」的影響 |
+| $D$ | 走 25 cm | 門檻線 ±50 cm 的差分 |
 |---|---|---|
-| **兩顆的間距與擺法** | **決定性的** | 中等 |
-| **加指向性（反射板/金屬盒）** | **有效**，直接疊一層方向性衰減 | 有效 |
-| 提高廣播頻率、加大平滑窗口 | 不改變梯度，但把雜訊壓低 → 等效變好 | 無 |
-| **調低發射功率** | **完全無效** | 有效（縮小偵測範圍） |
-| 軟體 `rssi_offset_db` | 不改變梯度，只把判定邊界挪到正確位置 | 無 |
-
-調低發射功率對梯度沒用這件事違反直覺，但很好理解：路徑損耗的斜率跟發射功率
-無關。功率降 10 dB，兩顆的讀數**一起**降 10 dB，相減之後完全抵消。它有用的地方
-是讓遠處的絕對訊號掉到門檻以下，那是另一層防護。
-
-#### 擺法：間距與方向比什麼都重要
-
-兩顆要沿著**行進方向**前後擺（一顆在門內、一顆在門外），讓推車從兩顆中間穿過。
-不要左右分兩側擺——那樣推車經過時兩顆的距離幾乎同時變化，差分值不會翻轉。
-
-間距 D 對梯度的影響（推車沿連線通過，中線附近走 25 cm 的 ΔRSSI 變化量）：
-
-| 間距 D | 走 25 cm 的變化 | 門檻線 ±50 cm 的差分值 |
-|---|---|---|
-| 1.0 m | 9.5 dB | ±14 dB（±25cm 處已達 ±9.5） |
+| 1.0 m | 9.5 dB | ±14 dB |
 | **1.5 m** | **6.0 dB** | **±14 dB** |
 | 2.0 m | 4.4 dB | ±9.5 dB |
 | 3.0 m | 2.9 dB | ±6.0 dB |
 
-**建議 D = 1.0 ~ 1.5 m。** 太近會讓「門檻線」這個判定邊界太窄、推車還沒真的通過
-就翻轉；太遠梯度就塌了。
+建議 $D$ = 1.0~1.5 m。$D$ = 1.5 m 時橫向偏離連線 50 cm 差分還有 ±7.6 dB、100 cm 剩 ±3.8 dB，門口通道本來就窄，夠用。
+差分法只在兩顆的中線附近才陡；遠場（例如離一顆 1.7 m、另一顆 3.6 m）走 25 cm 只變 1.8 dB，跟雜訊同量級。
 
-橫向偏移（推車沒有正好走在兩顆的連線上）的容忍度，D=1.5 m：
+**指向性**（2.4 GHz 波長 $\lambda$ = 12.5 cm）：
 
-| 橫向偏移 | 門檻線 ±50 cm 的差分值 |
-|---|---|
-| 0 cm | ±14.0 dB |
-| 30 cm | ±10.3 dB |
-| 50 cm | ±7.6 dB |
-| 100 cm | ±3.8 dB |
-| 150 cm | ±2.2 dB |
+- **金屬盒**（效果最好）：Beacon 放進只有單面開口的金屬盒，開口朝自己那一側。餅乾鐵盒、鋁製盒，或紙盒內貼滿鋁箔都可以。前後比約 15~25 dB。
+- **平板反射器**：Beacon 背後 $\lambda/4 \approx$ 3 cm 放一塊邊長 ≥ 12.5 cm 的金屬板，擋住對面。前後比約 10~15 dB。
+- 兩顆之間立擋板：訊號會從邊緣繞射、從天花板反射繞過去，板子要 > 1 m 才有用，不建議。
 
-門口通道本來就窄，1 m 以內都還夠用。**兩顆的高度要跟推車上 Pi 的天線差不多**，
-不要裝在天花板——裝高了等於增加了一段固定距離，把梯度稀釋掉。
+鋁箔就夠（集膚深度只有幾 µm），重點是**連續**：孔洞小於 1.2 cm（$\lambda/10$）就等同實心。中線兩側被擋的量一樣，所以判定邊界不會偏移、只是兩側更好分。
+實務上能拿到 10~20 dB 的對比改善，不是完全隔絕——多路徑會繞過遮蔽物，但 20 dB 已經綽綽有餘。
+本專案用兩個鍋子背對背黏成一組（10-28）：正面掉了 11~12 dB、背面只掉 2~3 dB，像是極化沒對齊（夾角 $\theta$ 的損失 $-20\log_{10}\lvert\cos\theta\rvert$ dB），安裝時要轉到極化對齊的角度。
 
-> 回頭看你那組實測資料（離 OUTSIDE 1.7 m、離 INSIDE 3.6 m）：那個位置往內側走
-> 25 cm，ΔRSSI 只變 1.8 dB，跟平滑後的雜訊 1.6 dB 同量級——難怪分不出來。
-> 那不是門口，是遠場。差分法在遠場本來就沒有鑑別力，它只在兩顆的中線附近才陡。
+**韌體**：
 
-#### 指向性：怎麼做、能期待多少
+- Arduino UNO R4 WiFi（GATE-INSIDE）預設廣播間隔太長，掃到的筆數只有 ESP32 的 1/3。`BLE.setAdvertisingInterval(32)`（單位 0.625 ms → 20 ms）；R4 的 BLE 經過板載 ESP32-S3，設定不一定生效，改完用 `drivers.ble_beacon_scanner` 數筆數確認。ArduinoBLE 沒有設發射功率的 API，所以軟體偏移非做不可。
+- ESP32（GATE-OUTSIDE）：`adv->setMinInterval(0x20)`、`setMaxInterval(0x30)`（20~30 ms）。**發射功率不要調到最低**：10-28 實測 −12 dBm 時在 2.6 m 遮擋側每秒只剩 3.5 包、30 秒斷訊 4 次，改回 +9 dBm 恢復 7 包／秒、沒有斷訊。遮罩加絕對門檻已經把範圍侷限在門口。
 
-2.4 GHz 的波長是 12.5 cm，λ/4 ≈ 3.1 cm。這兩個數字決定了所有尺寸。
+**施作順序**：先改擺法（免費）→ 跑 `--survey` 看剖面 → 改韌體廣播間隔 → 還不夠再加金屬盒 → 最後正式校正寫回。
+量測資料（10 月遮罩與角度實驗）在 `data/beacon_shield/`。
 
-**作法 A：平板反射器（最簡單）**
-在每顆 Beacon 背後 **3 cm**（λ/4）處放一塊金屬板，板子邊長至少 12.5 cm（1λ），
-25 cm（2λ）更好。內側那顆的板子朝門外、外側那顆的板子朝門內——也就是各自把
-「對面」擋住。預期前後比 10~15 dB，正面還會多 3~6 dB 增益。
-
-**作法 B：金屬盒（效果最好，成本一樣低）**
-把 Beacon 放進一個只有單面開口的金屬盒，開口朝自己那一側。餅乾鐵盒、鋁製
-專案盒，或紙盒內側整面貼滿鋁箔都可以。預期前後比 15~25 dB。
-
-**作法 C：兩顆之間立一塊擋板**
-效果比 A/B 差，因為訊號會從板子邊緣繞射、也會從天花板和牆面反射繞過去。板子要
-很大（> 1 m）才有意義。**不建議優先做這個。**
-
-材料：鋁箔貼在瓦楞紙板/珍珠板上就夠了——2.4 GHz 的集膚深度只有幾微米，厚度完全
-不是問題。重點是**要連續**：網目或孔洞只要小於 1.2 cm（λ/10）就等同實心板。
-
-**加上指向性之後的預期效果**（D=1.5 m、F/B=15 dB）：
-
-| 位置 | 距離造成 | 遮蔽造成 | 合計 |
-|---|---|---|---|
-| 門外 25 cm | −6 dB | −15 dB | **−21 dB** |
-| 門檻線 | 0 dB | 0 dB | **0 dB** |
-| 門內 25 cm | +6 dB | +15 dB | **+21 dB** |
-
-雜訊 1.6 dB → 訊雜比從 3.8 倍拉到 13 倍，`gate_hysteresis_dbm` 設 6~8 都很安全。
-注意中線附近不受遮蔽影響（兩邊被擋的量一樣），所以**判定邊界不會偏移**，只是
-兩側變得容易分辨——這正是我們要的。
-
-> **誠實的期待值**：做不到你說的「到內無外」。室內多路徑反射的關係，訊號會從
-> 天花板、牆面、地板繞過遮蔽物。實務上能拿到 10~20 dB 的對比度改善，不是隔絕。
-> 但 20 dB 對這個判定來說已經綽綽有餘。
-
-#### 韌體端：兩個免費的改善
-
-**Arduino UNO R4 WiFi（你的 INSIDE）廣播間隔太長**，這就是掃描筆數只有 ESP32
-三分之一的原因（實測 43 : 14）。筆數少 = 平滑窗口填不滿 = 雜訊壓不下來。
-
-```cpp
-#include <ArduinoBLE.h>
-void setup() {
-  BLE.begin();
-  BLE.setLocalName("GATE-INSIDE");
-  BLE.setDeviceName("GATE-INSIDE");
-  BLE.setAdvertisingInterval(32);   // 單位 0.625 ms -> 20 ms，跟 ESP32 對齊
-  BLE.advertise();
-}
-void loop() { BLE.poll(); }
-```
-
-> R4 WiFi 的 BLE 是透過板載 ESP32-S3 協處理器做的，`setAdvertisingInterval()`
-> 不一定會完全生效。改完務必用 `python3 -m drivers.ble_beacon_scanner` 數一下
-> 兩顆的筆數比有沒有拉近，不要假設有效。
-> 另外 ArduinoBLE **沒有**設定發射功率的 API，所以 R4 這側的 TX 功率調不了
-> ——這也是為什麼軟體的 `rssi_offset_db` 校正非做不可。
-
-**ESP32（你的 OUTSIDE）可以調發射功率與廣播間隔：**
-
-```cpp
-#include <BLEDevice.h>
-#include "esp_bt.h"
-
-void setup() {
-  BLEDevice::init("GATE-OUTSIDE");
-  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N12);  // -12 dBm，縮小範圍
-  BLEAdvertising *adv = BLEDevice::getAdvertising();
-  adv->setMinInterval(0x20);   // 0x20 * 0.625 ms = 20 ms
-  adv->setMaxInterval(0x30);   // 30 ms
-  adv->start();
-}
-```
-
-再提醒一次：降 TX 功率**不會**改善方向判定，只會縮小偵測範圍。它的價值在於讓
-店裡其他地方收不到訊號，配合 `gate_min_crossing_rssi_dbm` 這層絕對門檻。
-
-**天線極化方向**也值得檢查：ESP32 用外接天線、R4 用板載天線，兩者的極化方向如果
-差 90 度，會有 10~20 dB 的交叉極化損耗，而且推車轉向時損耗會變——這很可能是你那
-12.5 dB 系統性偏差的一部分來源。把兩顆的天線盡量擺成同一個方向（通常是都垂直）。
-
-#### 先搞清楚你看到的是哪一層的數字
-
-`python3 -m drivers.ble_beacon_scanner` 印的是**原始讀數**——那支是驅動層，
-故意不做任何處理，用途是確認 Beacon 認得到、位址對不對。原始 RSSI 抖動大是正常的，
-實測靜止不動時峰對峰就有 7 dB。
-
-但**判定邏輯看到的不是那些數字**。`core/gate_monitor.py` 會做兩件事：
-按時間窗取樣、再用 p75 估計量壓成一個代表值。拿你那組實測資料實際跑一遍：
-
-| | 差分值 Δ 的範圍 | 標準差 |
-|---|---|---|
-| 原始 | +0 ~ +12 dB | 3.19 dB |
-| **濾波後** | **+6 ~ +7 dB** | **0.17 dB** |
-
-抖動降低 19 倍。`gate_hysteresis_dbm = 4.0` 遠大於 0.17 dB，靜止時不可能誤翻轉。
-
-要直接看到這件事：
-
-```bash
-python3 -m tools.calibrate_gate_beacons --monitor
-```
-
-原始與濾波後的值並排顯示，加上目前判定在哪一側、絕對門檻過不過。用的就是
-`GateMonitor` 本身（跟 `ui/app_gui.py` 同一條路徑），不是另外算一套。
-
-`--monitor`（以及 `calibrate_gate_beacons` 的每個模式）都需要**門口兩顆同時有電**，
-啟動時最多等 20 秒，等不到兩顆就報錯結束。只有一顆在測的時候用下面那支。
-
-#### 量單顆 Beacon 的遮罩效果
-
-```bash
-python3 -m tools.measure_beacon_shield --beacon GATE-OUTSIDE --distance-cm 100 --note "鐵盆"
-```
-
-依序量「無遮罩 → 開口側 → 遮擋側」（任一個輸入 `s` 跳過），每個狀態預設 30 秒。
-Pi 固定不動，換方向時把 Beacon 連同遮罩**原地轉 180 度**，不要移動 Pi。
-
-為什麼不只看 RSSI：2026-10 用鐵盆實測，遮起來 RSSI 只掉約 10 dB，但更新明顯變慢。
-掉進深度衰減的封包根本收不到，不會進任何平均——**RSSI 平均只描述活下來的封包，
-會低估遮蔽效果**。所以這支同時記錄封包到達率、最長斷訊、`>1 s` 斷訊次數，以及
-「可判定時間比例」（照 `rssi_smoothing_sec`/`rssi_min_samples`，每 0.1 秒檢查一次
-窗口內樣本夠不夠 `GateMonitor` 判定；用固定時間格點而不是用封包算，避免同樣的
-倖存者偏差）。原始封包存 `packets.csv`、統計存 `summary.json`。
-
-#### 找 Beacon 組的安裝角度（極化對齊）
-
-```bash
-python3 -m tools.measure_beacon_rotation --distance-cm 100
-```
-
-兩個鍋子背對背黏成一組之後（2026-10-28），兩顆的正面同時掉了 11~12 dB、背面只掉
-2~3 dB。直達路徑對極化很敏感、反射回來的背面訊號不敏感，這個模式最像極化沒對齊：
-極化夾角 ψ 的損失是 `-20·log10|cos ψ|` dB（45° 掉 3 dB、75° 掉 11.7 dB）。
-
-- **旋轉軸是鍋子的中心軸**（水平、指向 Pi），像轉方向盤，開口始終正對 Pi。
-  不要繞垂直桌面的軸轉，那會變成在量正面/側面/背面。
-- **把手當指針**：朝正下方 = 0°，45°、90°（水平）、135°、180°（朝正上方）。
-- 第 1 輪門內那顆開口朝 Pi；第 2 輪整組繞垂直軸轉 180°、換門外那顆開口朝 Pi。
-  兩輪就是實際裝在門口時推車在門內/門外看到的情況。
-- 兩顆同時記錄，直接算系統真正用的差分（內側 − 外側）。每個角度給出「變化幅度」
-  （兩輪差分平均之差）與「最差間隔」（第 1 輪差分最小值 − 第 2 輪差分最大值），
-  依最差間隔建議安裝角度。0° 和 180° 對線性極化是同一個方向，兩者差超過 3 dB 會提醒。
-
-#### 濾波器怎麼選的（不是預設的中位數）
-
-一般講「RSSI 要平滑」直覺都是中位數或平均，但實測資料顯示這裡的雜訊**是單邊的**：
-訊號很少突然變強（最多 +1 dB），但常常突然變弱 6 dB——多路徑破壞性干涉的典型特徵。
-所以**上包絡線才接近真正的直達路徑**，下面那些是被抵消掉的。
-
-各估計量在靜止時的殘餘抖動（window=5，用你的實測資料）：
-
-| 估計量 | INSIDE | OUTSIDE | 需要多大的 ΔRSSI 才可靠（3σ） |
-|---|---|---|---|
-| median | 2.29 dB | 0.60 dB | 7.1 dB ← 最差 |
-| mean | 0.89 dB | 0.80 dB | 3.6 dB |
-| **p75** | **0.00 dB** | **0.53 dB** | **1.6 dB** |
-| p90 | 0.29 dB | 0.46 dB | 1.6 dB |
-| max | 0.49 dB | 0.49 dB | 2.1 dB |
-
-中位數對「對稱雜訊」是好選擇，但對單邊雜訊會被下半部的 fade 拉著跑；樣本呈雙峰
-分布（一半正常、一半在 fade 中）時還會在兩群之間跳。所以預設改成 **p75**
-（`rssi_estimator`）。選 p75 而非 p90/max 是因為它仍用到 1/4 的樣本，單筆異常高
-讀數不會主導結果。
-
-**代價是延遲**：p75 取上包絡線，訊號**下降**時會黏在窗口內最強（最舊）的那筆，
-延遲約等於一整個窗口長度。所以窗口長度直接對應判定延遲：
-
-> `rssi_smoothing_sec` ≈ 可接受的判定延遲距離 ÷ 推車速度
->
-> 1 m/s 配 0.4 秒 = 判定會晚 40 cm。這個延遲是兩邊對稱的（都用同一個估計量），
-> 所以只會讓判定變晚、不會判錯方向——安全的失效方向。
-
-窗口縮短的代價是樣本變少、雜訊壓不住，**所以廣播間隔一定要先調到 20~30 ms**
-才撐得住 0.4 秒的窗口。濾波器設定跟韌體的廣播頻率是綁在一起的，不能只調一邊。
-
-另外窗口是用**時間**算不是**筆數**：實測兩顆的廣播間隔差 3 倍，固定筆數會讓慢的
-那顆涵蓋 3 倍的時間、系統性落後，而落後最嚴重的時候正好是穿越門口、訊號快速變化
-的那幾秒。
-
-#### 怎麼知道改了有沒有用
-
-```bash
-python3 -m tools.calibrate_gate_beacons --survey
-```
-
-量 5 個位置的靜止剖面（細節見下方「門口校正怎麼做」）。
-**改佈署之前跑一次、之後再跑一次，比較各位置的差分與 σ 就知道值不值得。**
-
-#### 建議的施作順序
-
-1. **先改擺法**（免費）：兩顆沿行進方向前後擺、間距 1~1.5 m、高度對齊推車上的 Pi、
-   天線同方向。跑 `--survey` 看剖面。這一步很可能就夠了。
-2. **改韌體廣播間隔**（免費）：把 R4 拉到 20~30 ms，筆數對齊之後雜訊會明顯下降。
-3. **還不夠再加指向性**：優先做金屬盒（作法 B），一顆的材料成本幾十塊。
-4. 最後跑正式校正寫回 config：`python3 -m tools.calibrate_gate_beacons`（先 `--dry-run` 看過建議值）
-
-### 門口判定：一套標準（2026-10-28 統一）
-
-之前校正工具、執行期、分析各自算一套（校正用公式推「應該夠」、執行期用 `GateMonitor`、
-分析靠肉眼看），改了好幾版還是對不起來。現在只有一套規則，寫在 `core/gate_model.py`：
-
-```
-每收到一筆觀測：
-  1. 放進該 Beacon 的歷史；兩顆都只留時間窗內的：t_now − W < t ≤ t_now（W = rssi_smoothing_sec）
-  2. 任一顆窗內少於 rssi_min_samples 筆 → 這一刻不判定
-  3. 兩顆各用 rssi_estimator（p75）壓成一個值，各加自己的 rssi_offset_db → s_in、s_out
-  4. d = s_in − s_out；d ≥ +H 偏門內、d ≤ −H 偏門外、中間不改判定（H = gate_hysteresis_dbm）
-     偏的那一側強度要 ≥ gate_min_crossing_rssi_dbm；連續 gate_min_confirm_samples 筆、
-     而且持續 gate_min_confirm_sec 秒（T_c）都偏同一側才確認
-     確認的一側跟上次不同 → 一次 entering / exiting
-  5. 有設 gate_exit_yaw_deg 時用 IMU 航向交叉驗證
-```
-
-| 誰在用 | 怎麼用 |
-|---|---|
-| 執行期 `core/gate_monitor.py` | 一筆一筆即時跑這套規則（`ui/app_gui.py`、`run_real_hardware_flow`、`--monitor`） |
-| 校正 `core/gate_calibration.py` | 把候選參數丟進這套規則，重播實測資料，行為對才採用 |
-| 分析 `tools/analyze_gate_log.py` | 用記錄檔重播這套規則，核對、換參數試算 |
-
-`tests/test_gate_model.py` 驗證三者算出來的事件、每一筆差分值都一模一樣。
-
-#### 門口校正怎麼做
+### 校正（`tools/calibrate_gate_beacons.py`）
 
 ```bash
 python3 -m tools.calibrate_gate_beacons --dry-run    # 錄音、挑參數、重播驗證，不寫回
 python3 -m tools.calibrate_gate_beacons              # 同上，最後問過才寫回
-python3 -m tools.calibrate_gate_beacons --trips 6    # 來回幾次（預設 4，也就是 8 趟）
-python3 -m tools.calibrate_gate_beacons --monitor    # 寫回之後推車實際來回穿過門口確認
+python3 -m tools.calibrate_gate_beacons --trips 6    # 來回幾次（預設 4 次 = 8 趟）
+python3 -m tools.calibrate_gate_beacons --from-data data/gate_calibration/<時間>   # 用錄音重算
 ```
 
-**錄的是推車真的走過門口**，整段連續錄下來（Pi 要跟實際使用時一樣，最好就裝在推車上，
-推車用平常的速度推）：
+**錄的是推車真的走過門口**（Pi 裝在推車上、平常的速度），整段連續錄：推車停在門外約 2 m → 進場推到門內約 2 m 停好 → 出場推回門外約 2 m 停好，
+重複 `--trips` 次 → 推到門檻線停 20 秒 →（選做）推到店內深處停 20 秒。存在 `data/gate_calibration/<時間>/`。
 
-1. 推車停在門外約 2 m（平常進出的路線上），按 Enter 開始
-2. 進場：推到門內約 2 m 停好，按 Enter；出場：推回門外約 2 m 停好，按 Enter。重複 `--trips` 次
-3. 推到門檻線上（兩個鍋底貼合的平面）停 20 秒
-4. 選做：推到店內深處（離門口最遠、但仍收得到訊號）停 20 秒
+為什麼要真的走過：10-28 之前是 5 個位置各靜止 15 秒、再接起來「模擬走過」——等於推車在每個位置停 15 秒，判定很容易跟上。
+同一份資料改成每個位置只停 1 秒重播，那一版建議的參數進場 15 次只判出 5 次。
 
-每一趟的開始、結束時間記在 `.meta.json` 的 `marks`，整段錄音存在
-`data/gate_calibration/<時間>/observations.csv`（格式跟執行期記錄檔一樣）。
-
-**挑參數**（`core/gate_calibration.py`）：
+**挑參數**（`core/gate/calibration.py`）：
 
 | 參數 | 怎麼來 |
 |---|---|
-| `rssi_offset_db`（門內那顆） | 每一趟結尾停好的最後 1.5 秒，取差分 $d=s_{in}-s_{out}$ 的中位數：停在門內的 $\tilde d_{in}$、停在門外的 $\tilde d_{out}$，偏移 $=-(\tilde d_{in}+\tilde d_{out})/2$，讓兩邊對稱落在 0 的兩側 |
-| `gate_min_crossing_rssi_dbm` | 各趟結尾佔優勢那顆（校正後）強度的最小值 − 5 dB |
-| `rssi_estimator`、`rssi_smoothing_sec`、`gate_min_confirm_sec` | 網格：估計量 p75 / p90 / max × 窗口 1.0 / 1.5 / 2.0 秒 × 確認持續時間 $T_c$ 0 / 0.3 / 0.6 / 1.0 秒（再加上現在的值）；確認筆數固定用現在的設定 |
-| `gate_hysteresis_dbm` | 每一組網格都把遲滯從 2 到 12 dB、每 0.25 dB 試一次，**整段錄音重播**，通過下列全部檢查才算可行；取可行範圍最寬的那一組，遲滯取範圍中間 |
+| 門內偏移 `rssi_offset_db` | 每一趟結尾停好的最後 1.5 秒取差分中位數：停門內 $\tilde d_{in}$、停門外 $\tilde d_{out}$，偏移 $= -(\tilde d_{in} + \tilde d_{out})/2$，兩邊對稱落在 0 的兩側（門外那顆固定 0） |
+| 絕對門檻 $R_{\min}$ | 各趟結尾佔優勢那顆（校正後）強度的最小值 − 5 dB |
+| 估計量、$W$、$T_c$ | 網格：p75／p90／max × 1.0／1.5／2.0 秒 × 0／0.3／0.6／1.0 秒（再加上現在的值）；$n_c$ 不調 |
+| 遲滯 $H$ | 每一組網格把 $H$ 從 2 到 12 dB、每 0.25 dB 試，整段錄音重播，通過下列全部檢查才算可行；取可行範圍最寬的那一組，$H$ 取範圍中間 |
 
-檢查（都是把錄到的封包依時間順序餵進同一套規則，`GateDecision`，跟執行期同一份程式）：
+檢查（錄到的封包依時間順序餵進同一套規則）：
 
-1. 每一趟剛好判出一次、方向正確，而且在這一趟結束後 $W+T_c+1$ 秒內判出（$W$ = 窗口）
-2. 走過門口的期間沒有多判的事件
-3. 停在門檻線：最多 1 次事件（剛停下時判定可能還在跟上），不能來回跳
-4. 停在店內深處：最多 1 次事件，而且不能判成 `exiting`
-5. 以上在門內偏移量 ±2 dB 時也要成立（模擬校正之後的環境漂移）
-6. `--from-data` 時，校正錄音之後的執行期記錄（`data/gate_logs/`）也一起重播：不能「來回跳」
-   ——相鄰兩個相反的事件間隔不到 3 秒（`core/gate_model.flaps`）。執行期記錄沒有標準答案，
-   但來回跳不需要答案也知道是錯的；它補的是校正錄音錄不到的狀況（推車在門口附近晃、有人經過）。
-   `--no-logs` 關掉、`--logs-since 20261116-000000` 指定從什麼時候開始的記錄
+1. 每一趟剛好判出一次、方向正確，而且在結束後 $W + T_c + 1$ 秒內判出。
+2. 走過門口的期間沒有多判的事件。
+3. 停在門檻線最多 1 次事件（剛停下時判定可能還在跟上），不能來回跳。
+4. 停在店內深處最多 1 次事件，而且不能判成出場。
+5. 門內偏移 ±2 dB 時以上也要成立（模擬環境漂移）。
+6. `--from-data` 時，校正錄音之後的執行期記錄也一起重播：不能**來回跳**（相反事件間隔 < 3 秒）。執行期記錄沒有標準答案，但來回跳不用答案也知道是錯的。
+   `--no-logs` 關掉、`--logs-since 20261116-000000` 指定起點。
 
-同樣寬度時，偏好跟現在設定相同的、窗口短的、$T_c$ 短的（反應快）。
+判讀：可行範圍 ≥ 1 dB「可以」、有但 < 1 dB「勉強」、沒有「不夠」（不給參數，列出每一組最多判對幾趟）。寫回時記下 `gate_calibration_source`。
 
-**為什麼加確認持續時間 $T_c$**（2026-11-23）：11-16 裝上推車重新校正，選到的是 max 估計量。
-max 會讓一筆特別強的封包在 1 秒窗口裡「撐住」整個窗口，期間進來的每一筆觀測算出來的 $d$
-都一樣；「連續 3 筆」數的是觀測筆數，0.2 秒內就湊滿，等於只憑一筆封包就確認。實際使用的記錄裡
-因此出現「進場 0.5 秒後又出場」。改成同時要求持續 $T_c$ 秒，一筆封包就撐不過去了。
-$T_c = 0$（沒設時的預設）＝舊版行為。
-判讀：可行範圍 ≥ 1 dB → 可以；有但不到 1 dB → 勉強；沒有 → 不夠（不給參數，表上列出
-每一組最多判對幾趟、卡在哪一趟）。寫回時會在 `config.json` 記下 `gate_calibration_source`。
+**目前的值**（11-16 校正）：max 估計量、$W$ = 1.0 秒、$H$ = 4.0 dB、$R_{\min}$ = −68.1 dBm、$n_c$ = 3、$T_c$ 未設（0）、門內偏移 +1.9 dB。
+用新版（有 $T_c$ 網格與記錄檢查）重算同一份錄音，建議 $W$ = 2.0 秒、$H$ = 4.5 dB、$R_{\min}$ = −61.9 dBm、門內偏移 +2.1 dB（勉強，範圍 0.75 dB）；
+現在的參數在 11-16 之後 9 份記錄裡有 3 份會來回跳，建議參數 0 份。見〈一分鐘現況〉待辦 1。
 
-**為什麼改成真的走過門口**（2026-10-28）：上一版是 5 個位置各靜止 15 秒，再把 5 段接起來
-當成「走過門口」重播——等於假設推車在每個位置停 15 秒，判定有充分時間跟上，所以很寬鬆。
-拿同一份實測資料、改成每個位置只停 1 秒（接近真的推車速度）重播，上一版建議的參數
-（p75、1.5 秒、遲滯 9 dB）進場 15 次只判出 5 次、出場只判出 4 次。直接錄真的走過門口，
-判定跟不跟得上就是錄音裡實際發生的事，不用再假設停留時間。
+### 記錄與事後分析
 
-**靜止剖面**（`--survey`）保留下來看佈署形狀，不挑參數：沿行進方向站門外 1 m、門外
-50 cm、門檻線、門內 50 cm、門內 1 m，每個位置 15 秒（開始前清空佇列），印出各位置
-濾波後的強度、差分、σ、封包率，並指出哪一側的平台不夠寬、門檻線雜訊太大。存在
-`data/gate_survey/<時間>/`。改擺法、遮罩之前跑一次、之後再跑一次比較。
-
-#### 記錄檔與事後分析
-
-執行期每次啟動都會自動記錄：`data/gate_logs/<日期>/<時間>_app.csv`（`run_real_hardware_flow`
-是 `_flow`、`--monitor` 是 `_monitor`）。每一筆 BLE 觀測一行：時間、哪一顆、原始 RSSI、
-當下航向、平滑值、差分、判定側、事件；旁邊的 `.meta.json` 記錄當時的全部參數。
-大約每小時 2~3 MB。寫入失敗只會印一次警告、停止記錄，門口判定照常。
+app 每次啟動自動記錄 `data/gate_logs/<日期>/<時間>_app.csv`（`--monitor` 是 `_monitor`）：每一筆 BLE 觀測一行（時間、哪一顆、原始 RSSI、航向、平滑值、差分、判定側、事件），
+旁邊的 `.meta.json` 記下當時的全部參數。每小時約 2~3 MB，不進版控。寫入失敗只警告一次、停止記錄，判定照常。
 
 ```bash
 python3 -m tools.analyze_gate_log                    # 最新一份
 python3 -m tools.analyze_gate_log --events           # 每個事件前後的差分值
-python3 -m tools.analyze_gate_log --set hysteresis_dbm=6 --set smoothing_sec=1.5   # 換參數重播
+python3 -m tools.analyze_gate_log <檔案> --set hysteresis_dbm=6 --set smoothing_sec=1.5   # 換參數重播
 ```
 
-會印出：封包率與斷訊、當時的事件（含被航向擋下的）、**用當時參數重播的結果跟當時是否一致**、
-差分分布與各側時間比例。校正量測存在 `data/gate_calibration/<時間>/`，格式相同，
-用 `calibrate_gate_beacons --from-data` 重算。
+會印出封包率與斷訊、當時的事件、**用當時參數重播是否跟當時一致**（一致才代表事後看到的就是當時發生的）、差分分布、各側時間比例、來回跳次數。
 
-> 校正前 `ui/app_gui.py` 啟動時會印警告（兩顆偏移量都是 0＝沒校正過）。
-> **發射功率不要調到最低**：2026-10-28 實測 ESP32 設在 −12 dBm 時，在 2.6 m 遮擋側就
-> 掉到接收極限附近，每秒只收到 3.5 包、30 秒內斷訊 4 次；改回 +9 dBm 後恢復 7 包/秒、
-> 沒有斷訊。指向性遮罩加上絕對門檻已經把有效範圍侷限在門口，不需要再靠降功率。
-
-**驗證狀態**：判定規則見 `tests/test_gate_monitor.py`、`tests/test_gate_model.py`
-（即時 = 重播 = 記錄檔重播），校正見 `tests/test_calibrate_gate_beacons.py`。
-`drivers/ble_beacon_scanner.py` 已在真的 Beacon 上跑過（2026-10 多次實測，數據在
-`data/beacon_shield/`）；偏移量、遲滯、絕對門檻要在門口現場用校正工具定。
+`--survey` 量 5 個位置的靜止剖面（門外 1 m、50 cm、門檻線、門內 50 cm、1 m，各 15 秒），印各位置的強度、差分、σ、封包率，指出哪一側平台不夠寬。
+改佈署前後各跑一次比較，存在 `data/gate_survey/<時間>/`。
 
 ---
 
-## 硬體環境與踩過的坑
+## 校正總覽
 
-### 1. 關閉 Serial Console，確認硬體 UART 節點
+三個校正工具（秤重、光流與航向、門口）同一套做法：
 
-```bash
-sudo raspi-config   # Interface Options -> Serial Port -> login shell: No, hardware enabled: Yes
-```
+1. **錄原始資料**：每一筆感測器讀數都存，標上「這時候在做哪一步」（`data/<種類>_calibration/<時間>/`）。
+2. **用執行期同一份程式重播**：秤重丟進 `CartStateMachine`、光流丟進 `OdometryEngine`、門口丟進 `GateDecision`，看實際行為對不對，不用公式推「應該夠」。
+3. **印判讀**（可以／勉強／不夠）、建議值與原本的值，問過才寫回，並記下用了哪一份錄音（`*_calibration_source`），之後可以 `--from-data` 重算。
 
-確認 `/boot/firmware/config.txt` 有 `dtparam=uart0=on`。
+| # | 指令 | 定出的參數 | 準備 |
+|---|---|---|---|
+| 1 | `python3 -m tools.calibrate_weight` | `weight.hx711_offset`、`hx711_scale`、`unscanned_change_threshold_g`、`settle_window_sec`、`settle_band_g` | 已知重量的砝碼（至少兩種） |
+| 2 | `python3 -m tools.product_admin edit <條碼>` | 每個商品的標準重量與容差 | scale 改了就要重秤 |
+| 3 | `python3 -m tools.calibrate_gate_beacons` | 門口參數（見〈門口進出場判定〉） | Pi 裝在推車上的最終位置 |
+| 4 | `python3 -m tools.calibrate_optical_flow` | `odometry.*`（見〈定位：里程計〉） | 地上一條量好長度的直線（≥ 3 m） |
+| — | `python3 -m drivers.camera_stream --calibrate` | 相機內參 | 已完成（reprojection error 0.2026），鏡頭沒換不用重做 |
 
-**不要假設 `/dev/serial0` 就是接腳 8/10 那組 UART。** 本專案實測過的 Pi 5
-（RP1 架構）上 `/dev/serial0` 指到 `ttyAMA10`，跟 GPIO14/15 無關；真正對應接腳的是
-`/dev/ttyAMA0`。用 loopback 驗證：
+### 秤重（`tools/calibrate_weight.py`，計算在 `core/shopping/weight_calibration.py`）
 
-```bash
-# 用杜邦線短接 GPIO14(pin 8, TXD) 和 GPIO15(pin 10, RXD)
-python3 -c "
-import serial, time
-s = serial.Serial('/dev/ttyAMA0', 115200, timeout=1)
-s.write(b'hello\n'); time.sleep(0.1); print(s.read(10))
-"
-# 應該印出 b'hello\n'
-```
-
-每台 Pi / 每次重新燒錄系統都建議重新驗證一次。
-
-### 2. 安裝依賴
-
-```bash
-python3 -m venv --system-site-packages venv   # --system-site-packages 讓 picamera2 可見
-source venv/bin/activate
-pip install -r requirements.txt
-sudo apt update && sudo apt install -y python3-picamera2 --no-install-recommends
-
-# pywebview 在 Pi 上如果說找不到 GTK/WebKit：
-sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1
-# （找不到 4.1 這個套件名稱的話改試 gir1.2-webkit2-4.0）
-```
-
-**venv + sudo 陷阱**：`sudo python3 ...` 預設不繼承目前 shell 的 `PATH`，會跑到系統的
-`/usr/bin/python3` 而不是 venv 裡那個，導致明明裝過的套件卻報錯找不到。正確用法：
-
-```bash
-sudo venv/bin/python3 -m drivers.barcode_scanner --list
-# 或 sudo -E python3 ...（-E 保留環境變數，前提是已 activate venv）
-```
-
-> 注意：`ui/app_gui.py` 本身不需要 sudo——只要使用者在 `input` 群組裡就好
-> （`sudo usermod -aG input $USER`，做一次、重新登入生效）。上面這個 venv 陷阱
-> 只在你真的要用 `sudo` 單獨測 `drivers.barcode_scanner` 時才會遇到。
-
-### 3. 接線
-
-MCU TX → Pi GPIO15/RXD (pin 10)，MCU RX ← Pi GPIO14/TXD (pin 8)，兩板共地。
-
-### 4. 硬體防護
-
-- 裝主動式散熱模組（Phase 3 的即時積分運算對時序穩定度敏感）。
-- 測試廣角相機排線最大穩定長度，評估是否需要 CSI 轉接延長。
-- PMW3901 SPI 長距離佈線：若訊號不穩，MCC 端可考慮把 SPI 時脈從 1MHz 降到 500kHz
-  ——**這是 MCC 產生的檔案，要先在 MCC GUI 裡改，不要直接動生成檔案。**
-
-### 條碼掃描器踩過的坑
-
-這幾個都是 `drivers/barcode_scanner.py` 的，已經修好了，記錄原因供換掃描器時參考：
-
-1. **`evdev.InputDevice` 沒有 `set_nonblocking()` 這個方法**——`python-evdev` 開啟裝置時
-   就已經用 `O_NONBLOCK` 開檔案描述符，不需要（也沒有）這個方法可呼叫。
-2. **`device.grab()` 會讓某些掃描器的 Caps Lock LED 交握卡死**：這台掃描器送出真正的
-   條碼字元前，會先按一次 Caps Lock「詢問」作業系統目前的大小寫 LED 狀態，
-   並期待作業系統把狀態 echo 回裝置才會繼續送資料。這個 echo 正常由 Linux 核心的
-   `kbd`/`leds` handler 處理，但 `grab()` 把裝置獨佔之後核心 handler 就收不到事件，
-   echo 斷掉，裝置誤以為沒人回應、不斷重試（症狀：一刷條碼就每隔 ~50ms 狂閃 Caps Lock，
-   直到程式 `ungrab()` 才瞬間把資料送出）。修法是自己呼叫
-   `device.set_led(ecodes.LED_CAPSL, ...)` 模擬核心原本會做的 LED echo。
-3. **大小寫判斷不能只看 Shift**：這台掃描器實測是拿 Caps Lock 開關本身當大小寫切換
-   （不是每次都送 Shift），所以判斷要同時考慮 Shift 和追蹤到的 Caps Lock 狀態
-   （標準鍵盤語意：兩者是 XOR，同時開會互相抵銷）。
-4. **鍵碼不固定**：同一台掃描器有時用小鍵盤鍵碼（`KEY_KP0`~`KEY_KP9`）送數字、
-   有時用標準數字鍵（`KEY_0`~`KEY_9`），對照表兩種都要涵蓋。
-
-診斷新型號掃描器時用 `--debug` 看原始事件（含 `EV_MSC`/`MSC_SCAN` 這個翻譯前的
-原始 HID scancode，比翻譯後的鍵碼更可靠），不要用猜的加鍵碼對照：
-
-```bash
-sudo venv/bin/python3 -m drivers.barcode_scanner --list
-sudo venv/bin/python3 -m drivers.barcode_scanner --device-hint "USBKey" --debug
-```
-
-實測這台 Pi 5 上的裝置名稱是 `USBKey Chip USBKey Module`（`/dev/input/event4`），
-已寫入 `config.json` 的 `barcode_scanner.device_name_hint = "USBKey"`。
-
-### 相機踩過的坑
-
-```bash
-python3 -m drivers.camera_stream --color-test      # 驗證色彩通道順序（拍照肉眼比對）
-python3 -m drivers.camera_stream --calibrate --num-images 15 --square-size-mm 24
-python3 -m drivers.camera_stream --preview
-```
-
-1. **picamera2 的 stream 設定路徑會影響實際輸出**：一開始用 `create_video_configuration()`，
-   畫面顏色不對（藍色顯示成橘紅色）；改用 `preview_configuration`
-   （`main.format = "RGB888"` + `align()` + `configure("preview")`）之後顏色正常。
-   現在全部統一用這條路徑。如果之後又遇到顏色不對，先用 `--color-test` 拍照肉眼驗證，
-   不要用猜的加減轉換。
-2. **校正預覽視窗需要能開視窗的畫面環境**：純文字 SSH 開不了視窗會自動退回無預覽模式，
-   不會讓校正失敗；也可以主動加 `--no-window`。
-3. **`qt.qpa.plugin: Could not find the Qt platform plugin "wayland"` 跟字型警告是無害的**。
-4. **相機目前是倒吊測試的，不影響校正**：`camera_matrix`/`dist_coeffs` 是鏡頭本身的
-   光學特性，跟安裝角度無關，`findChessboardCorners` 也不在意畫面方向。
-   等正式安裝角度確定後如果需要正的畫面，用 `cv2.rotate()` 處理方向即可，不用重新校正。
-
-**已完成校正**：`vision/camera_calibration.npz` 已產生，reprojection error = **0.2026**
-（遠低於 1.0 的可接受門檻）。
-
-**一個已知的健壯性缺口**：`CameraStream._run_loop()` 沒有 try/except，
-`capture_array()` 一旦拋例外執行緒會靜默死亡，而 `_frame_ready` 已經 set 且不會 clear，
-於是 `get_latest_frame()` 會一直成功回傳同一張**過期影格**，上層無從察覺相機已掛。
-`UartReceiver` 有 `is_stale()` 可以判斷，`CameraStream` 沒有對應機制。Phase 6 真的
-開始用相機之前應該補上。
-
-### 5. 觸控畫面花屏（WebKitGTK 的 DMA-BUF）
-
-**症狀**：`python3 -m ui.app_gui` 開起來整個畫面花掉，程式本身正常、沒有任何錯誤訊息。
-
-**環境**：Pi 5、Debian 13 (trixie)、labwc（Wayland）、螢幕直接接 DSI-1、Mesa 26.2.2、
-WebKitGTK 2.54.0——都是 2026-10-29 當時 `apt upgrade` 的最新版。
-
-**實測**（用 pywebview 直接開一張設計稿，不經過 app，逐一切換環境變數）：
-
-| 組 | 設定 | 結果 |
+| 步驟 | 段落 | 用途 |
 |---|---|---|
-| A | `WEBKIT_DISABLE_COMPOSITING_MODE=1` + `WEBKIT_DISABLE_DMABUF_RENDERER=1` | 正常 |
-| B | 只有 `WEBKIT_DISABLE_COMPOSITING_MODE=1` | 花屏 |
-| C | 只有 `WEBKIT_DISABLE_DMABUF_RENDERER=1` | 正常 |
-| D | 全部預設 | 花屏 |
-| E | `GDK_BACKEND=x11`（改走 Xwayland） | 正常 |
-| F | `LIBGL_ALWAYS_SOFTWARE=1`（不用 GPU） | 正常 |
+| 空秤靜止 8 秒 | `zero_start` | 零點、靜止雜訊 |
+| 放砝碼靜止，可放好幾次 | `load_1`… | 最小平方擬合、看線性 |
+| 全部拿掉靜止 | `zero_end` | 零點漂移 |
+| 空籃推車 20 秒 | `push_empty` | 推車震動 → 未掃碼門檻 |
+| 掃碼後放入砝碼 ×3 | `drop_1`… | 重播「掃碼 → 放入」，挑穩定窗 |
 
-令 $D$ = DMA-BUF 開、$G$ = 硬體 GPU（V3D）、$W$ = Wayland 原生，六組都符合
+令 $r$ = HX711 原始讀數（count）、$m$ = 砝碼質量（g），擬合
 
-$$
-\text{花屏} \iff D \land G \land W
-$$
+$$r = a + b\,m,\qquad w = \frac{r - a}{b}$$
 
-B、D 只差合成模式、都花屏，所以跟合成模式無關。DMA-BUF 是 WebKitGTK 2.42 起的預設
-（網頁行程跟 UI 行程直接共用 GPU 記憶體，少一次複製），要整條驅動鏈對記憶體排列的
-理解一致才不會出錯；V3D 驅動 + labwc 這個組合在當時的最新版上仍然不一致。
+$a$ = `hx711_offset`（空秤讀數）、$b$ = `hx711_scale`（count/g）、$w$ = 換算後的重量（g）。比對只看重量**變化**，所以準不準取決於 $b$；$a$ 只影響顯示的絕對重量。
 
-**做法**（`ui/app_gui.py` 開頭的 `_RENDER_ENV`）：採用 C——關 DMA-BUF、合成模式保持
-預設（網頁由 GPU 繪製）。而且是**強制設定**：啟動時把終端機殘留的其他 `WEBKIT_*`、
-`GDK_BACKEND`、`LIBGL_ALWAYS_SOFTWARE` 等全部清掉並印出提醒，不管在哪個終端機跑都是
-同一條繪圖路徑（`tests/test_app_gui_bridge.py` 第 19 項檢查）。改用 VNC 看畫面又花屏
-時，在 `_RENDER_ENV` 加 `"WEBKIT_DISABLE_COMPOSITING_MODE": "1"`（＝A，改 CPU 繪製）。
+- **靜止點用中位數**，雜訊用 $\sigma = 1.4826\,\mathrm{MAD}$（MAD = 與中位數差的絕對值的中位數）：11-16 錄的時候手還壓著砝碼，平均值被拉偏 8.7 g、標準差變成 29 g，中位數不受影響。
+- **未掃碼門檻**：令 $\sigma_s$ = 靜止時單筆讀數的標準差（g）、$T_{\min}$ = 把推車讀數丟進狀態機重播、不會誤報的最小門檻（g）、$T_{\text{floor}}$ = 人為下限（`--t-floor`，預設 10 g），
 
-要重做這個實驗，不用改 app：
+$$T = \max\left(\lceil 1.5\,T_{\min}\rceil,\ \lceil 6\,\sigma_s \rceil,\ T_{\text{floor}}\right)$$
 
-```bash
-cd ~/SmartCartPi5
-T="import webview; webview.create_window('t','file://$PWD/design-cart-ui/Shopping.dc.html',width=720,height=1280); webview.start()"
-WEBKIT_DISABLE_DMABUF_RENDERER=1 python3 -c "$T"     # 換成上表各組的設定
-```
+  實測推車震動只有 0.3 g，前兩項都只有 2~3 g，所以由 $T_{\text{floor}} = 10$ g 決定（手扶籃子、掛購物袋不該觸發）——這一項是取捨，不是量出來的。
+- **穩定窗**：$B_s = \max(2, \lceil 6\,\sigma_s \rceil)$；$W_s$ 從 0、0.2、…、1.0 秒試，用放入錄音重播，取全部正常的最小值。
+- `--quick`：只做空秤、砝碼、拿掉（秤台沒動、只想重定 scale），門檻沿用原本的。
+- 11-16 實測：198 g 與 581 g 各自的增量相加跟兩個一起放（779 g）只差 0.7 g，秤是線性的；`20261116-193855` 寫回 $a$ = −331970.43、$b$ = 397.392 count/g、$T$ = 10 g、$W_s$ = 0.3 秒、$B_s$ = 3 g。
+- 驗證：`python3 -m tools.verify_weight`。
+
+### 光流與航向（`tools/calibrate_optical_flow.py`，計算在 `core/positioning/flow_calibration.py`）
+
+靜止 5 秒 → 沿直線直推 3 趟（距離 $D$）→ 往車子左側橫推（選做）→ 原地左轉 90°。
+
+- $k = D / \lVert S \rVert$，$S = (\sum dx, \sum dy)$ 是一趟的累積位移，各趟平均；**不濾離群值**（執行期也不濾）。
+- $\varphi$：直推時感測器量到的方向角（各趟的圓形平均）。
+- $m$：側推方向在直推方向 −90° 時為鏡像。
+- $\sigma$：原地左轉時 yaw 增加為 +1。
+- 算好之後每一趟丟進 `OdometryEngine` 重播，比較距離與方向。11-16：三趟 $k$ 的變異係數 1.8%、方向分散 0.8°、原地左轉量到 91°。
 
 ---
 
-## UART 封包格式 v2（2026-09-01，新增 squal 欄位）
+## 設定檔 `config.json`
+
+底線開頭的鍵是給人看的註解。讀寫都經過 `core/config.py`；校正工具只改自己的那幾個鍵，其他欄位與註解保留。
+
+| 區塊 | 鍵 | 意義 | 目前 |
+|---|---|---|---|
+| `serial` | `port`、`baudrate` | UART（一定是 `/dev/ttyAMA0`，不是 `/dev/serial0`） | `/dev/ttyAMA0`、115200 |
+| | `timeout_sec`、`reconnect_backoff_sec` | pyserial 讀取逾時、斷線重連間隔 | 1.0、2.0 秒 |
+| `uart_protocol` | `stale_data_timeout_sec` | 多久沒封包算斷線 | 0.5 秒 |
+| `weight` | `hx711_offset`、`hx711_scale` | 讀數 → 公克 | 11-16 校正 |
+| | `weight_match_timeout_sec`、`unscanned_change_timeout_sec` | 比對、未掃碼逾時 | 5、8 秒 |
+| | `unscanned_change_threshold_g` | 未掃碼門檻 $T$ | 10 g |
+| | `settle_window_sec`、`settle_band_g` | 穩定窗 $W_s$、$B_s$ | 0.3 秒、3 g |
+| `odometry` | `optical_flow_px_to_mm`、`flow_rotation_deg`、`flow_mirror`、`yaw_sign` | 里程計 $k$、$\varphi$、$m$、$\sigma$ | 11-16 校正 |
+| `landmarks` | `points[]` | 每顆 Beacon 的 `beacon_id`、`address`、`rssi_offset_db` | 門內 +1.9、門外 0 |
+| | `gate_beacon_pair` | 哪顆是門內、哪顆是門外 | |
+| | `rssi_estimator`、`rssi_smoothing_sec`、`rssi_min_samples` | 估計量、$W$、最少樣本 | max、1.0 秒、3 |
+| | `gate_hysteresis_dbm`、`gate_min_crossing_rssi_dbm` | $H$、$R_{\min}$ | 4.0 dB、−68.1 dBm |
+| | `gate_min_confirm_samples`、`gate_min_confirm_sec` | $n_c$、$T_c$ | 3、未設（0） |
+| | `gate_exit_yaw_deg`、`gate_heading_tolerance_deg` | 航向交叉驗證 | `null`（不啟用） |
+| `state_machine` | `login_barcode_prefix`、`staff_barcode_prefix` | 會員碼、工作證前綴 | `MEMBER-`、`STAFF-` |
+| | `zone_entry_timeout_sec`、`shopping_idle_timeout_sec`、`exit_timeout_after_checkout_sec` | 提醒用逾時 | 120、600、180 秒 |
+| `camera` | `resolution`、`format`、`framerate`、`calibration_file` | 相機（內參在這個解析度下量的） | 1280×720、RGB888、30 |
+| `store` | `unit_m` | 平面圖一格幾公尺（**必填，沒預設值**） | 未填（場地鋪完後量） |
+| | `slots`、`shelves`、`anchor`… | 覆蓋預設平面圖（見 `core/store/layout.py`） | 用預設 |
+| `vision` | `anchor_marker_id`、`anchor_marker_size_m`、`camera_height_m` | 定位點標記、相機高度；其他見 `core/config.py` 的 `VISION_DEFAULTS` | 0、0.15 m、0.5 m |
+| `barcode_scanner` | `device_name_hint`、`key_timeout_sec` | 掃描器名稱關鍵字、一次掃碼的按鍵間隔上限 | `USBKey`、0.1 秒 |
+
+---
+
+## UART 封包格式 v2
 
 ```
 $SDK,<dx>,<dy>,<squal>,<yaw_deg>,<pitch_deg>,<roll_deg>,<hx711_raw>*<CS>\r\n
 ```
 
-`squal` 是 PMW3901 的追蹤信心值（0-255），欄位數從 7 個變成 8 個。
+| 欄位 | 型別 | 意義 |
+|---|---|---|
+| `dx`、`dy` | int | PMW3901 這一輪的相對位移（count） |
+| `squal` | int | PMW3901 追蹤品質 0~255 |
+| `yaw_deg`、`pitch_deg`、`roll_deg` | float | BNO080 姿態角（度，1 位小數）；yaw 是相對航向 |
+| `hx711_raw` | int | HX711 原始 ADC 值 |
+| `CS` | hex | `$` 與 `*` 之間所有字元的 XOR（NMEA 算法），2 位十六進位 |
 
-**跟舊版不相容**：新舊版互相收到對方的封包都會被判定成「欄位數量不符」直接整包丟棄，
-不是靜默解析錯誤——如果封包每包都被丟、log 一直印「欄位數量或 ID 不符」，
-先確認 Pi 端與 MCU 端的封包格式版本是不是對不起來。
-
-測試 UART：
-
-```bash
-python3 -m drivers.uart_receiver --port /dev/ttyAMA0      # 看即時封包
-python3 -m drivers.uart_receiver --csv-log                # 開 CSV logger 收訓練資料
-```
-
-**還沒做但值得考慮**：光流校正工具目前的離群值過濾用的是統計方法（MAD），
-這是因為原本封包沒有信心值可以參考。現在有了 `squal`，理論上可以直接用
-「這筆信心值太低就丟掉」取代/輔助統計濾波，會比較準。
+MCU 20 Hz 固定送出（沒有新資料就重送上一次的值）；8N1、115200。2026-09-01 加了 `squal`，從 7 欄變 8 欄，跟舊版不相容：
+每包都被丟、記錄一直印「欄位數不對」，就是 Pi 與 MCU 的格式版本對不上。用 `python3 -m drivers.uart_receiver` 看封包與每秒統計。
 
 ---
 
-## 校正
+## 硬體環境與踩過的坑
 
-2026-11-16 全部裝上推車後重新校正。三個校正工具（秤重、光流與航向、門口）用**同一套做法**：
+### UART 節點
 
-1. **錄原始資料**：每一筆感測器讀數都存下來，並標上「這時候在做哪一步」
-   （`data/<種類>_calibration/<時間>/samples.csv` + `.meta.json`；門口用 `observations.csv`）。
-2. **用執行期同一份程式重播**：秤重丟進 `CartStateMachine`、光流丟進 `OdometryEngine`、
-   門口丟進 `GateDecision`，看實際行為對不對，而不是用公式推「應該夠」。
-3. **印判讀**（可以／勉強／不夠）、建議值與原本的值，問過才寫回 `config.json`，並記下用了哪一份錄音
-   （`*_calibration_source`），之後可以用 `--from-data` 重算。
-
-**建議順序**（後面的步驟用得到前面的結果）：
-
-| # | 指令 | 定出的參數 | 要準備的東西 |
-|---|---|---|---|
-| 1 | `python3 -m tools.calibrate_weight` | `weight.hx711_offset`、`hx711_scale`、`unscanned_change_threshold_g` | 標準砝碼（至少兩種重量） |
-| 2 | `python3 -m tools.product_admin edit <條碼>` | 每個商品的 `standard_weight_g`、`weight_tolerance_g` | scale 改了，舊的商品重量都要重秤 |
-| 3 | `python3 -m tools.calibrate_gate_beacons` | 門口的估計量、窗口、確認筆數、偏移、遲滯、絕對門檻 | Pi 裝在推車上的最終位置 |
-| 4 | `python3 -m tools.calibrate_optical_flow` | `odometry.optical_flow_px_to_mm`、`flow_rotation_deg`、`flow_mirror`、`yaw_sign` | 地上一條量好長度的直線（≥ 3 m） |
-
-每一支都可以先加 `--dry-run` 只看不寫。
-
-| 參數 | 狀態 |
-|---|---|
-| `landmarks.gate_exit_yaw_deg` | **不適用，維持 `null`**：BNO080 送上來的是相對航向（開機為 0），同一個出場方向每次開機的 yaw 都不同。要做航向驗證得改成相對判斷（出場時跟進場時差約 180°），還沒做 |
-| `landmarks.points[].x_mm/y_mm` | Phase 7 店面地圖定案後再量 |
-| 相機內參 | 已完成（error 0.2026），鏡頭沒換就不用重做 |
-
-### 秤重（`tools/calibrate_weight.py`，計算在 `core/weight_calibration.py`）
-
-| 步驟 | 段落 | 用途 |
-|---|---|---|
-| 空秤靜止 8 秒 | `zero_start` | 零點、靜止雜訊 |
-| 放砝碼靜止，可放好幾次 | `load_1`… | 最小平方 $r = a + b\,m$，看線性 |
-| 全部拿掉靜止 | `zero_end` | 零點漂移（潛變、機構沒回位） |
-| 空籃推車 20 秒 | `push_empty` | 推車震動 → 未掃碼門檻 |
-| 掃碼後放入砝碼 ×3 | `drop_1`… | 重播「掃碼 → 放入」，看會不會誤判 |
-
-$r$ 是 HX711 原始讀數，$m$ 是砝碼質量（g），$a$ = `hx711_offset`、$b$ = `hx711_scale`（count/g）。
-秤重比對只看放入前後的**重量變化**，所以決定準不準的是 $b$；$a$ 只影響顯示的絕對重量。
-
-- **靜止點用中位數**，雜訊用 $\sigma = 1.4826\,\mathrm{MAD}$：2026-11-16 第二次錄的時候手還壓著砝碼，
-  平均值被拉偏 8.7 g、標準差變成 29 g，門檻跟著被算成 87 g；改中位數後不受影響，並會提示「這段還沒放穩」。
-- **未掃碼門檻 $T$**：把推車時的讀數丟進狀態機重播，找出不會誤報「未掃碼的重量變化」的最小 $T_{\min}$，
-  $T = \max(\lceil 1.5\,T_{\min} \rceil,\ \lceil 6\sigma_s \rceil,\ T_{\text{floor}})$。實測推車震動只有 0.3 g，
-  前兩項都只有 2~3 g，所以實際由人為下限 $T_{\text{floor}} = 10$ g 決定（手扶籃子、掛購物袋不該觸發）——這一項是取捨，
-  不是量出來的，可用 `--t-floor` 改。比 $T$ 輕的商品不掃碼放進去偵測不到，工具會列出來。
-- `--quick`：只做空秤、砝碼、拿掉三步（秤台沒動、只想重定 scale 時用），門檻沿用原本的。
-- **等讀數穩定才比**（`weight.settle_window_sec` $W_s$、`settle_band_g` $B_s$，2026-11-16 加進 `CartStateMachine`）：
-  原本每一筆讀數都直接比，放入時讀數衝過頭再回來，剛好經過容差的那一筆就被判加入，之後的晃動又被當成
-  「未掃碼的重量變化」。現在只用穩定值：最近 $W_s$ 秒的讀數 $\max - \min \le B_s$ 時取中位數。
-  $B_s = \max(2, \lceil 6\sigma_s \rceil)$；$W_s$ 從 0、0.2 … 1.0 秒試，用放入錄音重播，取全部正常的最小值再多一格餘裕。
-  實測（`20261116-193855`）：不等時 0/3 趟正常，$W_s = 0.2$ 秒起 3/3，選 0.3 秒，加入約在掃碼後 2.1 秒。
-  `settle_window_sec = 0`（沒設時的預設）＝舊版行為。
-- **砝碼疊加測試**（2026-11-16）：198 g、581 g 各自的讀數增量相加，跟兩個一起放（779 g）只差 0.7 g，
-  秤是線性的；「198 g」那組砝碼實際約 195 g。
-- **放入測試**：商品重量 = 砝碼重量、容差 10%（跟 `product_admin` 自動容差一樣），看是不是
-  正常加入。若判成「重量不符」，代表放入的衝擊超過容差上限——這是比對邏輯要改成「等讀數穩定再比」，
-  不是校正參數能解決的（offset、scale 仍然可以寫回）。
-
-### 光流與航向（`tools/calibrate_optical_flow.py`，計算在 `core/flow_calibration.py`）
-
-靜止 5 秒 → 沿直線直推 3 趟（距離 $D$）→ 往車子左側橫推（選做）→ 原地左轉 90°。
-
-- $k$ = `optical_flow_px_to_mm` $= D / |S|$，$S = (\sum dx, \sum dy)$ 是一趟的累積位移，各趟平均；
-  **不濾離群值**，跟執行期的 `OdometryEngine` 一致（離群值筆數會列出來）。
-- 安裝角 $\varphi$ = `flow_rotation_deg`：直推時感測器量到的方向角。PMW3901 的軸跟車身不一定對齊。
-- 鏡像 `flow_mirror`：側推方向在直推方向 $-90^\circ$ 時為 true（從下往上看地板，軸會左右顛倒）。
-- `yaw_sign`：原地左轉（逆時針）時 yaw 增加為 +1。
-- 這四個值算好之後，每一趟原始封包都丟進 `OdometryEngine` 重播，比較推出來的距離與方向。
-
-`core/odometry_engine.py` 的座標約定（2026-11-16 改）：車身座標 前方 $f$、左方 $l$；
-
-$$
-s = (dx,\ m\,dy),\quad
-\begin{bmatrix} f \\ l \end{bmatrix} =
-\begin{bmatrix} \cos\varphi & \sin\varphi \\ -\sin\varphi & \cos\varphi \end{bmatrix} s,
-\quad \psi = \text{yaw\_sign} \cdot \text{yaw\_deg}
-$$
-
-$m = -1$ 表示鏡像。舊版直接把 $(dx, dy)$ 當成（前、右）又用逆時針旋轉，左右是反的；這三個參數沒設時
-（$\varphi = 0$、$m = +1$、yaw_sign $= +1$）行為跟舊版相同。
-
-### 驗證（只讀不寫）
+**不要假設 `/dev/serial0` 就是 pin 8/10 那組 UART。** 這台 Pi 5（RP1）上 `/dev/serial0` 指到 `ttyAMA10`，跟 GPIO14/15 無關，真正對應接腳的是 `/dev/ttyAMA0`。
+每台 Pi、每次重燒系統都用 loopback 驗證一次：
 
 ```bash
-python3 -m tools.verify_weight          # 砝碼抽驗
-python3 -m tools.verify_optical_flow    # 推一段已知距離
-python3 -m tools.track_odometry         # 推任意路線，畫軌跡、跟捲尺量的終點比（見「行駛軌跡視覺化」）
+# 杜邦線短接 GPIO14（pin 8, TXD）與 GPIO15（pin 10, RXD）
+python3 -c "import serial,time; s=serial.Serial('/dev/ttyAMA0',115200,timeout=1); s.write(b'hello\n'); time.sleep(0.1); print(s.read(10))"
+# 應該印出 b'hello\n'
 ```
 
-**MCU 端已知修正**：PMW3901 之前發現會有休眠現象，導致那段時間的 `dx`/`dy` 遺失或不準；
-下位機已經加上看門狗重置修正。這是韌體端的修正，Pi 端不用改，但代表這個修正之前
-如果跑過光流校正，那些結果可能受過休眠影響、不完全準。
+接線：MCU TX → Pi GPIO15/RXD（pin 10），MCU RX ← Pi GPIO14/TXD（pin 8），兩板共地。
+
+### venv 與 sudo
+
+`sudo python3 ...` 不繼承 shell 的 PATH，會跑到系統的 `/usr/bin/python3`，明明裝過的套件卻找不到。要用 `sudo venv/bin/python3 -m ...`。
+app 本身不需要 sudo，只要使用者在 `input` 群組裡。
+
+### 條碼掃描器（`drivers/barcode_scanner.py`）
+
+1. `device.grab()` 會讓這台掃描器的 Caps Lock LED 交握卡死：它送字元前會先按一次 Caps Lock 詢問大小寫狀態，等作業系統把 LED 狀態回送；grab 之後核心收不到事件、不回送，
+   掃描器就一直重試（症狀：一刷就狂閃 Caps Lock，直到 ungrab 才把資料送出）。修法是自己呼叫 `device.set_led(LED_CAPSL, ...)` 回送。
+2. 大小寫不能只看 Shift：這台用 Caps Lock 開關切大小寫，判斷要用 Shift XOR Caps Lock。
+3. 同一台有時送小鍵盤鍵碼（`KEY_KP0`~`KEY_KP9`）、有時送數字鍵（`KEY_0`~`KEY_9`），對照表兩種都有。目前涵蓋數字、英文字母、`- . /`；條碼有其他符號時用 `--debug` 看原始鍵碼（含翻譯前的 `MSC_SCAN`）再補。
+4. 實測裝置名稱 `USBKey Chip USBKey Module`（`/dev/input/event4`）→ `device_name_hint = "USBKey"`。
+
+### 相機（`drivers/camera_stream.py`、`drivers/front_camera.py`）
+
+1. **picamera2 的設定路徑會影響輸出**：用 `create_video_configuration()` 時顏色不對（藍變橘紅），改用 `preview_configuration` + `align()` 正常。全專案統一這條路徑（棋盤格校正也是，內參才對得上）。
+2. 一顆 CSI 相機同時只能被一個 `Picamera2` 打開，所以全專案只有 `CameraStream` 開相機。
+3. 前方相機：`CameraStream` 給原始影格，`front_camera.py` 轉灰階、縮到 640 寬、用預先算好的對照表去畸變（**只去一次**，所以 `solvePnP` 的畸變係數傳 0）；
+   實際影格尺寸跟 `camera.resolution` 不同時直接報錯（改解析度就要重新校正）；影格超過 1 秒沒更新就丟例外（相機斷線）。
+4. 校正的預覽視窗要有畫面環境，純文字 SSH 用 `--no-window`。`qt.qpa.plugin ... wayland` 與字型警告無害。
+5. 內參 $c_y$ = 406.6 比影像中心 360 偏 47 px；現場驗證時相機高度如果一直系統性偏高或偏低，先懷疑這個，重新校正。
+
+### 觸控畫面花屏（WebKitGTK 的 DMA-BUF）
+
+症狀：app 開起來整個畫面花掉，程式正常、沒有錯誤。環境：Pi 5、Debian 13、labwc（Wayland）、DSI-1、Mesa 26.2.2、WebKitGTK 2.54.0（10-29 當時的最新版）。
+用 pywebview 直接開設計稿、逐一切換環境變數：
+
+| 組 | 設定 | 結果 |
+|---|---|---|
+| A | 關合成 + 關 DMA-BUF | 正常 |
+| B | 只關合成 | 花屏 |
+| C | 只關 DMA-BUF | 正常 |
+| D | 全部預設 | 花屏 |
+| E | `GDK_BACKEND=x11` | 正常 |
+| F | `LIBGL_ALWAYS_SOFTWARE=1` | 正常 |
+
+令 $D$ = DMA-BUF 開、$G$ = 硬體 GPU（V3D）、$L$ = Wayland 原生，六組都符合
+
+$$\text{花屏} \iff D \land G \land L$$
+
+app 採用 C（`ui/app_gui.py` 的 `_RENDER_ENV`）：關 DMA-BUF、合成保持預設（GPU 繪製）。而且是**強制設定**——啟動時清掉終端機殘留的其他 `WEBKIT_*`、`GDK_BACKEND` 等並印出來，
+不管在哪個終端機跑都是同一條繪圖路徑。改用 VNC 又花屏時，在 `_RENDER_ENV` 加 `"WEBKIT_DISABLE_COMPOSITING_MODE": "1"`（＝A）。重做實驗：
+
+```bash
+T="import webview; webview.create_window('t','file://$PWD/design-cart-ui/Shopping.dc.html',width=720,height=1280); webview.start()"
+WEBKIT_DISABLE_DMABUF_RENDERER=1 python3 -c "$T"
+```
+
+另一個坑：pywebview GTK 版的 `evaluate_js` 把字元數當位元組數傳給 WebKit，腳本有中文就被截斷成語法錯誤、畫面停在舊狀態（11-16：會員名稱是中文時進場後畫面一直顯示等待進場）。
+推給畫面的 JSON 一律 `ensure_ascii=True`。
+
+### 其他
+
+- 裝主動散熱。
+- PMW3901 的 SPI 長線不穩時，可以把 MCU 端 SPI 時脈從 1 MHz 降到 500 kHz——那是 MCC 產生的檔案，要在 MCC GUI 改，不要直接改生成檔。
+- PMW3901 曾有休眠現象（那段時間 dx/dy 遺失），MCU 端已加看門狗重置。
 
 ---
 
 ## 測試
 
 ```bash
-python3 tests/test_app_gui_bridge.py     # 必跑：Bridge 端對端（純 Python）
-python3 tests/test_gate_model.py         # 必跑：即時判定 = 重播 = 記錄檔重播
-python3 tests/test_gate_monitor.py       # 必跑：BLE 門口判定邏輯（純 Python）
-python3 tests/test_measure_beacon_shield.py  # 遮罩量測的統計邏輯（純 Python）
-python3 tests/test_measure_beacon_rotation.py # 轉角度量測的計算邏輯（純 Python）
-python3 tests/test_calibrate_gate_beacons.py  # 門口校正的計算邏輯（純 Python）
-python3 tests/test_calibrate_weight.py        # 秤重校正（純 Python）
-python3 tests/test_calibrate_optical_flow.py  # 光流與航向校正（純 Python）
-python3 tests/test_odometry_track.py          # 行駛軌跡重播與誤差指標（純 Python）
-python3 tests/test_ui_layout.py          # 選用：14 頁版面與按鈕接線（需要 playwright）
+python3 tests/run_all.py
 ```
 
-`test_app_gui_bridge.py` 用的是跟正式運作**完全一樣**的三個硬體入口方法
-（`on_hardware_barcode` / `on_weight_sample` / `on_gate_crossing`），不是另外開一條
-測試專用的旁路。涵蓋：還沒進管制區時掃碼要被拒絕且看得見錯誤、BLE 判定進場後才
-真的開始購物、掃碼+秤重比對成功、沒有秤重讀數時掃碼被拒絕、未建檔條碼的訊息、
-會員碼/商品碼分類、先變重量再掃碼的移除流程、秤重不符與放棄、鎖定結帳→付款→
-BLE 出場→自動登出、感測器斷線恢復、精靈流程，以及警告歷史塞滿 200 筆之後錯誤
-仍要浮得上來的回歸測試。
-
-`test_gate_monitor.py` 涵蓋：方向判定、只有單邊訊號時不判定、訊號太弱不觸發、
-單筆突波被連續樣本確認擋掉、航向交叉驗證的啟用/擋下/放行三種情況、非門口
-Beacon 被忽略、RSSI 歷史不會無限成長。
-
-`test_ui_layout.py` 需要 `pip install playwright && playwright install chromium`，
-沒裝就跳過。改過 `tools/build_app_ui.py` 或設計稿之後，重跑這支最快確認有沒有弄壞。
-
-**這三支是目前僅有的自動化測試。** 專案其他部分（里程計、封包解析、校正工具）的
-測試都是開發過程中寫在暫存目錄的一次性腳本，跑完就沒有留下來。`parse_packet()`、
-`rotate_local_to_global()` 這些純函式最好測，卻一個單元測試都沒有——**這是值得
-優先補的洞**。
-
-### 實機整合測試（`tools/run_real_hardware_flow.py`）
-
-在 Phase 5 的 UI 做出來之前，這是唯一能在真推車上跑完整流程的工具。現在 UI 已經
-可以直接接真硬體了，但這支仍然有用：它會同時印出 Phase 3 的定位座標，
-而且是純終端機操作，適合站在推車旁邊一邊推一邊看數字。
-
-```bash
-python3 -m tools.run_real_hardware_flow
-python3 -m tools.run_real_hardware_flow --port /dev/ttyAMA0 --barcode-hint USBKey
-```
-
-跟 `ui/app_gui.py` 一樣，三個硬體都是硬性條件，任一接不上就結束。
-
-執行中的單字元指令——只有「本來就該由人操作」的那幾個動作，在正式產品裡這些是
-觸控螢幕上的按鈕，不是感測器：
-
-```
-l = 鎖定結帳                p = 確認付款完成
-o = 登出                    f = 強制登出（工作人員）
-r = 秤重異常時重試比對        v = 秤重異常時放棄該筆商品
-s = 印出目前完整狀態          q = 結束
-```
-
-登入/商品掃碼直接刷條碼；進出管制區直接推車通過門口（BLE 自動判定）；
-秤重比對背景自動用真實 HX711 數據跑。
-
-**建議的實機測試順序**：
-
-1. 先個別確認 UART 與掃描器本身沒問題（用「硬體環境」那章的個別驗證方式）。
-2. 跑起來，看開機訊息：UART 有沒有連上、掃描器有沒有抓到裝置。
-3. 刷會員條碼（`MEMBER-` 開頭），確認狀態從未登入轉成「等待進入管制區」。
-4. 推車通過門口，確認 BLE 判定出 `entering`、狀態轉成購物中。
-   **這是整套裡最沒把握的一步**——RSSI 門檻是照理論值先給的，第一次實測幾乎
-   一定要調。判定不出來就先跑 `python3 -m drivers.ble_beacon_scanner`，看推車
-   經過時兩顆 Beacon 的 RSSI 實際上各是多少，再回頭調 `config.json` 的
-   `gate_min_crossing_rssi_dbm`（絕對門檻）與 `gate_hysteresis_dbm`（遲滯）。
-5. 刷商品條碼，把對應重量的東西放上推車，看是不是正確判定比對成功。
-   然後**刻意測失敗情境**：不放東西（等逾時）、放錯重量、先拿起來再掃碼（移除流程）、
-   拿起來之後故意不掃碼（等 `unscanned_change_timeout_sec` 逾時，確認會跳
-   `unscanned_weight_timeout` 而不是被忽略）。
-6. `l` → `p` → 推車出場（BLE 判定 `exiting`）→ `o`，跑完一輪，確認每一步的
-   中斷/異常都有對應警告。
-7. 全程留意 `[警告]`（佔位校正值）與 `recent_alerts`。
-
-> **這一步是最有價值的實機驗證**：秤重比對的時間/誤差門檻
-> （`weight_match_timeout_sec`、`weight_tolerance_g`、`unscanned_change_threshold_g`）
-> 都是先給的合理預設值，**第一次吃真實秤重雜訊時很可能需要調整**，
-> 訊噪比跟合成測試時的假設不一定一樣。
-
-## 尚未完成的功能總表
-
-分三類：純軟體（現在就能做）、需要額外硬體但不需要組好的車、以及排在後面的 Phase。
-
-### A. 純軟體缺口，現在就能做，不需要任何額外硬體
-
-| 項目 | 說明 | 影響 |
+| 測試 | 內容 | 項目 |
 |---|---|---|
-| **店內第二個校正點** | 推車位置只在定位點對齊一次 | 逛久了累積誤差變大；要再加地標（例如貨架上的 Beacon）才能修 |
-| **多件優惠** | 只有單件折扣 | 「第 2 件 5 折」這種做不了 |
-| **常購清單** | 沒有資料表 | 載入會員資料畫面不列這一項 |
-| **自動化測試** | 只有 `tests/test_app_gui_bridge.py` | 純函式（封包解析、旋轉矩陣、RSSI 偵測器）一個單元測試都沒有 |
-| **`CameraStream` 健康檢查** | 擷取執行緒掛掉不會被上層察覺，會一直回傳過期影格 | Phase 6 用相機之前要補 |
+| `test_app_gui_bridge.py` | Bridge 端對端：整趟購物流程、17 種錯誤情境、精靈、偏好、交易、店員、健康護照、錢包、優惠、平面圖、機器視覺（合成影像）、推送、JsApi、多執行緒 | 200 |
+| `test_gate_model.py` | 門口判定：即時 = 重播 = 記錄檔重播 | 23 |
+| `test_gate_monitor.py` | 門口判定的方向、門檻、確認、航向 | 34 |
+| `test_calibrate_gate_beacons.py` | 門口校正的計算與錄音流程 | 37 |
+| `test_calibrate_weight.py` | 秤重校正 | 30 |
+| `test_calibrate_optical_flow.py` | 光流校正、座標轉換 | 27 |
+| `test_odometry_track.py` | 行駛軌跡重播與誤差指標 | 22 |
+| `test_ui_layout.py` | 14 頁版面與前端互動（要 playwright，沒裝就略過） | 33 |
 
-### B. 程式寫好了，等實體 Beacon 到手才能驗證
+測試用的都是跟正式運作**同一個入口**（例如 `Bridge.on_hardware_barcode` / `on_weight_sample` / `on_gate_crossing`），不是另開一條測試旁路。
+`test_app_gui_bridge.py` 每次只餵一筆秤重讀數，所以把穩定窗關掉（其他參數照 `config.json`）；穩定窗由 `test_calibrate_weight.py` 用真實錄音重播驗證。
 
-| 項目 | 狀態 | 要做什麼 |
-|---|---|---|
-| **BLE 門口偵測** | 2026-10-28 走過門口校正完成並寫回（p75 / 1.5 秒 / 遲滯 6 dB，8 趟全對、停門檻線 0 次誤判，反應約 1~2 秒） | `ui.app_gui` 完整流程實機驗收；日常用 `tools/analyze_gate_log` 檢查 |
-| **航向交叉驗證** | 接線完成（`GateMonitor` 會自動用 UART 的 yaw），但 `gate_exit_yaw_deg` 是 `null` 所以沒啟用 | Beacon 裝好後量一次「車子正朝門外穿越時的 yaw 是幾度」，填進 `config.json` 就會自動生效 |
-| **走道地標點** | `RssiPeakDetector` 寫好了，但沒有任何地方呼叫它 | Phase 7 才需要——要先有店面地圖跟多顆 Beacon 佈點 |
-
-### C. 排在後面的 Phase
-
-**Phase 6（`ai/`，完全未開始，只有空的 `__init__.py`，`config.json` 也沒有 AI 相關區塊）**：
-
-- **錢包管家**：預算提醒、加入後剩多少已經做了（Phase 5）；LLM 的消費分析與建議還沒有。
-- **健康護照**：標籤比對與提醒已經做了（Phase 5）；LLM 依成分給替代建議還沒有。
-- **即時優惠**：特價、搭配、依偏好推薦已經做了（Phase 5，規則式）；近效期自動偵測、LLM 推薦還沒有。
-- **異常偵測**：`uart_receiver.py` 的 CSV logger 就是為了收這個的訓練資料而做的
-  （預設關閉，`config.json` 的 `csv_logger.enabled`），但模型本身完全沒開始。
-
-**Phase 7（室內導航）**：BLE 那層現在有了，但還缺店面地圖本身的資料結構
-（貨架圖節點）跟尋路演算法（A*）的設計，這些都還沒開始。
-真要做還需要實體 Beacon 佈點與實際場地。純演算法部分（A* 本身）理論上可以先抽象地寫，
-但那比較像提前準備而不是急迫項目。
+改了校正或判定的程式之後，另外用錄音重算確認結果沒變：`calibrate_* --from-data <目錄> --dry-run`、`analyze_gate_log <檔案>`、`track_odometry --from-data <目錄>`。
 
 ---
 
-## 前身專題（大四專題.pdf）的功能取捨與 Phase 7 定位
+## 已知限制與待辦
 
-專案前身是另一份大四專題提案（YOLOv8 + 雙鏡頭 + Hailo-8L NPU 的視覺辨識路線）。
-現在的 SmartCart_Pi5 在底層方向上已經跟那份提案分道揚鑣——原因是重新蒐集/訓練
-視覺模型的成本、開發時程難以配合、YOLOv8 在 Pi5 上可能跑不動。所以：
+**限制**
 
-- **定位**改用 PMW3901 光流 dead-reckoning（不是視覺 SLAM）。
-- **防損驗證**改用「掃碼 + HX711 秤重比對」（不是視覺辨識）。
+- **推車位置只在定位點對齊一次**，之後靠里程計累積；店裡沒有第二個校正點，路線固定是「門 → 定位點 → 貨架」，不會依目前位置重新規劃。
+- **相機視覺只在合成影像上測過**（俯角 25°~35°），還沒在實體貨架前驗證。相機假設跟車身同方向、沒有側傾；相機位置當成推車位置。
+- **航向交叉驗證不會啟用**（相對航向，見〈門口進出場判定〉）。
+- **開 app 時推車要在門外**，否則第一趟進場判不出來（登入時已在門內的情況另有處理）。
+- **單機資料庫**：不偵測同一會員在別台推車登入。
+- 優惠只有單件折扣（沒有「第 2 件 5 折」）；沒有常購清單。
+- `MEMBER-` 會員碼格式是先假設的，正式會員卡設計出來要跟著改。
 
-但前身文件第一頁列的四個前端旗艦功能——**室內導航**、**錢包管家**、**健康護照**、
-**即時優惠**——希望盡量保留。這四個在 `SmartCart_Pi5_開發總表_v2.docx`（Phase 1~6）
-裡完全沒有出現，是額外要排進來的範圍：
+**還沒做**
 
-- **錢包管家 / 健康護照 / 即時優惠**：這三個不依賴視覺或定位，可以獨立於 Phase 3 的
-  進度往前做。**明確不放進 Phase 4**——Phase 4 只做「底層架構的支持」，也就是
-  掃碼、秤重比對這類保障流程正確性的基礎設施。這三個是**建立在 Phase 4 之上、
-  要融合 LLM 的進階功能**（例如 LLM 推薦後一鍵加入購物清單、根據目前清單做預算分析），
-  天生跟 Phase 6 的 `llm_agent.py`（Context Builder：組裝 (X,Y) + 購物清單餵給 LLM，
-  回傳結構化 JSON 給 UI）更接近，所以排進 **Phase 6**。
-  範圍/資料表結構/UI 呈現的細節還沒討論定案。
-- **室內導航**：正式列為 **Phase 7**。原本卡住的「浮動座標系怎麼跟店面地圖對齊」
-  現在有具體的候選機制了（`core/landmark_correction.py` 的 BLE 地標校正），
-  但軟體邏輯之外還缺 BLE 驅動、實體 Beacon、以及店面地圖本身的設計。
-
-其他路線差異備查：前身的室內導航用 A* + 貨架格狀障礙物地圖，如果 Phase 7 真的要做
-會是全新設計（地圖對齊機制不同了，但 A* 演算法本身之後仍可能重用）；
-前身的 mmWave 分層喚醒、太陽能輔助充電、Hailo-8L NPU 等，目前開發總表裡沒有對應項目，
-暫不在範圍內。
+- LLM：錢包管家的消費分析、健康護照的替代建議、優惠推薦（目前都是規則式）。
+- 異常偵測模型。
+- 室內導航的路徑規劃（例如 A*）與店內第二個校正點（例如貨架上的 Beacon）。
 
 ---
 
-## 已在硬體上驗證過的部分
+## 專題沿革與設計取捨
 
-- `drivers/uart_receiver.py`：實際 UART 封包收發、checksum 驗證、CSV logger 都跑過。
-  （注意：被驗證的是**解析邏輯**，沿用自前身已實測的 `pi_uart_receiver.py`；
-  背景執行緒 + Queue + 自動重連這層重構本身沒有獨立的實機驗證宣稱。）
-- `drivers/barcode_scanner.py`：實際刷載具條碼（含大小寫、`/` 符號）都正確解析。
-- `drivers/camera_stream.py`：色彩通道、棋盤格校正都在實體相機上驗證過（error 0.2026）。
-- `database/db_manager.py`：建表 + 測試資料 seed 跑過。
-- `core/cart_state_machine.py`：透過 `tools/run_real_hardware_flow.py` 接真實 UART 秤重
-  與真實掃描器跑過整條流程（**閘門那一段當時是鍵盤模擬的，BLE 版還沒實測**）。
-- BLE 門口判定：2026-10-28 推車實際走過門口校正，8 趟全對、停門檻線 0 次誤判，
-  反應約 1~2 秒（`data/gate_calibration/20261028-203856/`）。
-- `ui/app_gui.py` 的畫面：在 Pi 5 的 DSI-1 螢幕上確認過繪圖設定（見「硬體環境與踩過的坑」第 5 節）。
+**跟前身提案分道揚鑣**：前身是 YOLOv8 + 雙鏡頭 + Hailo-8L NPU 的視覺辨識路線。重新蒐集與訓練模型的成本、時程、以及 YOLOv8 在 Pi 5 上的效能都難以配合，所以：
+定位改用 PMW3901 光流 dead-reckoning（不是視覺 SLAM），防損改用「掃碼 + HX711 秤重比對」（不是視覺辨識）。
+前身的四個前端旗艦功能——室內導航、錢包管家、健康護照、即時優惠——保留下來，目前做成規則式（不依賴 LLM）。
 
-## 已知限制 / 尚未驗證
+| 日期 | 里程碑 |
+|---|---|
+| 09-01 | UART 封包 v2（加 squal） |
+| 09-15 | 單一實體路徑原則：拿掉所有模擬與旁路；第一次實測 BLE RSSI，發現兩顆 Beacon 基準差 12.5 dB（不同廠牌），加入偏移校正 |
+| 10-21~10-28 | Beacon 遮罩與角度實驗；門口判定統一成一套規則；改成錄「真的走過門口」來校正 |
+| 10-29 | 觸控畫面花屏查到是 WebKitGTK 的 DMA-BUF，固定繪圖設定 |
+| 11-16 | 全部硬體裝上推車並重新校正（秤重、門口、光流）；加入「等讀數穩定才比」；BLE 版完整購物流程實機跑通 |
+| 11-23 | 健康護照、錢包管家、找貨（平面圖 + 推車位置）、優惠改成資料驅動；地上定位點與貨架消失點；行駛軌跡工具；專案整理（見下） |
 
-- **`core/odometry_engine.py` 還沒有在真實硬體上實際推車測試過**。累積誤差量級、
-  旋轉方向對不對都要實測才能確認。`optical_flow_px_to_mm` 還是佔位值，算出來的距離
-  不是真實公釐數。`--min-squal` 該設多少也沒有實測資料可以參考（目前預設 0＝不過濾）。
-  yaw 完全信任 IMU，還沒有視覺校正。
-- **BLE 門口 2026-10-28 校正完成，但只有一次 8 趟的錄音**：環境變化大時要重新校正
-  （`tools/calibrate_gate_beacons`）。GateMonitor 開機時第一次確認的那一側只當起點、
-  不產生事件，所以**開程式時推車要在門外**，否則第一趟進場判不出來。`landmarks.points`
-  的座標與 `gate_exit_yaw_deg` 都還沒量。
-- **BNO080 的 yaw 正負號慣例還沒實機驗證**（`core/position_types.py` 開頭有註明）。
-  座標系是否跟韌體端的約定一致，要實機確認。
-- **picamera2 的色彩通道順序假設還沒明確驗證**（`drivers/camera_stream.py` 開頭有註明），
-  用 `--color-test` 拍一張肉眼比對即可確認。`vision/` 底下如果要用到顏色資訊
-  （不只是灰階角點偵測），先確認過這個假設在當下硬體/picamera2 版本上依然成立。
-- **秤重比對用的 `standard_weight_g`/`weight_tolerance_g` 目前是測試資料**，
-  跟 `hx711_offset`/`hx711_scale` 一樣，都要等秤重機構定案、真的校正過才準確。
-- **`MEMBER-` 這個登入條碼前綴是先假設的格式**，等真正的會員卡/App 設計出來要跟著調整。
-- **`barcode_scanner.py` 的鍵盤對照表**目前涵蓋數字（含小鍵盤版）、英文字母、`- . /`，
-  如果之後條碼包含其他符號，用 `--debug` 看原始鍵碼再補對照。這是唯一的條碼
-  路徑，所以對照表漏字就等於那個條碼刷不進來。
+### 11-23 專案整理
 
-- **`CameraStream` 在非 Pi 的開發機上完全無法實例化**，也沒有任何 mock/fake 可以離線測試
-  ——跟 odometry / landmark / state_machine「可用假資料測」的專案哲學不一致。
-- **任何 import 鏈經過 `drivers/uart_receiver.py` 的模組**（`odometry_engine`、
-  `tools/` 下多支、`ui/app_gui.py`）**在沒裝 pyserial 的機器上連 import 都會失敗**
-  （該檔頂層 `import serial` 沒有 try/except）。
+- **結構**：`core/` 依領域分成 `shopping/`、`positioning/`、`gate/`、`store/`；`ui/app_gui.py` 拆成主程式、`bridge.py`、`workers.py`；`config.json` 的讀寫收斂到 `core/config.py`；工具共用的小函式在 `tools/_common.py`。
+- **修正的問題**：
+  - 重量變了還沒掃碼（`AWAITING_ITEM_SCAN`）時推出門，原本只記 INFO，現在發 CRITICAL「沒結帳出場」。
+  - `Bridge` 被 5 條以上執行緒同時呼叫卻沒有上鎖，現在全部在同一把鎖裡；畫面推送改由專門的執行緒在鎖外做。
+  - 讀取門口設定時漏抄 `gate_min_confirm_sec`，校正寫回的 $T_c$ 執行時永遠是 0；現在整個區塊直接傳。
+  - pywebview 會把 `Bridge` 的 `db`、`sm` 展開給前端呼叫；現在前端只看得到 `JsApi` 的 21 個方法。
+  - 各處建立 UART 接收器時沒套用 `config.json` 的逾時與重連參數；現在統一 `UartReceiver.from_config()`。掃描器的 `key_timeout_sec` 也接上了。
+- **刪除**：終端機版整合測試、舊的光流驗證工具（被 `track_odometry` 取代）、Beacon 遮罩與角度量測工具（實驗已完成，資料保留在 `data/beacon_shield/`）、
+  UART CSV 記錄、里程計即時監看指令、一般地標的峰值偵測與地標校正（從沒被呼叫）、`config.json` 裡沒有程式讀的設定。
+- 用 11-16 的校正錄音與執行期記錄重算，整理前後的校正結果、門口事件、軌跡數字完全相同。

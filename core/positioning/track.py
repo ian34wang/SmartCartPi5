@@ -1,7 +1,7 @@
 """
-core/odometry_track.py
+core/positioning/track.py
 
-里程計（光流 + IMU）行駛軌跡：把一段 UART 封包照 app 的算法（core/odometry_engine.OdometryEngine，
+里程計（光流 + IMU）行駛軌跡：把一段 UART 封包照 app 的算法（core/positioning/odometry.OdometryEngine，
 參數是 config.json 的 odometry 區塊）重播成軌跡、算誤差、畫成圖。tools/track_odometry.py 用
 （即時推車、事後重播都是這一套）。純邏輯，不碰硬體。
 
@@ -36,7 +36,8 @@ import statistics
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from core.odometry_engine import OdometryEngine
+from core.angles import wrap_deg
+from core.positioning.odometry import OdometryEngine
 
 # 封包間隔超過這麼久算掉資料（UART 20 Hz，正常間隔 0.05 s）
 GAP_SEC = 0.15
@@ -44,7 +45,7 @@ GAP_SEC = 0.15
 
 @dataclass(frozen=True)
 class _Pkt:
-    """OdometryEngine.process_packet 需要的欄位（core/uart_recording.Sample 的 t 改名 timestamp）。"""
+    """OdometryEngine.process_packet 需要的欄位（core/recording.Sample 的 t 改名 timestamp）。"""
     dx: int
     dy: int
     squal: int
@@ -90,7 +91,7 @@ class TrackBuilder:
         self._primed = False
 
     def feed(self, s) -> None:
-        """s：core/uart_recording.Sample（或任何有 t, dx, dy, squal, yaw_deg 的東西）。"""
+        """s：core/recording.Sample（或任何有 t, dx, dy, squal, yaw_deg 的東西）。"""
         if not self._primed:
             self.engine.process_packet(_Pkt(0, 0, 255, s.yaw_deg, s.t))
             st = self.engine.get_state()
@@ -110,11 +111,6 @@ def build_track(samples: Sequence, odometry_cfg: dict, min_squal: int = 0) -> Tr
     return TrackBuilder(odometry_cfg, min_squal).feed_all(samples)
 
 
-def _wrap(a: float) -> float:
-    a = (a + 180.0) % 360.0 - 180.0
-    return 180.0 if a == -180.0 else a
-
-
 def metrics(track: Track, true_f_m: Optional[float] = None, true_l_m: Optional[float] = None,
             true_distance_m: Optional[float] = None, true_turn_deg: Optional[float] = None) -> Dict:
     """指標（定義見檔案開頭）。沒給的實際值，對應的誤差就是 None（不補值）。"""
@@ -127,7 +123,7 @@ def metrics(track: Track, true_f_m: Optional[float] = None, true_l_m: Optional[f
     f_end, l_end = sf[-1]
     turn = 0.0
     for a, b in zip(pts, pts[1:]):
-        turn += _wrap(b.yaw_deg - a.yaw_deg)
+        turn += wrap_deg(b.yaw_deg - a.yaw_deg)
     times = [p.t for p in pts[1:]]
     gaps = [b - a for a, b in zip(times, times[1:])]
     squals = sorted(p.squal for p in pts[1:])

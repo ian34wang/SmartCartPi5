@@ -1,8 +1,8 @@
 """
 tools/analyze_gate_log.py
 
-分析門口記錄檔（core/gate_recorder.py 寫的，執行期每次啟動都會自動產生一份在
-data/gate_logs/<日期>/）。用的是跟執行期同一套判定規則（core/gate_model.py）。
+分析門口記錄檔（core/gate/recorder.py 寫的，執行期每次啟動都會自動產生一份在
+data/gate_logs/<日期>/）。用的是跟執行期同一套判定規則（core/gate/model.py）。
 
 會印出：
     1. 概況：記錄多久、每顆每秒幾包、斷訊（超過 1 秒沒收到）幾次、多少時間在判定
@@ -37,8 +37,8 @@ from typing import List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.gate_model import FLAP_SEC, GateParams, flaps, replay  # noqa: E402
-from core.gate_recorder import RUNTIME_LOG_ROOT, load  # noqa: E402
+from core.gate.model import FLAP_SEC, GateParams, flaps, replay  # noqa: E402
+from core.gate.recorder import RUNTIME_LOG_ROOT, load  # noqa: E402
 
 _SIDE = {"a": "門內", "b": "門外", None: "未確認", "in": "門內", "out": "門外", "": "未確認"}
 

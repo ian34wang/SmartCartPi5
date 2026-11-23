@@ -1,57 +1,37 @@
 """
 drivers/ble_beacon_scanner.py
 
-用 Pi 5 內建藍牙掃描 BLE Beacon 廣播，把每一筆 RSSI 讀數丟進 Queue／callback，
-給 `core/gate_monitor.py` 判定管制區門口的穿越方向（進場/出場）用。
+用 Pi 5 內建藍牙（bleak）掃描 BLE Beacon 廣播，把每一筆 RSSI 讀數放進 Queue 或交給 callback，
+給 core/gate/monitor.py 判定門口穿越。
 
-這是 `core/landmark_correction.py` 那一整套演算法唯一缺的那塊——在這支寫出來
-之前，那 421 行邏輯完全接不到真實資料，`GateEntryDetected`/`GateExitDetected`
-也沒有任何硬體來源。
+接不到就報錯，沒有模擬或退回路徑：沒裝 bleak、藍牙打不開 → RuntimeError；啟動後在指定時間內
+設定檔裡的 Beacon 一顆都沒掃到 → TimeoutError。
 
-設計上刻意「接不到就報錯」，不提供任何模擬/退回路徑：
-    - 沒有裝 bleak → RuntimeError，附上安裝指令。
-    - 藍牙介面卡打不開（藍牙關著、沒有權限、adapter 名稱錯） → RuntimeError。
-    - 啟動後在指定時間內一顆設定檔裡的 Beacon 都沒掃到 → TimeoutError。
-  這樣「明明沒在運作卻安靜地什麼都不做」這種狀況不會發生。
+Beacon 怎麼認（config.json 的 landmarks.points[]，每顆一個 beacon_id，例如 "GATE-INSIDE"）：
+    1. address 有填：用 BLE MAC 位址比對（最可靠；用 --list 掃出來抄進去）
+    2. 沒填：廣播名稱（local name）等於 beacon_id（自己刷 ESP32 當 Beacon 時把名稱設好即可）
 
-Beacon 怎麼認：
-    每個 Beacon 在 config.json 的 `landmarks.points[]` 裡有一個 `beacon_id`
-    （例如 "GATE-INSIDE"）。實際比對方式有兩種，優先用前者：
-      1. `address`（該點的選填欄位）——BLE MAC 位址，最可靠，換韌體/改名都不受
-         影響。用 `--list` 掃出來抄進 config.json 即可。
-      2. 廣播名稱（local name）等於 `beacon_id`——如果你是拿 ESP32 自己刷
-         Beacon 韌體，直接把廣播名稱設成 "GATE-INSIDE"/"GATE-OUTSIDE" 就不用
-         填 address，換一顆板子也不用改設定。
+硬體測試：
+    python3 -m drivers.ble_beacon_scanner --list   # 掃 10 秒，列出附近所有 BLE 裝置與位址
+    python3 -m drivers.ble_beacon_scanner          # 持續印那幾顆的原始 RSSI
 
-用法（獨立測試）：
-    python3 -m drivers.ble_beacon_scanner --list          # 掃 10 秒，列出附近所有 BLE 裝置
-    python3 -m drivers.ble_beacon_scanner                 # 持續印出那幾顆的**原始** RSSI
+這裡印的是原始讀數，只用來確認 Beacon 認得到、位址對不對。原始 RSSI 抖動很大是正常的（靜止時
+峰對峰就有 7 dB，多路徑干涉），門口判定用的是 core/gate/monitor.py 濾波後的值（實測差分的抖動
+從 3.2 dB 降到 0.17 dB）。要看系統真正在用的數字：python3 -m tools.calibrate_gate_beacons --monitor。
 
-**這支印的是未經任何處理的原始讀數**，用途是「確認 Beacon 認得到、位址對不對」。
-原始 RSSI 抖動很大是正常的——實測靜止不動時峰對峰就有 7 dB，那是多路徑干涉，
-不是壞掉。但真正拿去做門口判定的不是這些數字，是 `core/gate_monitor.py` 濾波後
-的值（實測同一組資料，差分值的抖動從 3.2 dB 降到 0.17 dB，差 19 倍）。
-
-要看「系統真正在用的數字」請用：
-    python3 -m tools.calibrate_gate_beacons --monitor     # 原始 vs 濾波後並排顯示
-
-Beacon 硬體選型：**發射功率越小越好**。BLE RSSI 是全向性訊號，物理上量不到
-「有沒有真的通過那個實體開口」，所以要靠「有效偵測範圍本來就侷限在門口通道
-附近」來幫軟體判斷分擔工作——這跟 config.json 的 `gate_min_crossing_rssi_dbm`
-絕對門檻是互相配合、不是取代關係。一顆 ESP32 刷 iBeacon/Eddystone 廣播就夠用。
+Beacon 發射功率越小越好：RSSI 沒有方向性，讓有效範圍本來就侷限在門口附近，跟
+gate_min_crossing_rssi_dbm 絕對門檻互相配合。
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import queue
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Set
 
 try:
@@ -59,9 +39,10 @@ try:
 except ImportError:  # pragma: no cover - 讓沒有 bleak 的環境還能 import 這個模組去讀常數
     BleakScanner = None
 
+from core import config
+
 logger = logging.getLogger(__name__)
 
-_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
 _BLEAK_MISSING_MSG = (
     "沒有安裝 bleak，無法掃描 BLE Beacon。在 Pi 上執行：pip install bleak\n"
@@ -85,8 +66,7 @@ def load_beacon_identity_map() -> Dict[str, str]:
     只收有填 `address` 的點；沒填 address 的點會改用「廣播名稱等於 beacon_id」
     的方式比對（見 `BleBeaconScanner._resolve_beacon_id`）。
     """
-    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-        cfg = json.load(f).get("landmarks", {})
+    cfg = config.section("landmarks")
     mapping: Dict[str, str] = {}
     for point in cfg.get("points", []):
         address = (point.get("address") or "").strip()
@@ -97,8 +77,7 @@ def load_beacon_identity_map() -> Dict[str, str]:
 
 def load_beacon_ids() -> List[str]:
     """config.json 裡所有地標點的 beacon_id。"""
-    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-        cfg = json.load(f).get("landmarks", {})
+    cfg = config.section("landmarks")
     return [p["beacon_id"] for p in cfg.get("points", [])]
 
 

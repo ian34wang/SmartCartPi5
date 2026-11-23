@@ -1,4 +1,4 @@
-"""core.gate_monitor.GateMonitor 的邏輯測試——不需要 BLE 硬體。
+"""core.gate.monitor.GateMonitor 的邏輯測試——不需要 BLE 硬體。
 
 測的是「把一連串 RSSI 觀測餵進去，什麼時候該判定成進場/出場」。真實 BLE 掃描
 （drivers/ble_beacon_scanner.py）不在範圍內，那支要有真的 Beacon 才能測。
@@ -11,8 +11,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.gate_monitor import GateMonitor
-from core.landmark_correction import smooth_rssi
+from core.gate.monitor import GateMonitor
+from core.gate.detector import smooth_rssi
 
 INSIDE = "GATE-INSIDE"
 OUTSIDE = "GATE-OUTSIDE"

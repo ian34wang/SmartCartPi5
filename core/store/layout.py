@@ -1,5 +1,5 @@
 """
-core/store_layout.py
+core/store/layout.py
 
 店面平面圖（找貨頁的地圖、商品貨架位置、推車位置換算）。照 2026-11-23 的構想圖：
 
@@ -25,7 +25,7 @@ core/store_layout.py
 
 長廊與定位點（2026-11-23 構想圖的說明）：
     長廊   鎖住移動方向：推車在長廊裡只能朝店內直走，所以航向就是平面圖的 +y、橫向位置就是長廊中線。
-    定位點 長廊末端，地上貼一張 ArUco 標記（core/store_vision.py）。相機看到它就算出標記在推車
+    定位點 長廊末端，地上貼一張 ArUco 標記（core/store/vision.py）。相機看到它就算出標記在推車
            前方、右方各幾公尺，反推推車在平面圖上的位置，連接「大圖座標」（這張平面圖）與
            「內部定位座標」（里程計）。
 
@@ -41,10 +41,10 @@ core/store_layout.py
                        之後到定位點之前，x 鎖在長廊中線（長廊只能直走），地圖上是空心點（約略）。
                        entry_y 是 BLE 判定出進場時推車大約在長廊哪裡（判定比穿越晚 1~2 秒，預設 1 格）。
     看到定位點標記     anchor()：α = 90° − ψ（航向固定成正向），(x₀, y₀) = 定位點 − 標記相對推車的
-                       (右方, 前方)（標記貼在地上的定位點，core/store_vision.py 由影像算出）。實心點。
+                       (右方, 前方)（標記貼在地上的定位點，core/store/vision.py 由影像算出）。實心點。
                        登入時推車已經在店裡（沒有進場點）也一樣：推到定位點前面看到標記就對齊；
                        找貨頁也有「我在定位點」按鈕可以手動對齊。
-    之後一直           correct_heading()：貨架邊緣的消失點量到平面圖航向 θ_v（core/store_vision.py），
+    之後一直           correct_heading()：貨架邊緣的消失點量到平面圖航向 θ_v（core/store/vision.py），
                        跟目前估計 θ̂ = ψ + α 比，誤差 e = θ_v − θ̂，|e| ≤ max_err_deg 才採用：
                            α ← α + w·e          （w = vision.vp_yaw_weight，互補濾波）
                        以推車目前位置為中心轉（畫面上的點不跳，之後的位移方向變準）。
@@ -56,6 +56,8 @@ from __future__ import annotations
 import copy
 import math
 from typing import Dict, List, Optional, Tuple
+
+from core.angles import wrap_deg
 
 DEFAULT_LAYOUT: Dict = {
     "unit_m": None,                 # 現場量，config.json 的 store.unit_m
@@ -170,10 +172,6 @@ def instruction(lay: Dict, code: str) -> str:
 def to_client(lay: Dict) -> Dict:
     """給前端畫地圖用（純資料）。"""
     return {k: lay[k] for k in ("hall", "corridor", "anchor", "shelves", "slots")}
-
-
-def wrap_deg(a: float) -> float:
-    return (a + 180.0) % 360.0 - 180.0
 
 
 class StoreFrame:

@@ -1,21 +1,10 @@
 """
-core/cart_manager.py
+core/shopping/cart.py
 
-Phase 4：購物清單的基礎資料結構與存取。
+購物清單：有哪些商品、各幾件、多少錢。什麼時候可以加減由狀態機決定（core/shopping/state_machine.py
+秤重比對成功才呼叫 add_item / remove_item），這裡只負責資料本身正確。
 
-刻意只做「清單裡有什麼、數量多少、金額多少」這件事本身：
-    - 不含秤重比對/流程狀態邏輯（那些在 core/cart_state_machine.py，
-      CartStateMachine 驗證秤重比對成功後才會呼叫這裡的 add_item/remove_item）。
-    - 不含 LLM 推薦、預算分析這類進階功能（那些排在 Phase 6，見 README
-      「前身專題（大四專題.pdf）功能取捨與 Phase 7 定位」章節——Phase 4 的
-      定位是「底層架構的支持」，錢包管家等進階功能會建立在這層之上，但不是
-      這層本身）。
-
-這裡不重複做防護性檢查（例如查資料庫確認條碼存在）——信任呼叫方
-（CartStateMachine）已經在呼叫 add_item()/remove_item() 之前，用
-database/db_manager.py 查過 Product 資料、也用 has_item() 確認過移除的商品
-確實在清單裡。這樣分工是為了讓這個類別維持單純：它只管「資料結構本身要保持
-正確」，不管「什麼時候可以改這個資料結構」（那是狀態機的責任）。
+一個條碼一行；單價是實際收的價格（已套用折扣），list_price 是原價。一次掃碼 = 一件商品。
 """
 
 from __future__ import annotations

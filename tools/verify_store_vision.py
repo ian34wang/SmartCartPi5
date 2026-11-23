@@ -2,7 +2,7 @@
 tools/verify_store_vision.py
 
 前方相機的現場驗證：地上定位點標記算出來的距離、相機高度，以及貨架消失點的方向，拿捲尺量的值比對。
-跟 app 用同一套程式（drivers/front_camera.FrontCamera、core/store_vision、config.json 的 camera／vision），
+跟 app 用同一套程式（drivers/front_camera.FrontCamera、core/store/vision、config.json 的 camera／vision），
 不會修改 config.json。
 
 用法：
@@ -14,14 +14,14 @@ tools/verify_store_vision.py
 輸入捲尺量的實際值（Enter 跳過）→ 印誤差。標註影像存到 data/vision_check/<開始時間>/round<k>.png
 （偵測到的線段、消失點、量測結果），可以放進報告。
 
-量測量（定義見 core/store_vision.py 開頭與 README「店面平面圖與推車位置」）：
+量測量（定義見 core/store/vision.py 開頭與 README「店面平面圖與推車位置」）：
     ℓ_f    標記中心在推車前方幾公尺（相機正下方的地面點量起，沿車頭方向）
     ℓ_r    標記中心在推車右方幾公尺（左邊為負）
     h      由標記算出來的相機離地高度，跟 vision.camera_height_m 比
     d      水平距離 √(ℓ_f² + ℓ_r²)
     δ      消失點方向與光軸的水平夾角（度，右為正）；車頭正對貨架方向時應接近 0
     β      相機俯角 = atan((c_y − v) / f_y)（度），v 是消失點縱座標、c_y 光心縱座標、f_y 縱向焦距（像素）
-app 採用條件（ui/app_gui.py 的 _VisionConsumer）：
+app 採用條件（ui/workers.py 的 VisionConsumer）：
     標記  d ≤ anchor_trigger_m 且 |h − camera_height_m| ≤ height_tol_m
     消失點 |δ| ≤ vp_max_angle_deg，且至少 vp_min_lines 條線支持
 
@@ -31,27 +31,23 @@ app 採用條件（ui/app_gui.py 的 _VisionConsumer）：
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import statistics
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
 
-from core import store_vision
+from core import config
+from core.store import vision as store_vision
+from tools._common import ask_float
 
-_ROOT = Path(__file__).resolve().parent.parent
-_CONFIG_PATH = _ROOT / "config.json"
 
 
 def vision_config(full_cfg: dict) -> dict:
-    """config.json 的 vision 區塊套在 app 的預設值上（跟 ui/app_gui.py 啟動時一樣）。"""
-    from ui.app_gui import _VISION_DEFAULTS
-
-    return dict(_VISION_DEFAULTS, **{k: v for k, v in full_cfg.get("vision", {}).items() if not k.startswith("_")})
+    """config.json 的 vision 區塊套在 app 的預設值上（跟 app 啟動時一樣）。"""
+    return config.vision(full_cfg)
 
 
 def measure(gray: np.ndarray, detector, K, vcfg: dict) -> Dict:
@@ -129,17 +125,6 @@ def _annotate(gray: np.ndarray, r: Dict, summary: Dict) -> np.ndarray:
     return img
 
 
-def _prompt_float(prompt: str) -> Optional[float]:
-    raw = input(prompt).strip()
-    if not raw:
-        return None
-    try:
-        return float(raw)
-    except ValueError:
-        print("  不是數字，跳過比對。")
-        return None
-
-
 def _report(s: Dict, vcfg: dict) -> None:
     print(f"  影像 {s['frames']} 張")
     print(f"  定位點標記：看到 {s['anchor_frames']} 張、app 會採用 {s['anchor_accepted']} 張")
@@ -156,15 +141,14 @@ def _report(s: Dict, vcfg: dict) -> None:
 def run(seconds: float, save: bool) -> int:
     from drivers.front_camera import FrontCamera
 
-    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-        full_cfg = json.load(f)
+    full_cfg = config.load()
     vcfg = vision_config(full_cfg)
     camera = FrontCamera(full_cfg.get("camera", {}), proc_width=int(vcfg["proc_width"]))
     try:
         detector = store_vision.AnchorDetector(vcfg["anchor_marker_id"], vcfg["anchor_marker_size_m"], camera.K)
         print(f"前方相機 {camera.size[0]}x{camera.size[1]}，標記 #{vcfg['anchor_marker_id']}、"
               f"邊長 {vcfg['anchor_marker_size_m']} m，相機高 {vcfg['camera_height_m']} m")
-        out_dir = _ROOT / "data" / "vision_check" / datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_dir = config.DATA_DIR / "vision_check" / datetime.now().strftime("%Y%m%d-%H%M%S")
         period = 1.0 / max(0.5, float(vcfg["fps"]))
         k = 0
         while True:
@@ -186,12 +170,12 @@ def run(seconds: float, save: bool) -> int:
                 out_dir.mkdir(parents=True, exist_ok=True)
                 path = out_dir / f"round{k}.png"
                 cv2.imwrite(str(path), _annotate(last_gray, results[-1], s))
-                print(f"  標註影像：{path.relative_to(_ROOT)}")
+                print(f"  標註影像：{config.rel(path)}")
             if s["anchor_frames"]:
-                f_true = _prompt_float("  捲尺量的前方距離 ℓ_f（m，Enter 跳過）：")
+                f_true = ask_float("  捲尺量的前方距離 ℓ_f（m，Enter 跳過）：")
                 if f_true is not None:
                     print(f"    誤差 {s['forward_m'] - f_true:+.3f} m（{100 * (s['forward_m'] - f_true) / f_true:+.1f}%）")
-                h_true = _prompt_float("  捲尺量的相機鏡頭離地高度（m，Enter 跳過）：")
+                h_true = ask_float("  捲尺量的相機鏡頭離地高度（m，Enter 跳過）：")
                 if h_true is not None:
                     print(f"    誤差 {s['height_m'] - h_true:+.3f} m")
     finally:

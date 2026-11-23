@@ -1,25 +1,19 @@
 """
 drivers/camera_stream.py
 
-Pi 5 官方廣角相機（MIPI CSI）影像擷取層。
+Pi 5 相機（MIPI CSI）擷取：picamera2（libcamera）背景執行緒持續抓影格，get_latest_frame() 拿最新
+一張（numpy array，直接給 OpenCV）。不用 cv2.VideoCapture：在 Pi 5 上常抓不到 CSI 相機或不穩定。
+設定路徑固定用 preview_configuration + align()（跟 create_video_configuration 的 ISP 處理不一定相同，
+棋盤格校正也走這條，校正結果才對得上）。
 
-Pi 5 的相機軟體堆疊是 libcamera-based；單純用 cv2.VideoCapture() 常常抓不到
-CSI 相機，或行為不穩定（V4L2 相容層在不同版本表現不一致）。這裡改用官方
-picamera2 函式庫取得影格，回傳的是 numpy array，可以直接餵給 OpenCV 用。
+全專案只有這裡開相機（一顆 CSI 相機同時只能被一個 Picamera2 打開）；找貨頁的前方相機
+drivers/front_camera.py 也是用 CameraStream。
 
-本檔案提供兩個功能：
-    1. CameraStream：背景執行緒持續擷取影格，並可套用棋盤格內參校正結果做
-       即時畸變校正（cv2.undistort），供 vision/ 各模組使用。
-    2. 棋盤格校正工具（--calibrate）：現場對著棋盤格拍多張照片，計算相機
-       內參矩陣與畸變係數，存成 config.json 裡 camera.calibration_file 指到
-       的 .npz 檔。
-
-用法：
-    # 即時預覽 + 存校正檔（需要在鏡頭前放印出來的棋盤格，預設 9x6 內角點）
-    python3 -m drivers.camera_stream --calibrate --num-images 15
-
-    # 單純測試擷取（不需要棋盤格）
-    python3 -m drivers.camera_stream --preview
+硬體測試與校正：
+    python3 -m drivers.camera_stream --preview       # 擷取 10 張，印 shape
+    python3 -m drivers.camera_stream --color-test    # 拍一張存 PNG，肉眼確認色彩通道順序
+    python3 -m drivers.camera_stream --calibrate --num-images 15 --square-size-mm 24
+        # 棋盤格內參校正（預設 9x6 內角點），存成 config.json 的 camera.calibration_file
 """
 
 from __future__ import annotations
@@ -53,14 +47,8 @@ class CameraStream:
     cv2.undistort() 再存進 buffer；給了 calibration_file 但檔案不在，輸出原始影格並記一次警告。
     calibration_file=None 是刻意要原始影格（例如 drivers/front_camera.py 縮小後自己去畸變），不警告。
 
-    注意色彩通道順序：目前程式碼假設 get_latest_frame() 回傳的 numpy array可以
-    直接餵給 cv2 系列函式（cv2.imshow、cv2.cvtColor(..., COLOR_BGR2GRAY) 等）用，
-    不需要額外做 RGB<->BGR 轉換。這個假設**還沒有在實體相機上做過明確驗證**——
-    用 `python3 -m drivers.camera_stream --color-test` 拍一張已知顏色的東西存成
-    PNG，肉眼比對顏色對不對，可以一次性確認清楚。如果顏色對調（比如藍色的東西
-    存出來變橘紅色），代表這裡的假設是錯的，需要在 get_latest_frame() 回傳前加
-    一次 cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)。Phase 3 之後 vision/ 底下的模組
-    如果要用顏色資訊，記得先確認過這件事再依賴這個假設。
+    色彩通道：picamera2 的 RGB888 記憶體順序是 B, G, R，可以直接給 cv2（COLOR_BGR2GRAY 等）。
+    目前只用灰階，順序不影響結果；要用顏色時先用 --color-test 拍一張確認。
     """
 
     def __init__(

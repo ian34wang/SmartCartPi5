@@ -1,7 +1,7 @@
 """
-core/uart_recording.py
+core/recording.py
 
-UART 校正錄音（秤重、光流、航向共用）。格式跟門口的 core/gate_recorder.py 同一個
+UART 校正錄音（秤重、光流、航向共用）。格式跟門口的 core/gate/recorder.py 同一個
 概念：每一筆原始封包一行、標上「目前在做哪一步」，參數與分段時間放在旁邊的
 .meta.json，事後可以完整重算（各校正工具的 --from-data）。
 
@@ -194,23 +194,6 @@ def load(path: Path) -> Recording:
     return Recording(meta.get("kind", ""), segs, samples, meta)
 
 
-def wrap_deg(a: float) -> float:
-    """角度包到 (−180, 180]。"""
-    a = (a + 180.0) % 360.0 - 180.0
-    return 180.0 if a == -180.0 else a
-
-
-def unwrap_deg(values: List[float]) -> List[float]:
-    """把跨過 ±180 的航向角接成連續的（算轉了幾度用）。"""
-    out: List[float] = []
-    for v in values:
-        if not out:
-            out.append(v)
-        else:
-            out.append(out[-1] + wrap_deg(v - out[-1]))
-    return out
-
-
 def save_result(out_dir: Path, result: dict) -> None:
     (Path(out_dir) / "result.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2, default=_jsonable) + "\n", encoding="utf-8")
@@ -222,17 +205,6 @@ def _jsonable(o):
     if isinstance(o, tuple):
         return list(o)
     return str(o)
-
-
-def update_config(config_path: Path, section: str, values: Dict[str, object],
-                  comments: Optional[Dict[str, str]] = None) -> None:
-    """只改 config.json 某個區塊裡的這幾個值，其他欄位與 _comment 註解都留著。"""
-    cfg = json.loads(Path(config_path).read_text(encoding="utf-8"))
-    sec = cfg.setdefault(section, {})
-    sec.update(values)
-    for k, v in (comments or {}).items():
-        sec[k] = v
-    Path(config_path).write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def countdown(seconds: float, tap: UartTap, text: str) -> None:

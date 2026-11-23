@@ -1,4 +1,4 @@
-"""core/gate_model.py（單一判定標準）的測試——不需要 BLE 硬體。
+"""core/gate/model.py（單一判定標準）的測試——不需要 BLE 硬體。
 
 最重要的是第 1、2 項：執行期的 GateMonitor、事後重播、記錄檔重播，三者算出來的
 結果必須一模一樣。這是「校正時驗證過的行為＝實際的行為」「記錄檔分析看到的＝當時
@@ -16,9 +16,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.gate_model import GateParams, concat, replay  # noqa: E402
-from core.gate_monitor import GateMonitor  # noqa: E402
-from core.gate_recorder import GateRecorder, load  # noqa: E402
+from core.gate.model import GateParams, concat, replay  # noqa: E402
+from core.gate.monitor import GateMonitor  # noqa: E402
+from core.gate.recorder import GateRecorder, load  # noqa: E402
 
 IN, OUT = "GATE-INSIDE", "GATE-OUTSIDE"
 FAILURES = []
@@ -119,8 +119,8 @@ c = concat([a, b], gap_sec=0.1)
 check([round(o[0], 6) for o in c] == [0.0, 1.0, 1.1, 1.6], "時間平移正確", c)
 
 print("\n[6] 確認持續時間 min_confirm_sec：一筆強封包撐住窗口時，看筆數會確認、看時間不會")
-from core.gate_model import flaps, replay  # noqa: E402
-from core.landmark_correction import GateCrossingDetector  # noqa: E402
+from core.gate.model import flaps, replay  # noqa: E402
+from core.gate.detector import GateCrossingDetector  # noqa: E402
 
 d0 = GateCrossingDetector(hysteresis_dbm=4.0, min_confirm_samples=3)
 d1 = GateCrossingDetector(hysteresis_dbm=4.0, min_confirm_samples=3, min_confirm_sec=0.5)

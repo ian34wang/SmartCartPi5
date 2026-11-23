@@ -1,4 +1,4 @@
-"""門口校正（core/gate_calibration.py 與 tools/calibrate_gate_beacons.py）的測試——不需要 BLE 硬體。
+"""門口校正（core/gate/calibration.py 與 tools/calibrate_gate_beacons.py）的測試——不需要 BLE 硬體。
 
 用合成的「推車來回走過門口」連續錄音（差分隨位置是階梯、加上雜訊與單邊衰減，
 門內那顆刻意比門外強 3 dB）驗證：
@@ -28,12 +28,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import tools.calibrate_gate_beacons as tool  # noqa: E402
-from core.gate_calibration import (  # noqa: E402
+from core.gate.calibration import (  # noqa: E402
     DRIFT_DB, Mark, Session, _with, calibrate_session, check_session, segment_stats, survey_notes,
 )
-from core.gate_model import GateParams, evaluate  # noqa: E402
-from core.gate_monitor import GateMonitor  # noqa: E402
-from core.gate_recorder import GateRecorder, load  # noqa: E402
+from core.gate.model import GateParams, evaluate  # noqa: E402
+from core.gate.monitor import GateMonitor  # noqa: E402
+from core.gate.recorder import GateRecorder, load  # noqa: E402
 from drivers.ble_beacon_scanner import BeaconObservation  # noqa: E402
 
 IN, OUT = "GATE-INSIDE", "GATE-OUTSIDE"
@@ -289,8 +289,8 @@ finally:
     live.stop_ev.set()
 
 print("\n[9] 執行期記錄：校正錄音錄不到的「停在門內、偶爾一筆很強的門外封包」會來回跳，要被排除")
-from core.gate_calibration import _log_flaps  # noqa: E402
-from core.gate_model import evaluate, flaps, replay  # noqa: E402
+from core.gate.calibration import _log_flaps  # noqa: E402
+from core.gate.model import evaluate, flaps, replay  # noqa: E402
 
 
 def spiky_log(seed=11, minutes=1.5, spike_every=4.0, spike_db=18.0):

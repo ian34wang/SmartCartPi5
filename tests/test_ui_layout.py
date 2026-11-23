@@ -14,7 +14,7 @@ from pathlib import Path
 from playwright.async_api import async_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from core import store_layout  # noqa: E402
+from core.store import layout as store_layout  # noqa: E402
 
 HTML = (Path(__file__).resolve().parent.parent / "ui" / "templates" / "index.html").as_uri()
 OUT = Path(__file__).resolve().parent
@@ -25,7 +25,7 @@ _LAY = store_layout.load()
 
 
 def _nav(code):
-    """跟 ui/app_gui.Bridge._catalog_payload 一樣的找貨欄位。"""
+    """跟 ui/bridge.Bridge._catalog_payload 一樣的找貨欄位。"""
     return json.dumps({"shelf": code, "shelf_text": store_layout.describe(_LAY, code),
                        "instruction": store_layout.instruction(_LAY, code),
                        "route": [list(q) for q in store_layout.route(_LAY, code)],

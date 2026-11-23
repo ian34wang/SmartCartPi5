@@ -1,9 +1,9 @@
 """
-core/gate_calibration.py
+core/gate/calibration.py
 
 門口校正的計算（純邏輯，沒有 I/O）。量測與互動在 tools/calibrate_gate_beacons.py。
 
-標準只有一條：**拿真的推車走過門口的錄音，重播真正的判定規則（core/gate_model.py），
+標準只有一條：**拿真的推車走過門口的錄音，重播真正的判定規則（core/gate/model.py），
 每一趟都要判對。** 參數不是用公式推出來的，是把候選參數丟進跟執行期一模一樣的判定
 流程，看它在實際走過門口的資料上會怎樣。
 
@@ -28,7 +28,7 @@ core/gate_calibration.py
              才算可行；選「可行遲滯範圍最寬」的組合，取範圍中間的遲滯。一樣寬時優先保留
              現在的設定、再來是比較短的窗口與比較短的 T_c（判定比較快）。確認筆數固定用
              現在的設定（gate_min_confirm_samples），持續時間才是決定性的那一個——
-             理由見 core/landmark_correction.GateCrossingDetector 的第 4 點。
+             理由見 core/gate/detector.GateCrossingDetector 的第 4 點。
 
 檢查（整段錄音照時間順序一次重播，狀態會一路延續，跟實際執行一模一樣）：
     1. 每一趟都剛好判出一次對的事件（進場那趟 entering、出場那趟 exiting），
@@ -38,7 +38,7 @@ core/gate_calibration.py
        停在店內深處那 20 秒：不能判成出場，也不能來回跳
     4. 以上在門內那顆偏移量 ±2 dB 時也都要成立（模擬校正之後的環境漂移）
     5. 執行期記錄（data/gate_logs/，同一個佈署之後錄的）重播：不能「來回跳」——相鄰兩個
-       相反的事件間隔不到 3 秒（core/gate_model.flaps）。執行期記錄沒有標準答案，但來回跳
+       相反的事件間隔不到 3 秒（core/gate/model.flaps）。執行期記錄沒有標準答案，但來回跳
        不需要答案也知道是錯的；這一條補的是校正錄音錄不到的情況：推車在門口附近晃、
        有人經過、停下來講話。2026-11-16 的校正 8 趟全對、停門檻線 0 次誤判，實際使用時
        卻出現「進場 0.5 秒後又出場」，就是因為校正錄音裡沒有這種狀況。
@@ -53,7 +53,7 @@ import statistics
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from core.gate_model import Evaluation, GateDecision, GateParams, Observation, decide, evaluate, flaps
+from core.gate.model import Evaluation, GateDecision, GateParams, Observation, decide, evaluate, flaps
 
 ESTIMATORS = ("p75", "p90", "max")
 WINDOWS = (1.0, 1.5, 2.0)

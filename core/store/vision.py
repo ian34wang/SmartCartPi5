@@ -1,8 +1,8 @@
 """
-core/store_vision.py
+core/store/vision.py
 
 找貨頁推車位置的機器視覺部分（相機 + OpenCV）。純函式／純邏輯，輸入是一張灰階影像，
-不碰硬體；擷取影格在 ui/app_gui.py 的 _VisionConsumer。
+不碰硬體；擷取影格在 ui/workers.py 的 VisionConsumer。
 
 兩件事：
 
@@ -20,7 +20,7 @@ core/store_vision.py
        r = f × n                    車身右方
        forward = g·f，lateral = g·r  標記在推車前方幾公尺、右方幾公尺
    不需要知道相機的俯角：地面方向直接由標記本身量出來。
-   ui/app_gui.py：forward、lateral 換成格數，推車位置 = 定位點 − (lateral, forward)（航向固定朝店內，
+   ui/bridge.py：forward、lateral 換成格數，推車位置 = 定位點 − (lateral, forward)（航向固定朝店內，
    右方 = +x、前方 = +y）。水平距離 √(forward² + lateral²) ≤ vision.anchor_trigger_m 才採用（越近越準）。
 
 2. 消失點航向（vanishing_point + vp_offset_deg + heading_from_vp）
@@ -35,7 +35,7 @@ core/store_vision.py
        f_x, f_y 焦距、c_x, c_y 光心（像素，相機校正檔依縮放換算）
    光軸在平面圖上的方向 θ，平行線組的方向 φ = θ − δ（δ 是 φ 在光軸右邊幾度），所以
        θ = φ + δ，φ ∈ {0°, 90°, 180°, 270°}，取最接近目前航向估計的那一個。
-   ui/app_gui.py 把 δ 給 core/store_layout.StoreFrame.correct_heading()。
+   ui/bridge.py 把 δ 給 core/store/layout.StoreFrame.correct_heading()。
    相機假設跟車身同方向（左右沒有裝歪）、沒有側傾。
 
    消失點的找法：Canny → HoughLinesP → 留下斜線（跟水平夾 10°~80°，排除貨架的垂直邊與

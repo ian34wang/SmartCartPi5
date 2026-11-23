@@ -1,6 +1,6 @@
-"""core/odometry_track.py 與 tools/track_odometry.py 的純邏輯測試（不需要硬體）。
+"""core/positioning/track.py 與 tools/track_odometry.py 的純邏輯測試（不需要硬體）。
 
-合成封包：先決定車子每一步在車身座標走多少 (f, l)，再用 core/odometry_engine.sensor_to_cart 的反函數換成
+合成封包：先決定車子每一步在車身座標走多少 (f, l)，再用 core/positioning/odometry.sensor_to_cart 的反函數換成
 PMW3901 的 (dx, dy)：
     s_x = cos φ · f − sin φ · l,    s_y = sin φ · f + cos φ · l,    dx = s_x,  dy = m · s_y（m = −1 鏡像）
 （f, l 單位是 count = mm / px_to_mm；小數的部分累積到下一步，總量不失真。）
@@ -14,8 +14,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core import odometry_track as ot  # noqa: E402
-from core.uart_recording import Sample  # noqa: E402
+from core.positioning import track as ot  # noqa: E402
+from core.recording import Sample  # noqa: E402
 from tools.track_odometry import parse_float, parse_pair  # noqa: E402
 
 FAILURES = []

@@ -1,4 +1,4 @@
-"""ui.app_gui.Bridge 的端對端測試——不需要 pywebview/GTK，也不需要任何硬體。
+"""ui/bridge.py 的 Bridge 端對端測試——不需要 pywebview/GTK，也不需要任何硬體。
 
 這支測的是「硬體事件進來之後，狀態機與畫面狀態的反應對不對」。硬體本身的
 存在與否不在測試範圍內（那是 app_gui.py 啟動時的硬性檢查），所以這裡直接呼叫
@@ -19,14 +19,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.cart_manager import CartManager
-from core.cart_state_machine import (
+from core.shopping.cart import CartManager
+from core.shopping.state_machine import (
     CartStateMachine, load_state_machine_config,
     STATE_SHOPPING, STATE_LOGGED_IN_OUTSIDE_ZONE, STATE_WEIGHT_MISMATCH_ERROR,
     STATE_LOCKED_FOR_CHECKOUT, STATE_AWAITING_EXIT, STATE_UNAUTHENTICATED,
 )
 from database.db_manager import DBManager
-from ui.app_gui import Bridge
+from ui.bridge import Bridge
 
 FAILURES = []
 
@@ -446,6 +446,8 @@ b20._window_holder["window"] = fw
 b20.go_to_login()
 b20.on_hardware_barcode("MEMBER-0001")          # 會員名稱「測試會員 A」是中文
 b20.on_gate_crossing("entering")
+check(b20.wait_push_request(0), "硬體事件會要求推送（由 StatePusher 執行緒推）")
+b20.push_now()
 check(fw.scripts and all(sc.isascii() for sc in fw.scripts), "推送的腳本沒有任何非 ASCII 字元",
       [sc for sc in fw.scripts if not sc.isascii()][:1])
 last = fw.scripts[-1]
@@ -453,7 +455,7 @@ pl = _json.loads(last[len("window.APP && window.APP.render("):-1])
 check(pl["member_name"] == "測試會員 A", "\\uXXXX 解回來的中文跟原本一樣", pl["member_name"])
 
 print("\n[21] 健康護照：規則、掃碼提醒、購物清單標記")
-from core import health_passport as hp  # noqa: E402
+from core.shopping import health_passport as hp  # noqa: E402
 check([c.reason for c in hp.conflicts(["花生"], allergens=["花生"])] == ["過敏原：花生"], "過敏原直接比對")
 check(len(hp.conflicts(["蛋", "牛奶／羊奶"], diet="蛋奶素")) == 0, "蛋奶素可以吃蛋、奶")
 check({c.tag for c in hp.conflicts(["蛋", "牛奶／羊奶", "五辛"], diet="全素（純素）")} == {"蛋", "牛奶／羊奶", "五辛"},
@@ -548,7 +550,7 @@ check(cat["MILK"]["in_cart"] and cat["NUTS"]["health"] and cat["SALAD"]["shelf"]
       cat["NUTS"])
 
 print("\n[25] 沒掃碼的重量變化要放棄：要店員刷工作證")
-from core.cart_state_machine import TimeoutTick  # noqa: E402
+from core.shopping.state_machine import TimeoutTick  # noqa: E402
 import time as _time  # noqa: E402
 b25 = new_bridge()
 to_shopping(b25)
@@ -619,7 +621,7 @@ check(ok == 1 and not errs and p2.tags == ["花生", "大豆"] and p2.shelf == "
 
 print("\n[28] 店面平面圖：貨架代碼、路線、推車位置在定位點對齊")
 import math as _m  # noqa: E402
-from core import store_layout as sl  # noqa: E402
+from core.store import layout as sl  # noqa: E402
 lay = sl.load(TEST_STORE)
 check(sl.codes(lay)[:4] == ["L1", "L2", "L3", "L4"] and len(sl.codes(lay)) == 12, "三座貨架各 4 個角", sl.codes(lay))
 check(sl.describe(lay, "m3") == "中架・左下", "代碼 → 中文位置", sl.describe(lay, "m3"))
@@ -670,7 +672,7 @@ check(sl.StoreFrame(lay).correct_heading(0, 0, 0, 90, 1.0) is None, "還沒對�
 print("\n[29] 機器視覺：地上的定位點標記、貨架消失點（相機 50 cm 高、往下俯）")
 import numpy as _np  # noqa: E402
 import cv2 as _cv2  # noqa: E402
-from core import store_vision as sv  # noqa: E402
+from core.store import vision as sv  # noqa: E402
 W_, H_ = 640, 360
 K_ = _np.array([[450.0, 0, 320], [0, 450.0, 180], [0, 0, 1]])
 
@@ -735,7 +737,7 @@ check(abs(sv.heading_from_vp(-3.0, 182.0) - 177.0) < 1e-9, "朝 −x 方向時 �
 
 print("\n[29b] 現場驗證工具（tools/verify_store_vision.py）的量測與彙整")
 from tools import verify_store_vision as vsv  # noqa: E402
-from ui.app_gui import _VISION_DEFAULTS  # noqa: E402
+from core.config import VISION_DEFAULTS as _VISION_DEFAULTS  # noqa: E402
 vc_ = dict(_VISION_DEFAULTS)
 sc = render_scene(30, gamma_deg=4.0, marker=(1.0, 0.1, 0))
 r_ = vsv.measure(sc, det, K_, vc_)
@@ -803,7 +805,8 @@ check(b28.get_state()["cart_pos"] == {"status": "none"}, "強制登出：位置�
 
 print("\n[31] 相機執行緒：一張影像 → 定位點與消失點交給 Bridge")
 import threading as _th  # noqa: E402
-from ui.app_gui import _VISION_DEFAULTS, _VisionConsumer  # noqa: E402
+from core.config import VISION_DEFAULTS as _VISION_DEFAULTS  # noqa: E402
+from ui.workers import VisionConsumer as _VisionConsumer  # noqa: E402
 scene = render_scene(30, gamma_deg=6.0, marker=(1.0, 0.1, 0))   # 貨架 + 地上的定位點標記
 
 
@@ -835,6 +838,80 @@ stop.set()
 vc.join(2)
 check(rec.anchor and abs(rec.anchor[0].forward_m - 1.0) < 0.05, "看到地上標記（前方 1 m）→ on_anchor_seen", rec.anchor[:1])
 check(rec.vp and abs(rec.vp[0] - 6.0) < 1.0, "貨架消失點 → on_vp_heading(δ ≈ 6°)", rec.vp[:1])
+
+print("\n[32] 重量變了還沒掃碼就推出門：也算沒結帳出場（CRITICAL）")
+b32 = new_bridge()
+to_shopping(b32)
+b32.on_weight_sample(0.0)
+b32.on_weight_sample(320.0)                       # 放進東西、沒掃碼
+check(b32.sm.get_session().state == "awaiting_item_scan", "進入等掃碼", b32.sm.get_session().state)
+b32.on_gate_crossing("exiting")
+last = b32.sm.get_alerts()[-1]
+check(last.code == "exit_without_checkout" and last.severity == "critical", "發出沒結帳出場的 CRITICAL 警告",
+      (last.code, last.severity))
+
+print("\n[33] 前端看得到的 API 只有 JsApi 列出的方法（db、sm 不會被 pywebview 展開）")
+from ui.bridge import JsApi  # noqa: E402
+api_names = {n for n in dir(JsApi(new_bridge())) if not n.startswith("_")}
+check("db" not in api_names and "sm" not in api_names and "on_hardware_barcode" not in api_names,
+      "沒有資料庫、狀態機、硬體入口", sorted(api_names))
+import re as _re  # noqa: E402
+html_calls = set(_re.findall(r"callApi\(\s*['\"]([a-z_]+)['\"]",
+                             (Path(__file__).resolve().parent.parent / "ui" / "templates" / "index.html").read_text("utf-8")))
+check(html_calls <= api_names and "get_state" in api_names, "畫面呼叫的每一個方法都有", sorted(html_calls - api_names))
+
+print("\n[34] 多條執行緒同時操作 Bridge：狀態機一次只處理一個事件")
+import threading as _th2  # noqa: E402
+b34 = new_bridge()
+to_shopping(b34)
+errors = []
+
+
+def _hammer(fn, n):
+    try:
+        for i in range(n):
+            fn(i)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(repr(exc))
+
+
+inside = {"n": 0, "max": 0}
+_orig = b34.sm.process_event
+
+
+def _counting(ev):
+    inside["n"] += 1
+    inside["max"] = max(inside["max"], inside["n"])
+    try:
+        return _orig(ev)
+    finally:
+        inside["n"] -= 1
+
+
+b34.sm.process_event = _counting
+ths = [_th2.Thread(target=_hammer, args=(lambda i: b34.on_weight_sample(320.0 * (i % 2)), 400)),
+       _th2.Thread(target=_hammer, args=(lambda i: b34.on_hardware_barcode("4710018001234"), 100)),
+       _th2.Thread(target=_hammer, args=(lambda i: b34.on_tick(), 200)),
+       _th2.Thread(target=_hammer, args=(lambda i: b34.get_state(), 200))]
+import logging as _lg  # noqa: E402
+_lg.disable(_lg.WARNING)                        # 這段會產生上百筆預期中的警告，不印
+for t in ths:
+    t.start()
+for t in ths:
+    t.join(30)
+_lg.disable(_lg.NOTSET)
+check(not errors, "沒有例外", errors[:2])
+check(inside["max"] == 1, "同一時間最多只有一個事件在狀態機裡", inside["max"])
+
+print("\n[35] config.json 的 landmarks 整個傳給門口判定（新參數不會漏）")
+from core.gate.detector import load_landmark_config  # noqa: E402
+from core.gate.model import GateParams  # noqa: E402
+raw = {"landmarks": {"gate_beacon_pair": {"inside_id": "I", "outside_id": "O"}, "gate_min_confirm_sec": 0.6,
+                     "points": [{"beacon_id": "I", "rssi_offset_db": 1.5}, {"beacon_id": "O"}], "_comment": "x"}}
+lc = load_landmark_config(raw)
+gp = GateParams.from_landmark_config(lc)
+check(gp.min_confirm_sec == 0.6 and gp.offsets == {"I": 1.5, "O": 0.0} and "_comment" not in lc,
+      "確認時間 T_c 與偏移都讀得到", (gp.min_confirm_sec, gp.offsets))
 
 # ======================================================================
 print("\n" + "=" * 60)

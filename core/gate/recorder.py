@@ -1,13 +1,13 @@
 """
-core/gate_recorder.py
+core/gate/recorder.py
 
 把門口判定「讀到的每一筆值」記錄下來，給事後分析與重播用。執行期（ui/app_gui.py、
-tools/run_real_hardware_flow.py、校正工具的 --monitor）跟校正量測用的是同一種格式，
+校正工具的 --monitor）跟校正量測用的是同一種格式，
 所以 tools/analyze_gate_log.py 兩種都能讀。
 
 檔案：
     <名稱>.csv        每一筆 BLE 觀測一行
-    <名稱>.meta.json  當時用的判定參數（core.gate_model.GateParams）與其他資訊
+    <名稱>.meta.json  當時用的判定參數（core.gate.model.GateParams）與其他資訊
 
 CSV 欄位：
     segment    段落名稱。執行期是 "run"；校正量測是位置代號（out100、thr…）
@@ -37,12 +37,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from core.gate_model import GateParams, Observation
+from core import config
+from core.gate.model import GateParams, Observation
 
 logger = logging.getLogger(__name__)
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-RUNTIME_LOG_ROOT = _REPO_ROOT / "data" / "gate_logs"
+RUNTIME_LOG_ROOT = config.DATA_DIR / "gate_logs"
 
 COLUMNS = ["segment", "epoch", "beacon_id", "rssi", "yaw_deg", "s_in", "s_out", "diff", "dominant", "event"]
 _SIDE = {"a": "in", "b": "out", None: ""}

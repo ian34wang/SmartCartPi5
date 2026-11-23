@@ -1,4 +1,4 @@
-"""秤重校正（core/weight_calibration.py、tools/calibrate_weight.py）的測試——不需要硬體。
+"""秤重校正（core/shopping/weight_calibration.py、tools/calibrate_weight.py）的測試——不需要硬體。
 
 用合成的 HX711 讀數（已知 a、b，加雜訊、推車震動、放入時的衝擊振盪）驗證：
     - 多點最小平方找回正確的 offset、scale，殘差反映非線性
@@ -26,8 +26,8 @@ import logging  # noqa: E402
 
 logging.disable(logging.WARNING)   # 狀態機重播時的警告訊息不印
 
-from core.uart_recording import Recording, Sample, Segment, load  # noqa: E402
-from core.weight_calibration import calibrate, fit_line, replay_push, static_points, to_grams  # noqa: E402
+from core.recording import Recording, Sample, Segment, load  # noqa: E402
+from core.shopping.weight_calibration import calibrate, fit_line, replay_push, static_points, to_grams  # noqa: E402
 
 FAILURES = []
 A, B = 84210.0, 21.5          # 真正的 offset 與 scale（count/g）
@@ -182,8 +182,8 @@ with tempfile.TemporaryDirectory() as d:
           "讀回來重算的參數完全相同", (cal2.offset, cal2.scale, cal2.t_rec))
 
 print("\n[6b] 狀態機的「等讀數穩定」本身（時間戳記直接給）")
-from core.cart_manager import CartManager  # noqa: E402
-from core.cart_state_machine import (  # noqa: E402
+from core.shopping.cart import CartManager  # noqa: E402
+from core.shopping.state_machine import (  # noqa: E402
     ALERT_UNSCANNED_WEIGHT_CHANGE, CartStateMachine, GateEntryDetected, ItemScanned, LoginScanned,
     WeightSampleReceived,
 )

@@ -1,30 +1,16 @@
 """
-core/gate_monitor.py
+core/gate/monitor.py
 
-把 `drivers/ble_beacon_scanner.py` 送來的一筆一筆 BLE RSSI 觀測，變成
-「進場／出場」判定，給 `core/cart_state_machine.py` 的 `GateEntryDetected`／
-`GateExitDetected` 用。
+門口判定的即時版本：drivers/ble_beacon_scanner.py 送來的一筆筆 RSSI 觀測 → 「進場／出場」，給
+core/shopping/state_machine.py 的 GateEntryDetected／GateExitDetected。
 
-為什麼要獨立成一支：`core/landmark_correction.py` 的 `GateCrossingDetector`
-只負責「兩顆 Beacon 平滑後的 RSSI 誰佔優勢、什麼時候翻轉」這一段純判定，
-它不知道 RSSI 從哪來、也不做平滑、更不碰 IMU 航向。中間這些事
-（每顆 Beacon 各自維護一段歷史、各自平滑、湊成一對餵給偵測器、再用航向角
-做交叉驗證）原本散在「之後接 main.py 時再做」的口頭約定裡，沒有實作；
-`ui/app_gui.py` 跟 `tools/run_real_hardware_flow.py` 兩邊都需要，所以收斂成
-這一支共用，不要各寫一份。
+濾波與判定規則在 core/gate/model.py（唯一標準），這支只把它包成一筆一筆處理的介面，順便把每一筆
+讀值與判定結果記錄下來（core/gate/recorder.py），事後用 tools/analyze_gate_log.py 重播。校正工具
+挑參數時重播的也是同一套規則，所以校正時驗證過的行為就是實際的行為。
 
-判定的濾波與規則本身寫在 `core/gate_model.py`（單一標準）：這支只是把那套
-規則包成「一筆一筆即時處理」的介面，順便把每一筆讀到的值與判定結果記錄下來
-（`core/gate_recorder.py`），之後可以用 `tools/analyze_gate_log.py` 重播分析。
-校正工具挑參數時重播的也是同一套規則，所以校正時驗證過的行為就是實際的行為。
-
-航向交叉驗證（這是 BLE 判定之外的第二道獨立訊號）：
-    BLE RSSI 是全向性的，物理上量不到「有沒有真的通過那個實體開口」，所以
-    門口判定除了 BLE 差分之外，還要拿 IMU 的航向角交叉驗證——車子當下的朝向
-    要跟「真的在穿越門口」該有的朝向大致一致，才採信這次判定。
-    只有在 config.json 的 `landmarks.gate_exit_yaw_deg` **有填實測值**時才會
-    啟用；還沒量的話那個欄位是 null，這一層就自動不啟用（拿一個沒校正過的
-    角度去擋，只會把真的穿越也一起擋掉）。量到之後填進去就會自動生效。
+航向交叉驗證（BLE 之外的第二道訊號）：RSSI 沒有方向性，量不到有沒有真的通過門口，所以還要看
+IMU 航向是否跟穿越門口該有的朝向一致。只有 config.json 的 landmarks.gate_exit_yaw_deg 有填實測值時
+才啟用；沒量（null）就不啟用——拿沒校正的角度去擋，只會把真的穿越也擋掉。
 """
 
 from __future__ import annotations
@@ -32,14 +18,14 @@ from __future__ import annotations
 import logging
 from typing import Dict, Optional
 
-from core.gate_model import GateDecision, GateParams, SmoothingWindow
-from core.landmark_correction import GATE_CROSSING_ENTERING, GATE_CROSSING_EXITING
+from core.gate.model import GateDecision, GateParams, SmoothingWindow
+from core.gate.detector import GATE_CROSSING_ENTERING, GATE_CROSSING_EXITING
 
 logger = logging.getLogger(__name__)
 
 
 class GateMonitor:
-    """門口雙 Beacon 監看器（core/gate_model.py 那套規則的即時版本）。
+    """門口雙 Beacon 監看器（core/gate/model.py 那套規則的即時版本）。
 
     用法：
         monitor = GateMonitor.from_config(landmark_cfg, recorder=GateRecorder.for_runtime("app"))
@@ -98,7 +84,7 @@ class GateMonitor:
 
     @classmethod
     def from_config(cls, cfg: dict, recorder=None) -> "GateMonitor":
-        """用 `core.landmark_correction.load_landmark_config()` 的結果建構。"""
+        """用 `core.gate.detector.load_landmark_config()` 的結果建構。"""
         return cls.from_params(GateParams.from_landmark_config(cfg), recorder=recorder)
 
     @classmethod
@@ -178,7 +164,7 @@ class GateMonitor:
     def process_observation(self, beacon_id: str, rssi: float, timestamp: float) -> Optional[str]:
         """處理一筆 BLE 觀測，回傳 "entering"／"exiting"／None。
 
-        規則見 core/gate_model.py 開頭的判定流程。兩顆 Beacon 窗內都至少要有
+        規則見 core/gate/model.py 開頭的判定流程。兩顆 Beacon 窗內都至少要有
         rssi_min_samples 筆才判定——只有一邊有訊號的時候，「誰比較強」沒有意義。
         """
         if beacon_id not in self._window.history:

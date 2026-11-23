@@ -1,10 +1,10 @@
 """
-core/gate_model.py
+core/gate/model.py
 
 管制區門口判定的「單一標準」：參數、濾波、判定、重播，全部在這一支。
 
-    執行期    core/gate_monitor.GateMonitor          一筆一筆即時處理
-    校正      core/gate_calibration                  用實測資料挑參數
+    執行期    core/gate/monitor.GateMonitor          一筆一筆即時處理
+    校正      core/gate/calibration                  用實測資料挑參數
     事後分析  tools/analyze_gate_log                  拿記錄重算、試別的參數
 
 三個地方用的都是這裡的 SmoothingWindow + GateCrossingDetector，沒有任何一個
@@ -32,7 +32,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, replace
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from core.landmark_correction import (
+from core.gate.detector import (
     GATE_CROSSING_ENTERING,
     GateCrossingDetector,
     is_heading_consistent,
@@ -62,7 +62,7 @@ class GateParams:
 
     @classmethod
     def from_landmark_config(cls, cfg: dict) -> "GateParams":
-        """吃 core.landmark_correction.load_landmark_config() 的結果。"""
+        """吃 core.gate.detector.load_landmark_config() 的結果。"""
         pair = cfg.get("gate_beacon_pair", {})
         return cls(
             inside_id=pair.get("inside_id", ""),

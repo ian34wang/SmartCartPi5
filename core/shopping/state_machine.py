@@ -1,118 +1,62 @@
 """
-core/cart_state_machine.py
+core/shopping/state_machine.py
 
-Phase 4：購物流程狀態機——「底層架構的支持」，負責保障整趟購物流程本身的
-正確性（掃碼、秤重比對、防損、閘門進出的合理性），不含 LLM 推薦、預算分
-析這類進階功能（那些排在 Phase 6 之上，見 README「前身專題功能取捨」章節）。
+購物流程狀態機：一台推車從登入到登出的整趟流程（掃碼、秤重比對、防損、進出管制區）。
+純邏輯，除了查資料庫沒有 I/O；硬體事件由 ui/workers.py 餵進來，畫面由 ui/bridge.py 讀。
 
-涵蓋的完整流程（使用者的要求）：
-    人進商店拿到推車 -> 登入帳號 -> 進入管制區 -> 購物（商品增減，含掃碼加入
-    /移除跟秤重比對）-> 鎖定結帳 -> （付款，付款本身不在這支的範圍內，這裡只
-    接收「付款完成」這個結果事件）-> 走出管制區 -> 登出帳號。
+流程與狀態：
+    UNAUTHENTICATED ─登入─▶ LOGGED_IN_OUTSIDE_ZONE ─BLE 判定進場─▶ SHOPPING
+    SHOPPING ⇄ AWAITING_ITEM_SCAN（重量先變、等掃碼）
+    SHOPPING ⇄ AWAITING_WEIGHT_INCREASE / _DECREASE（掃碼後等重量）
+    以上任一步出錯 ─▶ WEIGHT_MISMATCH_ERROR（重試／放棄／店員歸零）
+    SHOPPING ─鎖定─▶ LOCKED_FOR_CHECKOUT ─付款─▶ AWAITING_EXIT ─BLE 判定出場─▶ SESSION_CLOSED ─登出─▶ UNAUTHENTICATED
 
-設計原則：這條路上每一步都可能出錯，出錯的處理方式分兩種——
-    (a) 可以直接在軟體層擋下來/引導使用者重試的（例如條碼查無資料、秤重沒
-        對上），狀態機負責擋下錯誤動作、給出明確的 CartAlert，並提供合理的
-        重試/取消路徑（RetryWeightCheckRequested / VoidPendingItemRequested）。
-    (b) 沒辦法只靠軟體解決、代表可能有防損疑慮的（例如結帳前就走出管制區），
-        狀態機不會假裝沒事發生、也不會自己幫使用者硬轉成「正常結束」的狀態，
-        只會發出最高等級（CRITICAL）的 CartAlert，讓上層（UI、警報硬體、店員
-        介入）決定怎麼處理——狀態機本身沒有能力真的攔住一個人，這是軟體邊界，
-        不是漏做。
+錯誤分兩種：
+    (a) 軟體擋得下來的（條碼查無資料、秤重對不上）：擋下動作、發 CartAlert、提供重試／放棄。
+    (b) 可能是防損事件的（沒結帳就出場、未登入就進場）：發 CRITICAL 警告，狀態不自動改，交給
+        上層（畫面、店員）處理。狀態機攔不住人，這是軟體的邊界。
+被拒絕的事件不丟例外，只記一筆 CartAlert（呼叫端比對前後的警告把結果顯示出來）。
 
-跟目前硬體現況的對應關係（決定這支怎麼設計的關鍵背景）：
-    - 登入：目前硬體只有 USB 條碼掃描器，所以登入方式是「掃會員條碼/QR
-      code」（不是密碼、不是 RFID 卡）。
-    - 「進入/走出管制區」：目前沒有閘門/RFID gate 這類專用硬體，這支先假設
-      未來會有這樣的硬體、以事件（GateEntryDetected / GateExitDetected）的
-      形式餵進來；實際硬體介面確定後，寫一個 drivers/gate_sensor.py 之類的
-      模組把硬體訊號轉成這兩個事件即可，這支狀態機的邏輯不用改。
-    - 「鎖定結帳」：目前購物車沒有電子鎖/煞車這類實體機構，所以「鎖定」純粹
-      是軟體狀態鎖——LOCKED_FOR_CHECKOUT 狀態下 UI 應該要禁止繼續操作增減
-      商品的功能，僅此而已，不代表車子被真的鎖住了。
-    - 「同一會員是否已經在別台購物車登入」：單機沒辦法知道其他購物車的狀
-      態，這件事需要中央伺服器/共用資料庫才能做，目前架構沒有這塊，所以這
-      支不處理跨購物車重複登入偵測（見 database/db_manager.py 開頭的說明）。
+加入／移除由「掃碼與重量變化誰先發生」自動判斷，ItemScanned 不帶模式：
+    加入  先掃碼、重量還沒變 → AWAITING_WEIGHT_INCREASE，基準 = 掃碼當下的穩定重量。
+    移除  先拿出來、重量先變 → AWAITING_ITEM_SCAN（記下變化前的基準 b）→ 掃碼時依目前重量比 b
+          輕或重決定移除或加入，基準用 b。
+    AWAITING_ITEM_SCAN 期間重量自己回到 b 附近（手滑碰到籃子）→ 自動解除；
+    超過 unscanned_change_timeout_sec 沒掃碼 → WEIGHT_MISMATCH_ERROR（「只做一半」）。
 
-加入／移除不是使用者手動切換模式決定的，是系統依照「秤碼跟掃碼誰先發生」
-自動判斷（跟真實購物動作的先後順序一致）：
-    - 加入：先掃碼、再把商品放進籃子——掃碼當下重量還沒變，跟原本的邏輯一
-      樣，直接進 AWAITING_WEIGHT_INCREASE 等重量增加。
-    - 移除：先把商品從籃子拿出來、再掃碼——重量在掃碼「之前」就已經變化，
-      掃碼是回頭指認剛才拿走的是哪一件。這種情況會先經過一個新狀態
-      AWAITING_ITEM_SCAN（見下方），等到真的掃碼那一刻，才用『掃碼前』就
-      記錄好的基準值跟方向去判斷是加入還是移除。
+秤重比對：基準 b、穩定讀數 w̃、商品標準重量 m、容差 τ，預期變化 e = +m（加入）或 −m（移除），
+實測變化 δ = w̃ − b：
+    |δ − e| ≤ τ                       比對成功，寫入購物清單
+    sign(δ) ≠ sign(e) 且 |δ| > τ       方向相反（可能同時動了別的東西）→ 異常
+    sign(δ) = sign(e) 且 |δ| > |e| + τ  超出上限（拿了不只一件或拿錯）→ 異常
+    其他                              還在放／拿的過程中，繼續等；超過 weight_match_timeout_sec → 異常
+購物中變化量 |w̃ − 穩定重量| < unscanned_change_threshold_g 視為雜訊，並讓穩定重量跟上小幅漂移。
 
-跟秤重比對相關的核心邏輯：
-    STATE_SHOPPING 狀態下，狀態機會持續拿每一筆秤重讀數跟「目前穩定重量」
-    （stable_weight_g）比較，變化在雜訊門檻（weight.unscanned_change_threshold_g）
-    以內就當雜訊，順便更新 stable_weight_g；一旦變化超過門檻，代表使用者已
-    經動了籃子裡的東西但還沒掃碼，轉進 AWAITING_ITEM_SCAN，記錄變化前的基
-    準值（unscanned_baseline_g）跟開始時間，發出 WARNING 等級的
-    ALERT_UNSCANNED_WEIGHT_CHANGE（不鎖定，只是提醒）。這個狀態如果重量自
-    己又回到基準值附近（例如只是手滑碰到籃子），會自動判定成虛驚一場，回到
-    SHOPPING，不用使用者介入；如果一直等到逾時
-    （weight.unscanned_change_timeout_sec）都沒有掃碼，才真的升級成
-    WEIGHT_MISMATCH_ERROR 鎖定，發 ALERT_UNSCANNED_WEIGHT_TIMEOUT。
+穩定讀數 w̃（config.json 的 weight.settle_window_sec = W_s、settle_band_g = B_s）：
+    最近 W_s 秒的讀數 w₁…wₙ，若 n ≥ 3、涵蓋至少 0.8·W_s 秒、且 max(w) − min(w) ≤ B_s，
+    則 w̃ = median(w)；否則「還沒穩」，只更新目前重量、不做判斷。W_s = 0 表示每筆都算穩定。
+    放入商品時讀數會先衝過頭再停（實測衝擊最多 69 g），用穩定值才不會把晃動的那一筆當成結果。
 
-    不管是「先掃碼」（STATE_SHOPPING 直接掃）還是「先變重量」
-    （AWAITING_ITEM_SCAN 狀態下才掃），一旦掃到碼，都會決定好基準值
-    （pending_item_baseline_g）、預期變化量跟方向，進入
-    AWAITING_WEIGHT_INCREASE / _DECREASE，後續每收到一筆新的秤重讀數，就算
-    跟基準值的差 delta，拿去跟這個商品在 database 裡登記的
-    standard_weight_g（加入是正、移除是負）± weight_tolerance_g 比對：
-        - 差在容差範圍內 -> 比對成功，商品正式加入/移出購物清單
-          （CartManager.add_item/remove_item），回到 SHOPPING。
-        - 方向反過來且超出容差 -> 直接判定 WEIGHT_DIRECTION_MISMATCH（可能
-          有其他商品同時被拿動），不用等逾時。
-        - 方向對，但差值已經超出容差上限（可能拿了不只一件、或拿錯商品）
-          -> WEIGHT_MISMATCH，一樣不用等逾時。
-        - 還在容差範圍外但方向對、量也還沒超標 -> 視為「還在放/拿的過程
-          中」，繼續等，直到比對成功或等到逾時
-          （config.json 的 weight.weight_match_timeout_sec）。
-    這個模型完全可以用假的 WeightSampleReceived 事件做離線邏輯測試，不需要
-    真的秤重硬體（跟 core/odometry_engine.py 的測試哲學一致）。
-
-等讀數穩定才比（2026-11-16 加，config.json 的 weight.settle_window_sec、settle_band_g）：
-    原本每一筆讀數都直接拿去比，實測放入商品時讀數會先衝過頭、晃一下才停（衝擊
-    最多多了 69 g），於是「剛好經過容差範圍的那一筆」就被判成加入、並被當成新的
-    基準，之後讀數繼續往穩定值走，多出來的 10~20 g 又觸發「未掃碼的重量變化」。
-    現在三個判斷都改用「穩定值」：
-        令最近 W_s 秒（settle_window_sec）內的讀數為 w_1…w_n，
-        若 n ≥ 3、這些讀數涵蓋了至少 0.8·W_s 秒、且 max(w) − min(w) ≤ B_s（settle_band_g），
-        則穩定值 w̃ = median(w)；否則這一刻「還沒穩」，不做判斷。
-    用到穩定值的地方：比對加入／移除、偵測未掃碼的重量變化、未掃碼變化自動解除。
-    還沒穩的時候只更新 current_weight_g，逾時照樣由 TimeoutTick 計算。
-    W_s = 0（config 沒設時的預設）代表每一筆都視為穩定，跟舊版行為完全一樣。
-    W_s、B_s 由 tools/calibrate_weight.py 用實際放入的錄音重播挑出來。
-
-用法（本機互動模擬整套流程，不需要真實硬體）：
-    這支沒有 CLI——它是純邏輯模組，沒有硬體、也沒有互動入口。要在真實硬體上
-    跑完整流程請用 `tools/run_real_hardware_flow.py`（終端機）或
-    `ui/app_gui.py`（觸控畫面）。
+逾時用 TimeoutTick（呼叫端約每秒送一次）驅動，所以逾時邏輯也能用指定時間的事件測試。
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import statistics
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import List, Optional, Union
+from typing import Callable, Dict, List, Optional, Union
 
+from core import config
+from core.shopping.cart import CartManager
 from database.db_manager import DBManager
-from core.cart_manager import CartManager
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
-
 # ----------------------------------------------------------------------
-# 狀態常數（沿用專案既有風格：用字串常數而不是 enum.Enum，
-# 跟 core/position_types.py 的 POSITION_SOURCE_*/YAW_SOURCE_* 一致）
+# 狀態（字串常數：直接放進畫面狀態 JSON、記錄檔）
 # ----------------------------------------------------------------------
 STATE_UNAUTHENTICATED = "unauthenticated"
 STATE_LOGGED_IN_OUTSIDE_ZONE = "logged_in_outside_zone"
@@ -125,12 +69,13 @@ STATE_LOCKED_FOR_CHECKOUT = "locked_for_checkout"
 STATE_AWAITING_EXIT = "awaiting_exit"
 STATE_SESSION_CLOSED = "session_closed"
 
+# 已經掃碼、等重量比對
 _AWAITING_WEIGHT_STATES = (STATE_AWAITING_WEIGHT_INCREASE, STATE_AWAITING_WEIGHT_DECREASE)
-# 上面那組是「已經掃碼、正在等重量比對」；這組多包含 AWAITING_ITEM_SCAN
-# （「重量已變化、還在等掃碼」），兩者都代表秤重相關流程正在進行中，鎖定
-# 結帳跟感測器斷線這類判斷需要涵蓋兩者，但「能不能掃碼」的判斷不能涵蓋
-# AWAITING_ITEM_SCAN（那個狀態正是在等掃碼），所以分成兩組常數。
+# 秤重流程進行中（多了「重量已變、等掃碼」）：鎖定結帳、感測器斷線要涵蓋這組；能不能掃碼不能
 _WEIGHT_IN_PROGRESS_STATES = _AWAITING_WEIGHT_STATES + (STATE_AWAITING_ITEM_SCAN,)
+# 已進管制區、還沒付款：這時走出門口就是沒結帳出場
+_IN_ZONE_UNPAID_STATES = (STATE_SHOPPING, STATE_AWAITING_ITEM_SCAN, STATE_AWAITING_WEIGHT_INCREASE,
+                          STATE_AWAITING_WEIGHT_DECREASE, STATE_WEIGHT_MISMATCH_ERROR, STATE_LOCKED_FOR_CHECKOUT)
 
 ITEM_SCAN_MODE_ADD = "add"
 ITEM_SCAN_MODE_REMOVE = "remove"
@@ -146,9 +91,7 @@ _SEVERITY_LOG_LEVEL = {
 }
 
 # ----------------------------------------------------------------------
-# 警告代碼——整趟流程每個「可能出問題」的地方各對應一個代碼，方便 UI/log/
-# 之後的異常偵測模型（Phase 6 anomaly_detector.py）依代碼分類統計，不用
-# 去解析訊息文字。
+# 警告代碼：每個可能出問題的地方一個代碼，畫面、記錄、統計依代碼分類，不解析訊息文字
 # ----------------------------------------------------------------------
 ALERT_LOGIN_FORMAT_INVALID = "login_format_invalid"
 ALERT_LOGIN_MEMBER_NOT_FOUND = "login_member_not_found"
@@ -177,10 +120,7 @@ ALERT_CHECKOUT_UNLOCKED = "checkout_unlocked"
 ALERT_STAFF_REZERO = "staff_rezero_authorized"
 
 # ----------------------------------------------------------------------
-# 事件——每一種外部輸入各自一個 dataclass（不是共用一個 type+payload 的通用
-# event），好處是型別檢查跟可讀性都比較好，跟專案裡 UartPacket/PositionEstimate
-# 的風格一致。timestamp 由呼叫方（真實系統整合時）在事件真正發生的當下填入，
-# 不是 handle_event() 呼叫的當下——這樣事件就算被排隊延後處理，時間點還是準的。
+# 事件：每種外部輸入一個 dataclass。timestamp 是事件發生的時間（不是處理的時間）
 # ----------------------------------------------------------------------
 @dataclass
 class LoginScanned:
@@ -197,10 +137,7 @@ class GateExitDetected:
 
 @dataclass
 class ItemScanned:
-    """單純代表『掃到一個條碼』這件事，不帶模式——加入還是移除由狀態機自己
-    依照秤重跟掃碼的先後順序判斷（見檔案開頭說明），呼叫方（drivers/
-    barcode_scanner.py 那層）不需要也不應該幫忙決定模式。
-    """
+    """掃到一個商品條碼。不帶加入／移除，由狀態機依掃碼與重量變化的先後判斷。"""
 
     barcode: str
     timestamp: float
@@ -224,50 +161,42 @@ class LockForCheckoutRequested:
 
 @dataclass
 class PaymentConfirmed:
-    """付款流程本身不在這支的範圍內（沒有金流/收銀邏輯），這裡只接收「付款
-    已完成」這個結果，交由上層（結帳 UI/金流模組）在確認付款後送出這個事件。
-    """
+    """付款已完成（沒有金流，結帳畫面確認後送出）。"""
 
     timestamp: float
 
 @dataclass
 class RetryWeightCheckRequested:
-    """WEIGHT_MISMATCH_ERROR 狀態下，使用者/店員確認要重新秤一次（例如剛剛
-    手滑碰到秤台，現在東西已經放好了），用目前的重量重新當基準值再等一次。
-    """
+    """秤重異常時重新比對：用目前重量當新基準再等一次。"""
 
     timestamp: float
 
 @dataclass
 class VoidPendingItemRequested:
-    """WEIGHT_MISMATCH_ERROR 狀態下，放棄這一筆掃碼（商品不加入/不移除），
-    回到 SHOPPING，不影響清單裡其他已經確認過的商品。
+    """秤重異常時放棄這一筆（不加入也不移除），回到 SHOPPING。
+
+    沒掃過碼的異常（只做一半逾時）沒有待比對的商品，放棄等於把目前重量當新基準，所以畫面上
+    這種情況要店員確認才會送出（ui/bridge.py）。
     """
 
     timestamp: float
 
 @dataclass
 class UnlockCheckoutRequested:
-    """結帳畫面「返回繼續選購」：解除 LOCKED_FOR_CHECKOUT 回到 SHOPPING。
+    """結帳畫面「返回繼續選購」：解除鎖定回到 SHOPPING。
 
-    不會開防損漏洞：鎖定期間秤重讀數只更新 current_weight_g、不動
-    stable_weight_g（見 _on_weight_sample），所以解鎖後第一筆讀數就會拿去跟
-    「鎖定前的穩定重量」比，鎖定期間偷放／偷拿的東西一樣會被偵測成未掃碼的
-    重量變化（AWAITING_ITEM_SCAN）。
+    鎖定期間只更新 current_weight_g、不動 stable_weight_g，解鎖後第一筆穩定讀數就跟鎖定前的
+    穩定重量比，鎖定期間放進或拿出的東西一樣會被抓成未掃碼的重量變化。
     """
 
     timestamp: float
 
 @dataclass
 class StaffRezeroAuthorized:
-    """秤重異常畫面「重新校準歸零」，而且店員已經刷工作證確認過。
+    """秤重異常「重新校準歸零」，店員已刷工作證確認。
 
-    效果：放棄待比對的那一筆（不加入也不移除），把目前重量當成新的穩定基準，
-    回到 SHOPPING。這等於「接受籃子裡現在的東西就是對的」，所以只有店員能做：
-    使用者自己按按鈕只會送出協助請求（ui/app_gui.py），要等店員刷了工作證
-    （config.json 的 state_machine.staff_barcode_prefix，staff 資料表裡有的代碼）
-    才會送出這個事件。店員代碼與前後重量都記進警告歷史（ALERT_STAFF_REZERO），
-    事後可以查是誰、在什麼情況下確認的。
+    放棄待比對的那一筆，把目前重量當成新的穩定基準。這等於接受籃子裡現在的東西，所以只有店員能做
+    （使用者按按鈕只送出協助請求）。店員代碼與前後重量記進警告歷史（ALERT_STAFF_REZERO）。
     """
 
     staff_id: str
@@ -279,21 +208,14 @@ class LogoutRequested:
 
 @dataclass
 class ForceLogoutRequested:
-    """店員協助的強制登出（例如使用者棄車離開、系統卡住需要重置），不檢查
-    是否已經正常結帳/走出管制區，直接清空狀態——但如果清單裡還有商品，會發
-    出 CRITICAL 警告，因為這代表可能有商品沒有被正確結帳。
-    """
+    """店員強制登出（棄車、需要重置）：直接清空；清單裡還有商品就發 CRITICAL。"""
 
     timestamp: float
     reason: str = ""
 
 @dataclass
 class TimeoutTick:
-    """驅動各種逾時檢查用的『目前時間』事件。不需要幫每個逾時各自開一條計時
-    執行緒，只要主迴圈固定間隔（例如每秒一次）丟一個這個事件進來，狀態機自
-    己比對經過時間，超過門檻就發警告。這個設計選擇是為了讓逾時邏輯也能用
-    純邏輯測試（直接建構帶特定 now 值的 TimeoutTick，不用真的等待）。
-    """
+    """目前時間，驅動各種逾時檢查（呼叫端約每秒送一次）。"""
 
     now: float
 
@@ -325,10 +247,7 @@ class CartAlert:
 
 @dataclass
 class CartSession:
-    """目前這次登入~登出的狀態快照。跟 core/position_types.py 的
-    PositionEstimate 一樣，這是設計給下游（UI、店員介面、log）直接讀的穩定
-    格式，不含任何邏輯——所有邏輯都在 CartStateMachine 裡。
-    """
+    """這次登入到登出的狀態（畫面、記錄直接讀；邏輯都在 CartStateMachine）。"""
 
     state: str = STATE_UNAUTHENTICATED
     member_id: Optional[str] = None
@@ -340,15 +259,13 @@ class CartSession:
     sensor_connected: bool = True
     current_weight_g: Optional[float] = None
 
-    # STATE_SHOPPING 底下持續追蹤的「目前穩定重量」，用來偵測掃碼前就發生的
-    # 未解釋重量變化（見 AWAITING_ITEM_SCAN）。
+    # 購物中的穩定重量（偵測掃碼前就發生的重量變化）
     stable_weight_g: Optional[float] = None
-    # 偵測到未解釋的重量變化、還在等掃碼指認時的基準值與起始時間
-    # （沒有在等待時是 None）。
+    # 重量先變、等掃碼時：變化前的基準與開始時間
     unscanned_baseline_g: Optional[float] = None
     unscanned_change_started_at: Optional[float] = None
 
-    # 目前正在等待秤重比對的那一筆掃碼（沒有在等待時全部是 None）
+    # 正在等秤重比對的那一筆
     pending_item_barcode: Optional[str] = None
     pending_item_mode: Optional[str] = None
     pending_item_expected_delta_g: Optional[float] = None
@@ -356,15 +273,12 @@ class CartSession:
     pending_item_baseline_g: Optional[float] = None
     weight_check_started_at: Optional[float] = None
 
-    # 最近幾筆警告，方便 UI 直接顯示；完整歷史用 CartStateMachine.get_alerts()
+    # 最近 5 筆警告；完整歷史用 CartStateMachine.get_alerts()
     recent_alerts: List[CartAlert] = field(default_factory=list)
 
 class CartStateMachine:
-    """整套購物流程的狀態機。process_event() 本身是純邏輯（除了呼叫
-    DBManager 查資料庫以外沒有其他 I/O、沒有背景執行緒），方便用假資料/假
-    DB 單元測試；真實系統整合時由主迴圈把各個 driver（barcode_scanner、
-    uart_receiver 換算出的重量、之後的 gate_sensor）產生的事件餵進來。
-    """
+    """process_event() 一次處理一個事件，回傳最新的 CartSession。不是執行緒安全的：
+    多條執行緒共用時由呼叫端上鎖（ui/bridge.py）。"""
 
     def __init__(
         self,
@@ -376,10 +290,27 @@ class CartStateMachine:
         self.db = db
         self.cart = cart if cart is not None else CartManager()
         self.cfg = config or {}
-        self._max_alert_history = max_alert_history
         self._session = CartSession()
-        self._alerts: List[CartAlert] = []
+        self._alerts: "deque[CartAlert]" = deque(maxlen=max_alert_history)
         self._weights: "deque" = deque()     # 最近的 (t, g)，算穩定值用
+        self._handlers: Dict[type, Callable] = {
+            LoginScanned: self._on_login,
+            GateEntryDetected: self._on_gate_entry,
+            GateExitDetected: self._on_gate_exit,
+            ItemScanned: self._on_item_scanned,
+            WeightSampleReceived: self._on_weight_sample,
+            SensorDisconnected: self._on_sensor_disconnected,
+            SensorReconnected: self._on_sensor_reconnected,
+            LockForCheckoutRequested: self._on_lock_requested,
+            PaymentConfirmed: self._on_payment_confirmed,
+            RetryWeightCheckRequested: self._on_retry_weight_check,
+            VoidPendingItemRequested: self._on_void_pending_item,
+            UnlockCheckoutRequested: self._on_unlock_checkout,
+            StaffRezeroAuthorized: self._on_staff_rezero,
+            LogoutRequested: self._on_logout_requested,
+            ForceLogoutRequested: self._on_force_logout,
+            TimeoutTick: self._on_timeout_tick,
+        }
 
     # ------------------------------------------------------------------
     def get_session(self) -> CartSession:
@@ -390,40 +321,10 @@ class CartStateMachine:
 
     # ------------------------------------------------------------------
     def process_event(self, event: CartEvent) -> CartSession:
-        if isinstance(event, LoginScanned):
-            self._on_login(event)
-        elif isinstance(event, GateEntryDetected):
-            self._on_gate_entry(event)
-        elif isinstance(event, GateExitDetected):
-            self._on_gate_exit(event)
-        elif isinstance(event, ItemScanned):
-            self._on_item_scanned(event)
-        elif isinstance(event, WeightSampleReceived):
-            self._on_weight_sample(event)
-        elif isinstance(event, SensorDisconnected):
-            self._on_sensor_disconnected(event)
-        elif isinstance(event, SensorReconnected):
-            self._on_sensor_reconnected(event)
-        elif isinstance(event, LockForCheckoutRequested):
-            self._on_lock_requested(event)
-        elif isinstance(event, PaymentConfirmed):
-            self._on_payment_confirmed(event)
-        elif isinstance(event, RetryWeightCheckRequested):
-            self._on_retry_weight_check(event)
-        elif isinstance(event, VoidPendingItemRequested):
-            self._on_void_pending_item(event)
-        elif isinstance(event, UnlockCheckoutRequested):
-            self._on_unlock_checkout(event)
-        elif isinstance(event, StaffRezeroAuthorized):
-            self._on_staff_rezero(event)
-        elif isinstance(event, LogoutRequested):
-            self._on_logout_requested(event)
-        elif isinstance(event, ForceLogoutRequested):
-            self._on_force_logout(event)
-        elif isinstance(event, TimeoutTick):
-            self._on_timeout_tick(event)
-        else:
+        handler = self._handlers.get(type(event))
+        if handler is None:
             raise TypeError(f"未知的事件型別：{type(event)!r}")
+        handler(event)
         return self._session
 
     # ------------------------------------------------------------------
@@ -431,9 +332,7 @@ class CartStateMachine:
         ts = timestamp if timestamp is not None else time.time()
         alert = CartAlert(code=code, severity=severity, message=message, timestamp=ts)
         self._alerts.append(alert)
-        if len(self._alerts) > self._max_alert_history:
-            self._alerts.pop(0)
-        self._session.recent_alerts = self._alerts[-5:]
+        self._session.recent_alerts = list(self._alerts)[-5:]
         logger.log(_SEVERITY_LOG_LEVEL[severity], "[%s] %s", code, message)
 
     def _clear_pending(self) -> None:
@@ -515,14 +414,7 @@ class CartStateMachine:
         if s.state == STATE_AWAITING_EXIT:
             s.state = STATE_SESSION_CLOSED
             s.last_activity_at = event.timestamp
-        elif s.state in (
-            STATE_LOGGED_IN_OUTSIDE_ZONE,
-            STATE_SHOPPING,
-            STATE_AWAITING_WEIGHT_INCREASE,
-            STATE_AWAITING_WEIGHT_DECREASE,
-            STATE_WEIGHT_MISMATCH_ERROR,
-            STATE_LOCKED_FOR_CHECKOUT,
-        ):
+        elif s.state in _IN_ZONE_UNPAID_STATES or s.state == STATE_LOGGED_IN_OUTSIDE_ZONE:
             self._alert(
                 SEVERITY_CRITICAL, ALERT_EXIT_WITHOUT_CHECKOUT,
                 f"狀態 {s.state}：尚未完成結帳鎖定/付款就偵測到走出管制區——"
@@ -1053,20 +945,14 @@ class CartStateMachine:
                 s.last_activity_at = now
 
 # ----------------------------------------------------------------------
-def load_state_machine_config() -> dict:
-    """讀 config.json，把 CartStateMachine 需要的參數合併成一份扁平的 dict
-    （config.json 裡分散在 "weight" 跟 "state_machine"兩個區塊，是因為
-    weight_match_timeout_sec 語意上更接近「秤重」設定、其他逾時參數是狀態機
-    本身的設定，但 CartStateMachine.cfg 用起來不需要分層，所以這裡合併）。
-    """
-    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-        raw = json.load(f)
-    cfg = dict(raw.get("state_machine", {}))
+def load_state_machine_config(raw: Optional[dict] = None) -> dict:
+    """CartStateMachine 的參數：config.json 的 state_machine 區塊加上 weight 區塊的比對參數。"""
+    raw = raw if raw is not None else config.load()
+    cfg = config.section("state_machine", raw)
     weight_cfg = raw.get("weight", {})
     cfg["weight_match_timeout_sec"] = weight_cfg.get("weight_match_timeout_sec", 5.0)
     cfg["unscanned_change_threshold_g"] = weight_cfg.get("unscanned_change_threshold_g", 20.0)
     cfg["unscanned_change_timeout_sec"] = weight_cfg.get("unscanned_change_timeout_sec", 8.0)
     cfg["settle_window_sec"] = weight_cfg.get("settle_window_sec", 0.0)
     cfg["settle_band_g"] = weight_cfg.get("settle_band_g", 2.0)
-    # 拿掉純註解欄位（前綴底線），避免混進來
-    return {k: v for k, v in cfg.items() if not k.startswith("_")}
+    return cfg

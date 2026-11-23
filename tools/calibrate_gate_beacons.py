@@ -1,12 +1,12 @@
 """
 tools/calibrate_gate_beacons.py
 
-管制區門口 Beacon 的校正工具。判定規則在 core/gate_model.py（跟執行期同一套），
-挑參數的計算在 core/gate_calibration.py，這支只負責錄音、互動、寫回。
+管制區門口 Beacon 的校正工具。判定規則在 core/gate/model.py（跟執行期同一套），
+挑參數的計算在 core/gate/calibration.py，這支只負責錄音、互動、寫回。
 
     校正（預設）：推車實際來回走過門口幾趟，整段連續錄下來，再把每一組候選參數
                   拿去重播判定規則，挑出「每一趟都判對、停在門口不亂跳、偏移量
-                  ±2 dB 也成立」而且餘裕最大的那組。詳見 core/gate_calibration.py。
+                  ±2 dB 也成立」而且餘裕最大的那組。詳見 core/gate/calibration.py。
     --survey     ：5 個位置的靜止剖面，不挑參數。用來看佈署形狀（門外、門內的平台
                   夠不夠寬、門檻線附近雜訊多大），調擺法的時候前後各跑一次比較。
     --monitor    ：即時看原始值、濾波值與判定（同時記錄到 data/gate_logs/）。
@@ -17,7 +17,7 @@ gate_hysteresis_dbm、gate_min_crossing_rssi_dbm，以及門內那顆的 rssi_of
 （gate_min_confirm_samples 不調，沿用現在的值）。
 
 執行期記錄：--from-data 重算時，會自動把「校正錄音之後」錄的執行期記錄
-（data/gate_logs/，app、--monitor、run_real_hardware_flow 每次啟動都會產生）一起重播，
+（data/gate_logs/，app 與 --monitor 每次啟動都會產生）一起重播，
 排除會「來回跳」（相反的事件間隔不到 3 秒）的參數。所以最好的流程是：先校正寫回、
 實際推車用一陣子（特別是在門口附近晃、停、轉彎），再用同一份校正錄音 --from-data
 重算一次。
@@ -27,7 +27,7 @@ gate_hysteresis_dbm、gate_min_crossing_rssi_dbm，以及門內那顆的 rssi_of
     - 起點、終點大約在門外、門內 2 m，沿平常進出的路線走。
     - 每一趟停好再按 Enter；按完 Enter 就可以開始推下一趟。
 
-錄音存在 data/gate_calibration/<時間>/（格式跟執行期記錄檔一樣，見 core/gate_recorder.py）。
+錄音存在 data/gate_calibration/<時間>/（格式跟執行期記錄檔一樣，見 core/gate/recorder.py）。
 
 用法：
     python3 -m tools.calibrate_gate_beacons --dry-run           # 錄音、挑參數，不寫回
@@ -54,7 +54,8 @@ from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.gate_calibration import (  # noqa: E402
+from core import config  # noqa: E402
+from core.gate.calibration import (  # noqa: E402
     DRIFT_DB,
     HOLD_SEC,
     LABELS,
@@ -66,29 +67,21 @@ from core.gate_calibration import (  # noqa: E402
     segment_stats,
     survey_notes,
 )
-from core.gate_model import FLAP_SEC, GateParams, Observation, flaps  # noqa: E402
-from core.gate_recorder import RUNTIME_LOG_ROOT, GateRecorder, load  # noqa: E402
-from core.landmark_correction import load_landmark_config  # noqa: E402
+from core.gate.model import FLAP_SEC, GateParams, Observation, flaps  # noqa: E402
+from core.gate.recorder import RUNTIME_LOG_ROOT, GateRecorder, load  # noqa: E402
+from core.gate.detector import load_landmark_config  # noqa: E402
 from drivers.ble_beacon_scanner import (  # noqa: E402
     BleBeaconScanner,
     load_beacon_identity_map,
     load_beacon_ids,
 )
-from tools.measure_beacon_shield import _drain, _pad  # noqa: E402
+from tools._common import drain as _drain, pad as _pad  # noqa: E402
 
-_REPO = Path(__file__).resolve().parent.parent
-_CONFIG_PATH = _REPO / "config.json"
-_CAL_ROOT = _REPO / "data" / "gate_calibration"
-_SURVEY_ROOT = _REPO / "data" / "gate_survey"
+_CAL_ROOT = config.DATA_DIR / "gate_calibration"
+_SURVEY_ROOT = config.DATA_DIR / "gate_survey"
 _SIDE_NAME = {"a": "門內", "b": "門外", None: "未確認"}
 _KIND_NAME = {"entering": "進場", "exiting": "出場"}
 
-
-def _rel(p: Path) -> str:
-    try:
-        return str(p.relative_to(_REPO))
-    except ValueError:
-        return str(p)
 
 
 # ======================================================================
@@ -339,7 +332,7 @@ def print_survey(segs: Dict[str, List[Observation]], base: GateParams) -> None:
     print("\n" + ("要注意的地方：" if notes else "形狀看起來沒有明顯問題。"))
     for n in notes:
         print(f"  - {n}")
-    print("\n（這只看形狀、不挑參數。參數用走過門口校正來定：python3 -m tools.calibrate_gate_beacons）")
+    print("\n（這只看形狀、不挑參數。參數用走過門口的校正錄音來定。）")
 
 
 # ======================================================================
@@ -347,7 +340,7 @@ def print_survey(segs: Dict[str, List[Observation]], base: GateParams) -> None:
 # ======================================================================
 def write_back(p: GateParams, source: str) -> None:
     """只改 landmarks 區塊裡的這幾個值，其他欄位與 _comment 註解都留著。"""
-    cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    cfg = config.load()
     lm = cfg.setdefault("landmarks", {})
     for point in lm.get("points", []):
         if point["beacon_id"] in p.offsets:
@@ -358,7 +351,7 @@ def write_back(p: GateParams, source: str) -> None:
     lm["gate_min_confirm_sec"] = p.min_confirm_sec
     lm["_gate_min_confirm_sec_comment"] = (
         "門口判定的確認持續時間（秒）：新的一側除了連續 gate_min_confirm_samples 筆，還要從第一筆算起持續這麼久"
-        "才算數（core/landmark_correction.GateCrossingDetector 第 4 點）。光數筆數不夠：每秒約 13 筆，3 筆只有 0.2 秒，"
+        "才算數（core/gate/detector.GateCrossingDetector 第 4 點）。光數筆數不夠：每秒約 13 筆，3 筆只有 0.2 秒，"
         "而平滑值可能被單一一筆強封包撐住一整個窗口。由 tools/calibrate_gate_beacons.py 挑，0 = 不看時間（舊版行為）。")
     lm["gate_hysteresis_dbm"] = round(p.hysteresis_dbm, 2)
     lm["gate_min_crossing_rssi_dbm"] = round(p.min_crossing_rssi_dbm, 1)
@@ -367,8 +360,8 @@ def write_back(p: GateParams, source: str) -> None:
         "最後一次寫回門口參數的校正錄音（tools/calibrate_gate_beacons.py）。"
         "用 --from-data 加這個路徑可以重算、核對。"
     )
-    _CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"\n已寫回 {_CONFIG_PATH}")
+    config.save(cfg)
+    print(f"\n已寫回 {config.rel(config.CONFIG_PATH)}")
 
 
 def save_result(out_dir: Path, cal: Calibration) -> None:
@@ -400,7 +393,7 @@ def runtime_logs(since_epoch: float) -> List[tuple]:
         obs = segs.get("run", [])
         if len(obs) < 20 or obs[0][0] < since_epoch:
             continue
-        out.append((_rel(path), obs))
+        out.append((config.rel(path), obs))
     return out
 
 
@@ -509,7 +502,7 @@ def _start_scanner(base: GateParams, adapter: Optional[str]):
         print(f"\n[錯誤] BLE 掃描器啟動失敗：{exc}")
         print("  1) sudo rfkill unblock bluetooth　2) pip install bleak")
         print("  3) 查實際位址/名稱：python3 -m drivers.ble_beacon_scanner --list")
-        print("  這支需要門口兩顆 Beacon 同時有電；只量單一顆用 python3 -m tools.measure_beacon_shield\n")
+        print("  這支需要門口兩顆 Beacon 同時有電。\n")
         return None
     print("兩顆都掃到了。", flush=True)
     return scanner
@@ -528,11 +521,11 @@ def _from_data(path: Path, base: GateParams, dry_run: bool, use_logs: bool = Tru
     segs, _, meta = load(csv_path)
     if not any(k.startswith(("enter", "exit")) for k in segs):
         segs = {k: v for k, v in segs.items() if k in LABELS}
-        print(f"讀入 {_rel(csv_path)}（靜止剖面）")
+        print(f"讀入 {config.rel(csv_path)}（靜止剖面）")
         print_survey(segs, base)
         return 0
     session = Session.from_recording(segs, meta.get("marks"))
-    print(f"讀入 {_rel(csv_path)}：{len(session.obs)} 筆、{len(session.passes)} 趟")
+    print(f"讀入 {config.rel(csv_path)}：{len(session.obs)} 筆、{len(session.passes)} 趟")
     logs = []
     if use_logs:
         since = _parse_since(logs_since) if logs_since else session.obs[0][0]
@@ -541,7 +534,7 @@ def _from_data(path: Path, base: GateParams, dry_run: bool, use_logs: bool = Tru
             print("  （沒有校正錄音之後的執行期記錄；實際推車用一陣子再重算，可以多排除會來回跳的參數）")
     cal = run_calibration(session, base, logs)
     save_result(csv_path.parent, cal)
-    return finish(cal, base, dry_run, _rel(csv_path.parent))
+    return finish(cal, base, dry_run, config.rel(csv_path.parent))
 
 
 def _main() -> int:
@@ -571,7 +564,7 @@ def _main() -> int:
         return 1
     try:
         if args.monitor:
-            from core.gate_monitor import GateMonitor
+            from core.gate.monitor import GateMonitor
             monitor = GateMonitor.from_config(cfg, recorder=GateRecorder.for_runtime("monitor"))
             try:
                 run_monitor(scanner, monitor)
@@ -588,7 +581,7 @@ def _main() -> int:
             segs = record_survey(scanner, base, args.seconds, rec)
             rec.close()
             print_survey(segs, base)
-            print(f"\n資料存在 {_rel(out_dir)}/")
+            print(f"\n資料存在 {config.rel(out_dir)}/")
             return 0
 
         out_dir = _CAL_ROOT / stamp
@@ -597,13 +590,13 @@ def _main() -> int:
         session = record_walkthrough(scanner, base, args.trips, rec)
         rec.close()
         if session is None:
-            print(f"已錄到的部分存在 {_rel(out_dir)}/，沒有寫回任何東西。")
+            print(f"已錄到的部分存在 {config.rel(out_dir)}/，沒有寫回任何東西。")
             return 1
         scanner.stop()
         cal = run_calibration(session, base)
         save_result(out_dir, cal)
-        print(f"錄音與結果：{_rel(out_dir)}/")
-        return finish(cal, base, args.dry_run, _rel(out_dir))
+        print(f"錄音與結果：{config.rel(out_dir)}/")
+        return finish(cal, base, args.dry_run, config.rel(out_dir))
     except KeyboardInterrupt:
         print("\n中斷，沒有寫回任何東西。")
         return 1

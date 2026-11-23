@@ -1,11 +1,11 @@
 """
-core/weight_calibration.py
+core/shopping/weight_calibration.py
 
 秤重校正的計算（tools/calibrate_weight.py 負責錄音與互動，這裡只做純計算，可以離線
 用 --from-data 重算、也可以用合成資料測試）。
 
 跟門口校正同一個原則：參數不是用公式推「應該夠」，而是把錄到的原始讀數**丟進執行期
-同一份程式（core/cart_state_machine.CartStateMachine）重播**，看實際行為對不對。
+同一份程式（core/shopping/state_machine.CartStateMachine）重播**，看實際行為對不對。
 
 錄音的段落（label）：
     zero_start        空秤靜止
@@ -37,7 +37,7 @@ core/weight_calibration.py
        T_floor（預設 10 g）是人為下限：雜訊很小時前兩項可能只有 2 g，但手扶籃子、
        掛個購物袋這種不是商品的小變化不該觸發警告，這一項不是量出來的，是取捨
     5. 等穩定的參數（狀態機的 settle_window_sec = W_s、settle_band_g = B_s，定義見
-       core/cart_state_machine.py 開頭）：B_s = max(2, ⌈6σ_s⌉)；W_s 從 0（不等，舊版行為）、
+       core/shopping/state_machine.py 開頭）：B_s = max(2, ⌈6σ_s⌉)；W_s 從 0（不等，舊版行為）、
        0.2、0.3 … 1.0 秒依序試，每一個 W_s 都重新做第 4 步定 T、再重播全部放入，
        找「每一趟都正常加入、加入後也沒有誤報」的最小 W_s，再往上多取一格當餘裕
        （下一格也全部通過才取；放入測試只有幾趟，剛好過的那一格不保險）
@@ -58,8 +58,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from core.cart_manager import CartManager
-from core.cart_state_machine import (
+from core.shopping.cart import CartManager
+from core.shopping.state_machine import (
     ALERT_UNSCANNED_WEIGHT_CHANGE,
     ALERT_WEIGHT_DIRECTION_MISMATCH,
     ALERT_WEIGHT_MATCH_TIMEOUT,
@@ -71,7 +71,7 @@ from core.cart_state_machine import (
     TimeoutTick,
     WeightSampleReceived,
 )
-from core.uart_recording import Recording, Sample
+from core.recording import Recording, Sample
 from database.db_manager import DBManager, Member, Product
 
 SETTLE_SEC = 1.0

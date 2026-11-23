@@ -1,43 +1,15 @@
 """
 tools/product_admin.py
 
-商品資料庫的後台管理工具（純 CLI）。
+資料庫後台（終端機）：商品、會員、店員、協助請求、交易紀錄。共用 database/db_manager.py。
+沒建檔的條碼刷了就是「查無此商品」，展示要用的商品都要先在這裡建好。
 
-背景：之前實測「刷真的商品條碼，畫面完全沒反應」，追查後有兩個原因疊在一
-起——(1) `ui/app_gui.py` 對「狀態機拒絕了這次掃碼」的情況沒有顯示錯誤訊
-息（這個已經修掉了，見該檔案的更新說明），(2) 更根本的：`database/db_manager.py`
-出廠只 seed 了 5 筆寫死的測試商品，刷任何一個沒建檔的真實商品條碼，狀態機
-一定會判定「查無此商品」而拒絕——不是程式邏輯壞掉，是資料庫裡根本沒有這個
-商品。這支工具就是用來補這一塊：建立、修改、刪除、匯入你實際會用到的商品
-資料，不用寫程式、也不用直接碰 SQL。
+條碼欄位：USB 掃描器本身就是鍵盤輸入，游標停在條碼提示上直接刷就會填進去並送出。
 
-跟現有 `database/db_manager.py --init`/`--list` 的分工：那支負責建表跟灌測
-試資料，是給開發流程用的；這支才是「日常維護商品資料」的後台，商品本身的
-新增/修改/刪除/批次匯入都在這裡做，兩支工具共用同一個 `DBManager`，不會有
-兩套資料庫邏輯。
-
-條碼欄位怎麼輸入：USB 條碼掃描器本身就是模擬鍵盤（HID keyboard）輸入，刷
-一下就是把條碼字串 + Enter 直接打進目前有游標焦點的欄位——跟你自己用鍵盤打
-字、按下 Enter 完全一樣。所以條碼欄位就是一般的文字輸入（`input()`），把游
-標停在那個提示上直接刷就會自動填進去、自動送出，不需要另外寫一套背景程式
-去監聽掃描器的硬體事件。之前這支工具還有一個 `scan` 指令，是用
-`drivers.barcode_scanner`（透過 evdev 直接讀底層鍵盤事件、還會把裝置
-「獨佔」掉）做的，跟這支互動式 CLI 的用法疊在一起反而會卡住（獨佔掉輸入裝
-置之後，終端機本身也收不到那個裝置的按鍵事件了）——這是多餘的複雜度，已經
-拿掉，統一都走 `add`/`edit` 這組手動輸入邏輯，條碼欄位直接刷即可。
-
-標準重量欄位怎麼輸入：接了真的 HX711 秤重感測器時（透過 UART，跟購物車正
-式運作時同一顆感測器、同一份 `config.json` 校正值），`add`/`edit` 的重量步
-驟會提示你把商品放上秤重感應區、按 Enter 現場量測，量到的公克數直接當作
-`standard_weight_g`，不用自己拿磅秤讀數再手動打字進去——這樣量到的數字才會
-跟購物車實際秤重比對時用的是同一套校正基準，不會有人工謄寫打錯或校正基準
-兜不起來的問題。容許誤差（`weight_tolerance_g`）預設自動抓量到重量的
-10%，一樣不用手動輸入（要自訂的話可以直接覆蓋，見下方欄位說明）。
-
-**重量沒有手動輸入的退路**：秤連不上時 `add`/`edit` 會直接報錯結束。手打的
-數字跟這台秤在這份校正值下量出來的數字之間差多少沒人知道，用手打的值建檔，
-購物時的秤重比對就注定會偏、而且偏在哪裡完全看不出來。其他不需要重量的指令
-（list/delete/import/export/member-*）沒接秤照樣能用。
+標準重量：add／edit 會請你把商品放上推車的秤、按 Enter 現場量（同一顆 HX711、同一份 config.json
+校正值），量到的公克數當 standard_weight_g；容許誤差預設取 10%。秤連不上就報錯結束，沒有手動
+輸入的退路：手打的數字跟這台秤量出來的差多少沒人知道，用它建檔，購物時的比對就注定會偏。
+不需要重量的指令（list、delete、import、export、meta、member-*、staff-*…）沒接秤照樣能用。
 
 用法：
     python3 -m tools.product_admin                        # 互動選單（不熟指令的話用這個）
@@ -66,8 +38,8 @@ CSV 格式（匯入/匯出都用這個欄位順序，第一行是標題列）：
     barcode,name,unit_price,standard_weight_g,weight_tolerance_g,tags,shelf,discount_pct,pairs_with
 
     後四欄可以沒有（舊格式的 CSV 照樣能匯入，已經設好的標籤等不會被清掉）：
-    - tags：成分標籤，用分號隔開，例如「花生;大豆」（可用的標籤見 core/health_passport.TAG_OPTIONS）
-    - shelf：貨架位置，貨架代號 + 角落編號，例如 M3 = 中架左下角。預設平面圖（core/store_layout.py，
+    - tags：成分標籤，用分號隔開，例如「花生;大豆」（可用的標籤見 core/shopping/health_passport.TAG_OPTIONS）
+    - shelf：貨架位置，貨架代號 + 角落編號，例如 M3 = 中架左下角。預設平面圖（core/store/layout.py，
       可用 config.json 的 store 區塊改）：L 左架、M 中架、R 右架；1 左上、2 右上、3 左下、4 右下
       （「上」靠後牆、「下」靠定位點）→ L1~L4、M1~M4、R1~R4
     - discount_pct：折扣百分比，50 = 5 折，0 或空白 = 沒有
@@ -89,7 +61,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import logging
 import sys
 import time
@@ -98,13 +69,13 @@ from typing import List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core import store_layout  # noqa: E402
-from core.health_passport import TAG_OPTIONS  # noqa: E402
+from core import config  # noqa: E402
+from core.store import layout as store_layout  # noqa: E402
+from core.shopping.health_passport import TAG_OPTIONS  # noqa: E402
 from database.db_manager import DBManager, Member, Product, Staff  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 _CSV_FIELDS = ["barcode", "name", "unit_price", "standard_weight_g", "weight_tolerance_g"]
 _CSV_META_FIELDS = ["tags", "shelf", "discount_pct", "pairs_with"]
 _AUTO_TOLERANCE_RATIO = 0.10  # 自動容差 = 量到的標準重量 × 這個比例
@@ -163,8 +134,7 @@ def _split(v) -> list:
 def load_store_layout() -> dict:
     """店面平面圖：預設值套上 config.json 的 store 區塊（跟購物車 app 同一份）。"""
     try:
-        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-            return store_layout.load(json.load(f).get("store"))
+        return store_layout.load(config.load().get("store"))
     except FileNotFoundError:
         return store_layout.load()
 
@@ -290,7 +260,7 @@ class WeightGauge:
         self._tried = True
         try:
             from drivers.uart_receiver import UartReceiver
-            receiver = UartReceiver(port=self.port, baudrate=self.baudrate)
+            receiver = UartReceiver.from_config(config.load(), port=self.port, baudrate=self.baudrate)
             receiver.start()
             deadline = time.time() + self.connect_timeout_sec
             got_packet = False
@@ -325,7 +295,7 @@ class WeightGauge:
     def measure(self) -> float:
         """量一次重量，回傳公克數。量不到就拋 WeightGaugeUnavailable。"""
         self.require()
-        from core.weight_convert import raw_to_grams
+        from core.shopping.weight import raw_to_grams
         from tools.calibrate_weight import collect_hx711_samples
 
         # 清掉連線期間累積的舊封包，避免上一次量測（或上一個商品）殘留的
@@ -609,7 +579,7 @@ def cmd_member_add(db: DBManager, args, _gauge: Optional[WeightGauge] = None) ->
     if prefix and not member_id.startswith(prefix):
         print(
             f"[警告] 這個代碼沒有 {prefix!r} 前綴，登入時會被狀態機判定成"
-            "「不是會員碼格式」而拒絕（見 core/cart_state_machine.py 的 _on_login）。"
+            "「不是會員碼格式」而拒絕（見 core/shopping/state_machine.py 的 _on_login）。"
             "要改的話是改 config.json 的 state_machine.login_barcode_prefix。"
         )
     existing = db.get_member(member_id)
@@ -729,8 +699,7 @@ def cmd_tx_list(db: DBManager, args, _gauge: Optional[WeightGauge] = None) -> No
 
 def _staff_prefix() -> str:
     try:
-        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f).get("state_machine", {}).get("staff_barcode_prefix", "STAFF-")
+        return config.section("state_machine").get("staff_barcode_prefix", "STAFF-")
     except Exception:  # noqa: BLE001
         return "STAFF-"
 
@@ -738,8 +707,7 @@ def _staff_prefix() -> str:
 def _login_prefix() -> str:
     """會員條碼前綴，讀 config.json 的 state_machine.login_barcode_prefix。"""
     try:
-        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f).get("state_machine", {}).get("login_barcode_prefix", "MEMBER-")
+        return config.section("state_machine").get("login_barcode_prefix", "MEMBER-")
     except Exception:  # noqa: BLE001 — 讀不到設定不該讓整支工具掛掉
         return "MEMBER-"
 
@@ -822,8 +790,7 @@ def _run_menu(db: DBManager, gauge: WeightGauge) -> None:
 
 def _load_serial_weight_config() -> dict:
     try:
-        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
+        cfg = config.load()
     except FileNotFoundError:
         cfg = {}
     return {

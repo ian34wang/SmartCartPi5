@@ -1,8 +1,8 @@
 """
 drivers/front_camera.py
 
-找貨頁推車位置用的前方相機：影格 → 灰階 → 縮小 → 去畸變。給 ui/app_gui.py 的
-_VisionConsumer（定位點標記、貨架消失點，演算法在 core/store_vision.py）。
+找貨頁推車位置用的前方相機：影格 → 灰階 → 縮小 → 去畸變。給 ui/workers.py 的
+VisionConsumer（定位點標記、貨架消失點，演算法在 core/store/vision.py）。
 
 擷取共用 drivers/camera_stream.CameraStream（2026-11-23 改）：
     1. 同一條 picamera2 設定路徑（preview_configuration + align()）。棋盤格校正
@@ -13,7 +13,7 @@ _VisionConsumer（定位點標記、貨架消失點，演算法在 core/store_vi
        CameraStream 自己的去畸變是全解析度 cv2.undistort()，每張都重算對照表；這裡先縮小、
        再用預先算好的對照表 remap，比較省。兩邊都做的話畸變會被校正兩次。
 
-內參換算（core/store_vision.scaled_intrinsics）：
+內參換算（core/store/vision.scaled_intrinsics）：
     校正解析度 (W_c, H_c) = config.json 的 camera.resolution，處理解析度 (W_p, H_p)，
     s_x = W_p / W_c、s_y = H_p / H_c：
         f_x' = s_x f_x,  c_x' = s_x c_x,  f_y' = s_y f_y,  c_y' = s_y c_y
@@ -28,12 +28,12 @@ _VisionConsumer（定位點標記、貨架消失點，演算法在 core/store_vi
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Tuple
 
 import numpy as np
 
-_ROOT = Path(__file__).resolve().parent.parent
+from core import config
+
 
 # 影格超過這麼久沒更新就當相機斷了（CameraStream 背景執行緒 30 fps 在跑）
 _STALE_SEC = 1.0
@@ -43,7 +43,7 @@ class FrontCamera:
     def __init__(self, camera_cfg: dict, proc_width: int = 640):
         import cv2
 
-        from core.store_vision import scaled_intrinsics
+        from core.store.vision import scaled_intrinsics
         from drivers.camera_stream import CameraStream
 
         self._cv2 = cv2
@@ -51,7 +51,7 @@ class FrontCamera:
         self.calib_size: Tuple[int, int] = (int(res[0]), int(res[1]))
         self.size: Tuple[int, int] = (int(proc_width), int(round(proc_width * res[1] / res[0])))
 
-        calib = _ROOT / camera_cfg.get("calibration_file", "vision/camera_calibration.npz")
+        calib = config.ROOT / camera_cfg.get("calibration_file", "vision/camera_calibration.npz")
         if not calib.exists():
             raise FileNotFoundError(f"找不到相機校正檔 {calib}（python3 -m drivers.camera_stream --calibrate 產生）")
         data = np.load(calib)

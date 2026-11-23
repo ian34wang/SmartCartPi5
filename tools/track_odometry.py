@@ -2,7 +2,7 @@
 tools/track_odometry.py
 
 里程計（PMW3901 光流 + BNO080 航向）行駛軌跡視覺化：推車的同時在螢幕上即時畫出軌跡，推完輸入捲尺量的
-終點與實際轉角，算誤差、存圖。位置的算法就是 app 的 core/odometry_engine.OdometryEngine，參數讀
+終點與實際轉角，算誤差、存圖。位置的算法就是 app 的 core/positioning/odometry.OdometryEngine，參數讀
 config.json 的 odometry 區塊（tools/calibrate_optical_flow.py 寫回的），不會修改 config.json。
 
 用法：
@@ -15,12 +15,12 @@ config.json 的 odometry 區塊（tools/calibrate_optical_flow.py 寫回的）�
 每一趟：推車停在起點、車頭擺好 → Enter → 推（直線、L 形、繞一圈回起點都可以）→ 停好按 Enter →
 輸入終點在起點的「前方, 左方」幾公尺（起點車頭方向為前方；繞回起點輸入 0,0）與實際轉了幾度（左轉為正）。
 可以一直測下一趟，輸入 q 結束。存檔：data/odometry_tracks/<開始時間>/
-    samples.csv、samples.meta.json   每筆原始封包、每趟的實際值（core/uart_recording.py 格式，可以 --from-data 重算）
+    samples.csv、samples.meta.json   每筆原始封包、每趟的實際值（core/recording.py 格式，可以 --from-data 重算）
     run<k>.png                       軌跡圖（起點朝上）
     result.json                      每趟的指標與當時的 odometry 參數
 
 圖與指標的座標：原點是起點、上 = 起點時的車頭方向（f）、左 = 起點時的左方（l），公尺。
-指標定義見 core/odometry_track.py：
+指標定義見 core/positioning/track.py：
     L    路徑長          D    起點到終點直線距離        Δψ   總轉角（左轉為正）
     ‖e‖  終點誤差 = 算出的終點 (f_N, l_N) 跟捲尺量的 (f*, l*) 的距離；‖e‖/L 每走一公尺差多少
     e_ψ  轉角誤差 = Δψ − 實際轉角
@@ -39,38 +39,15 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from core import odometry_track as ot
-from core.uart_recording import Segment, UartTap, load, new_session_dir, save_result, wait_for_stream
+from core.positioning import track as ot
+from tools._common import parse_float, parse_pair
+from core import config
+from core.recording import Segment, UartTap, load, new_session_dir, save_result, wait_for_stream
 
-_ROOT = Path(__file__).resolve().parent.parent
-_CONFIG_PATH = _ROOT / "config.json"
-_OUT_ROOT = _ROOT / "data" / "odometry_tracks"
+_OUT_ROOT = config.DATA_DIR / "odometry_tracks"
 _WINDOW = "SmartCart odometry track"
 
 
-def _rel(p: Path) -> str:
-    try:
-        return str(Path(p).resolve().relative_to(_ROOT))
-    except ValueError:
-        return str(p)
-
-
-def parse_pair(raw: str) -> Optional[Tuple[float, float]]:
-    """"3,0" / "3 0" / "1.2, -0.5" → (3.0, 0.0)。空字串或看不懂回 None。"""
-    parts = raw.replace("，", ",").replace(",", " ").split()
-    if len(parts) != 2:
-        return None
-    try:
-        return float(parts[0]), float(parts[1])
-    except ValueError:
-        return None
-
-
-def parse_float(raw: str) -> Optional[float]:
-    try:
-        return float(raw.strip())
-    except ValueError:
-        return None
 
 
 def print_metrics(m: Dict) -> None:
@@ -187,7 +164,7 @@ def _save_png(path: Path, img) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(path), img)
-    print(f"    軌跡圖：{_rel(path)}")
+    print(f"    軌跡圖：{config.rel(path)}")
 
 
 def run_live(cfg: dict, args) -> int:
@@ -201,7 +178,7 @@ def run_live(cfg: dict, args) -> int:
     print(f"odometry 參數：px_to_mm = {odo_cfg.get('optical_flow_px_to_mm')}、flow_rotation_deg = "
           f"{odo_cfg.get('flow_rotation_deg')}、flow_mirror = {odo_cfg.get('flow_mirror')}、yaw_sign = {odo_cfg.get('yaw_sign')}")
 
-    receiver = UartReceiver(port=args.port, baudrate=args.baud)
+    receiver = UartReceiver.from_config(cfg, port=args.port, baudrate=args.baud)
     receiver.start()
     tap = None
     results: List[Dict] = []
@@ -240,7 +217,7 @@ def run_live(cfg: dict, args) -> int:
         receiver.stop()
     if results:
         save_result(out_dir, {"odometry": odo_cfg, "min_squal": args.min_squal, "runs": results})
-        print(f"\n存在 {_rel(out_dir)}（{len(results)} 趟）")
+        print(f"\n存在 {config.rel(out_dir)}（{len(results)} 趟）")
     return 0
 
 
@@ -252,7 +229,7 @@ def run_replay(cfg: dict, args) -> int:
     out_dir = path if path.is_dir() else path.parent
     rec = load(path)
     odo_cfg = cfg.get("odometry", {})
-    print(f"讀入 {_rel(out_dir)}：{len(rec.segments)} 段，用目前 config.json 的 odometry 參數重算")
+    print(f"讀入 {config.rel(out_dir)}：{len(rec.segments)} 段，用目前 config.json 的 odometry 參數重算")
     results = []
     for seg in rec.segments:
         samples = rec.get(seg.label)
@@ -275,7 +252,7 @@ def run_replay(cfg: dict, args) -> int:
 
 
 def _main() -> int:
-    cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    cfg = config.load()
     ap = argparse.ArgumentParser(description="里程計行駛軌跡視覺化（光流 + IMU）")
     ap.add_argument("--from-data", default=None, help="用存下來的錄音重算、重畫（目錄或 samples.csv）")
     ap.add_argument("--no-window", action="store_true", help="不開即時視窗，終端機顯示")

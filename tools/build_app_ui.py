@@ -340,7 +340,7 @@ def patch_navigation(body):
         '<button class="close-btn">✕ 關閉導航</button>',
         '<button class="close-btn" onclick="APP.showTab(\'shopping\')">✕ 關閉導航</button>',
     )
-    # 2026-11-23：從靜態 mockup 改成真的——店面平面圖（core/store_layout.py：入口長廊、定位點、
+    # 2026-11-23：從靜態 mockup 改成真的——店面平面圖（core/store/layout.py：入口長廊、定位點、
     # 三座貨架，商品的 shelf 欄位是「貨架代號 + 角落」）。觸控螢幕沒有
     # 鍵盤，所以不用打字搜尋，改成點商品名稱；路徑指引與地圖由 render() 依 payload.catalog 畫。
     body = replace_balanced_div(body, '<div class="search-input">',
@@ -815,7 +815,7 @@ TEMPLATE = r"""<!doctype html>
     }).join("");
   }
 
-  // 找貨：店面平面圖（payload.store，core/store_layout.py）。座標單位是「格」，原點在門的正中間，
+  // 找貨：店面平面圖（payload.store，core/store/layout.py）。座標單位是「格」，原點在門的正中間，
   // y 往店裡；畫面上門在下面。路線、說明文字、停車點都是 Python 算好的（catalog[].route/instruction/spot）。
   var navTarget = null;
   var MAP_S = 56, MAP_PAD = 0.6;

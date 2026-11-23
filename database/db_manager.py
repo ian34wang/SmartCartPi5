@@ -1,39 +1,25 @@
 """
 database/db_manager.py
 
-本地商品資訊庫的 SQLite 存取層。負責：
-    - 建表 (products, members, member_preferences, transactions,
-      transaction_items, staff, assistance_requests)
-    - CRUD 操作
-    - 依條碼查詢商品（core/cart_state_machine.py 掃碼比對重量時會用到）
-    - 依會員代碼查詢會員（core/cart_state_machine.py 登入流程用到）
-    - 會員偏好（過敏原／葷素／宗教飲食／上次預算）：精靈走完時存、登入選
-      「情境 A」時讀（ui/app_gui.py）
-    - 交易紀錄：付款完成時寫一筆，推車走出管制區時補上出場時間
-    - 店員工作證與協助請求：「呼叫店員協助」寫一筆待處理紀錄，店員刷工作證
-      時標記為已處理（沒有另外的店員通知系統，後台用 tools/product_admin.py 看）
+本機 SQLite 資料庫（database/inventory.db）的存取層。
 
-所有表都是 CREATE TABLE IF NOT EXISTS，已經存在的舊資料庫在下次 init_db()
-（app_gui、product_admin 啟動時都會呼叫）時自動補上新表，不用重建。
-時間欄位一律存 epoch 秒（REAL），跟狀態機的 timestamp 同一種單位。
+    products              商品：條碼、名稱、單價、標準重量與容差（秤重比對用）、成分標籤、
+                          貨架位置、折扣、搭配推薦
+    members               會員：只記代碼與名稱（登入是刷會員條碼，沒有密碼）
+    member_preferences    會員偏好：過敏原、葷素、宗教飲食、上次預算
+    transactions(+_items) 交易紀錄：付款時寫，出場時補出場時間
+    staff                 店員工作證
+    assistance_requests   協助請求：呼叫店員、申請歸零／放棄；店員刷工作證時標成已處理
+
+建表都是 CREATE TABLE IF NOT EXISTS，舊資料庫缺的欄位在 init_db() 時自動補上（app、後台工具啟動時
+都會呼叫），不用重建。時間一律存 epoch 秒（REAL），跟狀態機的 timestamp 同一種單位。
+
+單機資料庫：多台推車之間不共享，所以不處理「同一會員在別台車登入中」。
 
 用法：
-    python -m database.db_manager --init      # 建表 + 寫入測試資料（商品+會員）
-    python -m database.db_manager --list      # 列出所有商品與會員
-
-單獨執行本檔案即可初始化資料庫，不需要先啟動整個系統。
-
-members 資料表是 Phase 4 開發購物流程狀態機時新增的（原本的交接文件只規劃了
-products）。目前只存最基本的「這個會員代碼存不存在」，沒有密碼/權限這些欄
-位——因為登入方式目前確定是「掃會員條碼/QR code」（不是輸入密碼），只需要
-知道代碼有沒有對應到一個真實會員即可。
-
-注意：這個 members 表是「單機本地」資料庫，如果之後系統擴充成多台購物車、
-需要偵測「同一個會員是否已經在別台車登入中」，單機 SQLite 沒辦法看到其他
-購物車的登入狀態，需要一個共用的中央資料庫/伺服器才能真正做到——這件事目前
-還沒有對應的架構設計（開發總表沒有提到中央伺服器），所以本檔案跟
-core/cart_state_machine.py 目前都只處理「這台購物車自己的登入狀態」，不處理
-跨購物車重複登入偵測，先記錄在這裡，不要誤以為已經做到。
+    python3 -m database.db_manager --init      # 建表 + 寫入測試資料（5 筆商品、2 筆會員）
+    python3 -m database.db_manager --list      # 列出所有商品與會員
+商品與會員的日常管理用 tools/product_admin.py。
 """
 
 from __future__ import annotations
@@ -61,7 +47,7 @@ CREATE TABLE IF NOT EXISTS products (
 """
 
 # 2026-11-23 加的商品欄位。舊資料庫在 init_db() 時用 ALTER TABLE 補上（不用重建）。
-#   tags          JSON 字串陣列：成分標籤（core/health_passport.TAG_OPTIONS），健康護照用
+#   tags          JSON 字串陣列：成分標籤（core/shopping/health_passport.TAG_OPTIONS），健康護照用
 #   shelf         九宮格貨架位置，例如 "B2"（列 A/B/C 從入口往裡數，行 1/2/3 從左到右），找貨用
 #   discount_pct  折扣百分比（0 = 沒有；50 = 5 折），即期惜食／特價，結帳金額直接套用
 #   pairs_with    JSON 條碼陣列：搭配推薦的商品，優惠頁用

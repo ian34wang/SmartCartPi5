@@ -1,9 +1,9 @@
 """
-core/flow_calibration.py
+core/positioning/flow_calibration.py
 
 PMW3901 光流與 BNO080 航向的校正計算（tools/calibrate_optical_flow.py 負責錄音與
 互動）。跟秤重、門口同一個原則：算出參數之後，把錄音**丟進執行期同一份程式
-（core/odometry_engine.OdometryEngine）重播**，看推出來的距離與方向對不對。
+（core/positioning/odometry.OdometryEngine）重播**，看推出來的距離與方向對不對。
 
 錄音的段落（label）：
     static        推車停著不動            → 靜止時光流有沒有亂跳、yaw 漂移多快
@@ -41,8 +41,9 @@ import statistics
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple
 
-from core.odometry_engine import OdometryEngine
-from core.uart_recording import Recording, Sample, unwrap_deg, wrap_deg
+from core.positioning.odometry import OdometryEngine
+from core.angles import unwrap_deg, wrap_deg
+from core.recording import Recording, Sample
 
 GOOD_CV = 0.03
 GOOD_SPREAD_DEG = 5.0
