@@ -22,8 +22,8 @@ core/gate_model.py
     5. 差分 d = s_in − s_out 餵給 GateCrossingDetector：
          d ≥ +H 視為偏門內，d ≤ −H 視為偏門外，中間不改判定（H = 遲滯）
          偏的那一側校正後強度要 ≥ gate_min_crossing_rssi_dbm 才算數
-         連續 gate_min_confirm_samples 筆都偏同一側才確認；確認的那一側
-         跟上一次確認的不同，就是一次 entering / exiting
+         連續 gate_min_confirm_samples 筆、而且持續 gate_min_confirm_sec 秒都偏
+         同一側才確認；確認的那一側跟上一次確認的不同，就是一次 entering / exiting
     6. 有設定 gate_exit_yaw_deg 時，再用當下 IMU 航向交叉驗證，不符就不採信
 """
 
@@ -55,6 +55,7 @@ class GateParams:
     hysteresis_dbm: float = 4.0
     min_crossing_rssi_dbm: Optional[float] = None
     min_confirm_samples: int = 3
+    min_confirm_sec: float = 0.0
     offsets: Dict[str, float] = field(default_factory=dict)
     exit_yaw_deg: Optional[float] = None
     heading_tolerance_deg: float = 45.0
@@ -72,6 +73,7 @@ class GateParams:
             hysteresis_dbm=float(cfg.get("gate_hysteresis_dbm", 4.0)),
             min_crossing_rssi_dbm=cfg.get("gate_min_crossing_rssi_dbm"),
             min_confirm_samples=int(cfg.get("gate_min_confirm_samples", 3)),
+            min_confirm_sec=float(cfg.get("gate_min_confirm_sec", 0.0) or 0.0),
             offsets=dict(cfg.get("rssi_offsets") or {}),
             exit_yaw_deg=cfg.get("gate_exit_yaw_deg"),
             heading_tolerance_deg=float(cfg.get("gate_heading_tolerance_deg", 45.0)),
@@ -173,6 +175,7 @@ class GateDecision:
             hysteresis_dbm=params.hysteresis_dbm,
             min_crossing_rssi_dbm=params.min_crossing_rssi_dbm,
             min_confirm_samples=params.min_confirm_samples,
+            min_confirm_sec=params.min_confirm_sec,
         )
         self.rejected_by_heading = 0
 
@@ -245,6 +248,23 @@ def decide(evaluations: Sequence[Evaluation], params: GateParams) -> ReplayResul
 def replay(observations: Iterable[Observation], params: GateParams) -> ReplayResult:
     """完整的判定流程，跟 GateMonitor 即時處理同一批觀測的結果一模一樣。"""
     return decide(evaluate(observations, params), params)
+
+
+FLAP_SEC = 3.0
+
+
+def flaps(events: Sequence[Tuple[float, str]], within: float = FLAP_SEC) -> List[Tuple[float, float]]:
+    """「來回跳」：相鄰兩個相反的事件間隔不到 within 秒。回傳每一次的 (前一個時間, 後一個時間)。
+
+    不需要知道真實答案就能判斷的錯誤：推車穿過門口再折回來穿過一次，實際上至少要好幾秒
+    （3 秒是保守的下限）；就算真的有人在門口來回晃，在這麼短的時間內各報一次進場、出場，
+    對使用者來說也只是一筆假的防損警報。所以任何記錄（校正、執行期）重播出來都不該有。
+    """
+    out = []
+    for (t0, e0), (t1, e1) in zip(events, events[1:]):
+        if e0 != e1 and t1 - t0 < within:
+            out.append((t0, t1))
+    return out
 
 
 def concat(segments: Sequence[Sequence[Observation]], gap_sec: float = 0.1) -> List[Observation]:

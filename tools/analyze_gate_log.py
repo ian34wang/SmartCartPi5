@@ -9,7 +9,7 @@ data/gate_logs/<日期>/）。用的是跟執行期同一套判定規則（core/
     2. 當時判定出的進出事件（含被航向擋下的）
     3. 一致性：用記錄檔裡當時的參數重播，事件是不是跟當時即時判定的一模一樣
        ——一樣才代表「事後分析看到的」就是「當時發生的」
-    4. 差分值分布、各側停留時間
+    4. 差分值分布、各側停留時間、來回跳（相反的事件間隔不到 3 秒）幾次
     5. 有給 --set 時：換一組參數重播，看事件會怎麼變（不用再去現場試）
 
 用法：
@@ -20,7 +20,7 @@ data/gate_logs/<日期>/）。用的是跟執行期同一套判定規則（core/
 
     --set 可以改 GateParams 的任一欄位：smoothing_sec、estimator、min_samples、
     hysteresis_dbm、min_crossing_rssi_dbm（none 代表不設）、min_confirm_samples、
-    offset_inside（門內偏移量）。
+    min_confirm_sec（確認持續時間）、offset_inside（門內偏移量）。
 
 校正量測的資料（data/gate_calibration/）請用
     python3 -m tools.calibrate_gate_beacons --from-data <目錄>
@@ -37,7 +37,7 @@ from typing import List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.gate_model import GateParams, replay  # noqa: E402
+from core.gate_model import FLAP_SEC, GateParams, flaps, replay  # noqa: E402
 from core.gate_recorder import RUNTIME_LOG_ROOT, load  # noqa: E402
 
 _SIDE = {"a": "門內", "b": "門外", None: "未確認", "in": "門內", "out": "門外", "": "未確認"}
@@ -122,7 +122,8 @@ def main() -> int:
     judged = [r for r in rows if r["diff"]]
     print(f"  有判定的比例 {len(judged) / len(rows) * 100:.0f}%（其餘是窗內樣本不夠）")
     print(f"  當時參數：窗口 {params.smoothing_sec:g} 秒 / {params.estimator} / 遲滯 {params.hysteresis_dbm:g} dB / "
-          f"門內偏移 {params.offset_inside:+.1f} / 絕對門檻 {params.min_crossing_rssi_dbm}")
+          f"門內偏移 {params.offset_inside:+.1f} / 絕對門檻 {params.min_crossing_rssi_dbm} / "
+          f"確認 {params.min_confirm_samples} 筆且 {params.min_confirm_sec:g} 秒")
 
     # 2. 當時的事件 ----------------------------------------------------------
     live_events = [(float(r["epoch"]), r["event"]) for r in rows if r["event"]]
@@ -139,6 +140,9 @@ def main() -> int:
           f"{'✓ 跟當時即時判定完全一樣' if same else '⚠ 跟當時不一樣（程式或資料有出入）'}")
     if not same:
         print(f"  當時：{live_kept}\n  重播：{rep_kept}")
+    fl = flaps(rep.events)
+    print(f"來回跳（相反的事件間隔不到 {FLAP_SEC:g} 秒）：{len(fl)} 次"
+          + ("" if not fl else "　" + "、".join(f"{a - t0:.1f}→{b - t0:.1f}s" for a, b in fl)))
 
     # 4. 差分分布 ------------------------------------------------------------
     diffs = [s.diff for s in rep.steps]
@@ -165,7 +169,8 @@ def main() -> int:
     if args.set:
         alt = apply_overrides(params, args.set)
         r2 = replay(obs, alt)
-        print(f"\n換參數重播（{', '.join(args.set)}）→ {len(r2.events)} 個事件：")
+        print(f"\n換參數重播（{', '.join(args.set)}）→ {len(r2.events)} 個事件，"
+              f"來回跳 {len(flaps(r2.events))} 次：")
         for t, e in r2.events:
             print(f"  {t - t0:8.1f} 秒　{e}")
         d2 = [s.diff for s in r2.steps]

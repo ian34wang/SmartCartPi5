@@ -60,6 +60,19 @@ CREATE TABLE IF NOT EXISTS products (
 );
 """
 
+# 2026-11-23 加的商品欄位。舊資料庫在 init_db() 時用 ALTER TABLE 補上（不用重建）。
+#   tags          JSON 字串陣列：成分標籤（core/health_passport.TAG_OPTIONS），健康護照用
+#   shelf         九宮格貨架位置，例如 "B2"（列 A/B/C 從入口往裡數，行 1/2/3 從左到右），找貨用
+#   discount_pct  折扣百分比（0 = 沒有；50 = 5 折），即期惜食／特價，結帳金額直接套用
+#   pairs_with    JSON 條碼陣列：搭配推薦的商品，優惠頁用
+_PRODUCT_EXTRA_COLUMNS = (
+    ("tags", "TEXT NOT NULL DEFAULT '[]'"),
+    ("shelf", "TEXT NOT NULL DEFAULT ''"),
+    ("discount_pct", "REAL NOT NULL DEFAULT 0"),
+    ("pairs_with", "TEXT NOT NULL DEFAULT '[]'"),
+)
+_PRODUCT_COLS = "barcode, name, unit_price, standard_weight_g, weight_tolerance_g, tags, shelf, discount_pct, pairs_with"
+
 _MEMBERS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS members (
     member_id       TEXT PRIMARY KEY,
@@ -164,9 +177,25 @@ class Product:
     unit_price: float
     standard_weight_g: float
     weight_tolerance_g: float
+    tags: List[str] = field(default_factory=list)
+    shelf: str = ""
+    discount_pct: float = 0.0
+    pairs_with: List[str] = field(default_factory=list)
+
+    @property
+    def effective_price(self) -> float:
+        """套用折扣後的單價（結帳算的是這個）。"""
+        return round(self.unit_price * (1.0 - max(0.0, min(100.0, self.discount_pct)) / 100.0), 2)
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @classmethod
+    def from_row(cls, row) -> "Product":
+        d = dict(row)
+        d["tags"] = json.loads(d.get("tags") or "[]")
+        d["pairs_with"] = json.loads(d.get("pairs_with") or "[]")
+        return cls(**d)
 
 
 @dataclass
@@ -261,6 +290,10 @@ class DBManager:
             conn.execute(_MEMBERS_SCHEMA)
             for schema in _EXTRA_SCHEMAS:
                 conn.execute(schema)
+            have = {r[1] for r in conn.execute("PRAGMA table_info(products)")}
+            for col, decl in _PRODUCT_EXTRA_COLUMNS:
+                if col not in have:
+                    conn.execute(f"ALTER TABLE products ADD COLUMN {col} {decl}")
             if seed:
                 count = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
                 if count == 0:
@@ -290,32 +323,30 @@ class DBManager:
 
     def get_product(self, barcode: str) -> Optional[Product]:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT barcode, name, unit_price, standard_weight_g, weight_tolerance_g "
-                "FROM products WHERE barcode = ?",
-                (barcode,),
-            ).fetchone()
-        return Product(**dict(row)) if row else None
+            row = conn.execute(f"SELECT {_PRODUCT_COLS} FROM products WHERE barcode = ?", (barcode,)).fetchone()
+        return Product.from_row(row) if row else None
 
     def list_products(self) -> list[Product]:
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT barcode, name, unit_price, standard_weight_g, weight_tolerance_g "
-                "FROM products ORDER BY barcode"
-            ).fetchall()
-        return [Product(**dict(r)) for r in rows]
+            rows = conn.execute(f"SELECT {_PRODUCT_COLS} FROM products ORDER BY barcode").fetchall()
+        return [Product.from_row(r) for r in rows]
 
     def upsert_product(self, product: Product) -> None:
+        """寫入全部欄位（含標籤、貨架、折扣、搭配）。只想改重量、價格時，呼叫端要先把舊的
+        這幾個欄位帶過來（tools/product_admin.py 的 edit 就是這樣做），不然會被清空。"""
+        d = product.to_dict()
+        d["tags"] = json.dumps(list(product.tags), ensure_ascii=False)
+        d["pairs_with"] = json.dumps(list(product.pairs_with), ensure_ascii=False)
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO products "
-                "(barcode, name, unit_price, standard_weight_g, weight_tolerance_g) "
-                "VALUES (:barcode, :name, :unit_price, :standard_weight_g, :weight_tolerance_g) "
+                f"INSERT INTO products ({_PRODUCT_COLS}) VALUES (:barcode, :name, :unit_price, :standard_weight_g, "
+                ":weight_tolerance_g, :tags, :shelf, :discount_pct, :pairs_with) "
                 "ON CONFLICT(barcode) DO UPDATE SET "
                 "name=excluded.name, unit_price=excluded.unit_price, "
-                "standard_weight_g=excluded.standard_weight_g, "
-                "weight_tolerance_g=excluded.weight_tolerance_g",
-                product.to_dict(),
+                "standard_weight_g=excluded.standard_weight_g, weight_tolerance_g=excluded.weight_tolerance_g, "
+                "tags=excluded.tags, shelf=excluded.shelf, discount_pct=excluded.discount_pct, "
+                "pairs_with=excluded.pairs_with",
+                d,
             )
 
     def delete_product(self, barcode: str) -> bool:

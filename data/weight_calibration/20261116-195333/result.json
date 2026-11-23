@@ -1,0 +1,63 @@
+{
+  "verdict": "可以",
+  "error": null,
+  "offset": -332415.8350176218,
+  "scale": 397.09542688582087,
+  "sigma_static_g": 0.12619244831833912,
+  "zero_drift_g": 0.43818182789103544,
+  "points": [
+    {
+      "label": "zero_start",
+      "mass_g": 0.0,
+      "level_raw": -332250,
+      "sigma_raw": 40.0302,
+      "n": 107,
+      "residual_g": 0.4176200640796896,
+      "drift_raw": -3.5
+    },
+    {
+      "label": "load_1",
+      "mass_g": 198.0,
+      "level_raw": -254679,
+      "sigma_raw": 66.717,
+      "n": 107,
+      "residual_g": -2.236388146635817,
+      "drift_raw": 7.0
+    },
+    {
+      "label": "load_2",
+      "mass_g": 581.0,
+      "level_raw": -101087,
+      "sigma_raw": 45.9606,
+      "n": 107,
+      "residual_g": 1.5522515627890332,
+      "drift_raw": 21.0
+    },
+    {
+      "label": "load_3",
+      "mass_g": 779.0,
+      "level_raw": -23312.5,
+      "sigma_raw": 50.4084,
+      "n": 106,
+      "residual_g": -0.5892853722032642,
+      "drift_raw": 22
+    },
+    {
+      "label": "zero_end",
+      "mass_g": 0.0,
+      "level_raw": -332076,
+      "sigma_raw": 42.9954,
+      "n": 107,
+      "residual_g": 0.8558018919707251,
+      "drift_raw": 9.5
+    }
+  ],
+  "push": null,
+  "t_min": null,
+  "t_rec": null,
+  "drops": [],
+  "light_products": [],
+  "issues": [
+    "沒有推車震動的資料（push_empty），不重新定未掃碼門檻，沿用原本的。"
+  ]
+}

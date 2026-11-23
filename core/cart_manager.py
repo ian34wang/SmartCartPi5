@@ -32,12 +32,17 @@ class CartLineItem:
 
     barcode: str
     name: str
-    unit_price: float
+    unit_price: float          # 實際收的單價（已套用折扣）
     quantity: int = 0
+    list_price: float = 0.0    # 原價（沒有折扣時跟 unit_price 一樣）
 
     @property
     def subtotal(self) -> float:
         return self.unit_price * self.quantity
+
+    @property
+    def list_subtotal(self) -> float:
+        return (self.list_price or self.unit_price) * self.quantity
 
 
 class CartManager:
@@ -63,8 +68,9 @@ class CartManager:
             self._items[product.barcode] = CartLineItem(
                 barcode=product.barcode,
                 name=product.name,
-                unit_price=product.unit_price,
+                unit_price=product.effective_price,
                 quantity=quantity,
+                list_price=product.unit_price,
             )
         else:
             line.quantity += quantity
@@ -96,7 +102,12 @@ class CartManager:
         return sum(line.quantity for line in self._items.values())
 
     def total_price(self) -> float:
+        """應付金額（已套用折扣）。"""
         return sum(line.subtotal for line in self._items.values())
+
+    def list_total(self) -> float:
+        """原價合計；list_total − total_price 就是折扣省下的錢。"""
+        return sum(line.list_subtotal for line in self._items.values())
 
     def list_items(self) -> List[CartLineItem]:
         return list(self._items.values())

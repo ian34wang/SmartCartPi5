@@ -1,0 +1,164 @@
+{
+  "verdict": "勉強",
+  "error": null,
+  "offset": -331970.43419212435,
+  "scale": 397.3924733870314,
+  "sigma_static_g": 0.37735823099834404,
+  "zero_drift_g": -0.21892714589807624,
+  "points": [
+    {
+      "label": "zero_start",
+      "mass_g": 0.0,
+      "level_raw": -331530.0,
+      "sigma_raw": 265.3854,
+      "n": 108,
+      "residual_g": 1.1083103521575655,
+      "drift_raw": 101.5
+    },
+    {
+      "label": "load_1",
+      "mass_g": 198.0,
+      "level_raw": -254491.0,
+      "sigma_raw": 125.27969999999999,
+      "n": 106,
+      "residual_g": -3.0304437531079564,
+      "drift_raw": -2526
+    },
+    {
+      "label": "load_2",
+      "mass_g": 581.0,
+      "level_raw": -100675,
+      "sigma_raw": 41.5128,
+      "n": 107,
+      "residual_g": 1.0327501946908282,
+      "drift_raw": -34.0
+    },
+    {
+      "label": "zero_end",
+      "mass_g": 0.0,
+      "level_raw": -331617.0,
+      "sigma_raw": 42.2541,
+      "n": 108,
+      "residual_g": 0.8893832062594893,
+      "drift_raw": 11.5
+    }
+  ],
+  "push": {
+    "n": 304,
+    "max_abs_g": 0.29693566914911496,
+    "p99_abs_g": 0.2793208413182352,
+    "std_g": 0.1032372307692407
+  },
+  "t_min": 1,
+  "t_rec": 10,
+  "drops": [
+    {
+      "label": "drop_1",
+      "mass_g": 198.0,
+      "outcome": "正常加入",
+      "commit_after_sec": 2.03788685798645,
+      "overshoot_g": 21.220834728258353,
+      "extra_alerts": 0,
+      "detail": "放入前 0.8 g → 穩定後 195.4 g（變化 +194.7 g，砝碼 198 g）"
+    },
+    {
+      "label": "drop_2",
+      "mass_g": 198.0,
+      "outcome": "正常加入",
+      "commit_after_sec": 2.1223230361938477,
+      "overshoot_g": 0.4026246361343908,
+      "extra_alerts": 0,
+      "detail": "放入前 0.5 g → 穩定後 195.4 g（變化 +194.9 g，砝碼 198 g）"
+    },
+    {
+      "label": "drop_3",
+      "mass_g": 198.0,
+      "outcome": "正常加入",
+      "commit_after_sec": 2.2495718002319336,
+      "overshoot_g": 16.145247908989177,
+      "extra_alerts": 0,
+      "detail": "放入前 0.7 g → 穩定後 195.8 g（變化 +195.1 g，砝碼 198 g）"
+    }
+  ],
+  "settle_window_sec": 0.3,
+  "settle_band_g": 3.0,
+  "settle_table": [
+    {
+      "window": 0.0,
+      "t_min": 1,
+      "t_rec": 10,
+      "t_reason": "推車震動 1.5·T_min = 2、靜止雜訊 6σ_s = 3、人為下限 T_floor = 10，取最大的（人為下限 T_floor）",
+      "ok": 0,
+      "n": 3,
+      "latency": 1.5229206879933674
+    },
+    {
+      "window": 0.2,
+      "t_min": 1,
+      "t_rec": 10,
+      "t_reason": "推車震動 1.5·T_min = 2、靜止雜訊 6σ_s = 3、人為下限 T_floor = 10，取最大的（人為下限 T_floor）",
+      "ok": 3,
+      "n": 3,
+      "latency": 2.0738042195638022
+    },
+    {
+      "window": 0.3,
+      "t_min": 1,
+      "t_rec": 10,
+      "t_reason": "推車震動 1.5·T_min = 2、靜止雜訊 6σ_s = 3、人為下限 T_floor = 10，取最大的（人為下限 T_floor）",
+      "ok": 3,
+      "n": 3,
+      "latency": 2.1365938981374106
+    },
+    {
+      "window": 0.4,
+      "t_min": 1,
+      "t_rec": 10,
+      "t_reason": "推車震動 1.5·T_min = 2、靜止雜訊 6σ_s = 3、人為下限 T_floor = 10，取最大的（人為下限 T_floor）",
+      "ok": 3,
+      "n": 3,
+      "latency": 2.263413985570272
+    },
+    {
+      "window": 0.5,
+      "t_min": 1,
+      "t_rec": 10,
+      "t_reason": "推車震動 1.5·T_min = 2、靜止雜訊 6σ_s = 3、人為下限 T_floor = 10，取最大的（人為下限 T_floor）",
+      "ok": 3,
+      "n": 3,
+      "latency": 2.32743231455485
+    },
+    {
+      "window": 0.6,
+      "t_min": 1,
+      "t_rec": 10,
+      "t_reason": "推車震動 1.5·T_min = 2、靜止雜訊 6σ_s = 3、人為下限 T_floor = 10，取最大的（人為下限 T_floor）",
+      "ok": 3,
+      "n": 3,
+      "latency": 2.453392267227173
+    },
+    {
+      "window": 0.8,
+      "t_min": 1,
+      "t_rec": 10,
+      "t_reason": "推車震動 1.5·T_min = 2、靜止雜訊 6σ_s = 3、人為下限 T_floor = 10，取最大的（人為下限 T_floor）",
+      "ok": 3,
+      "n": 3,
+      "latency": 2.6431289513905845
+    },
+    {
+      "window": 1.0,
+      "t_min": 1,
+      "t_rec": 10,
+      "t_reason": "推車震動 1.5·T_min = 2、靜止雜訊 6σ_s = 3、人為下限 T_floor = 10，取最大的（人為下限 T_floor）",
+      "ok": 3,
+      "n": 3,
+      "latency": 2.8391249974568686
+    }
+  ],
+  "light_products": [],
+  "issues": [
+    "load_1 錄的過程中讀數還在變（後半比前半 -6.4 g）——還沒放穩、手還碰著，或秤台在潛變。已經用中位數，影響不大，但這一點的可信度比較低。",
+    "線性殘差最大 3.0 g，超過 2.9 g。可能是秤真的不線性、砝碼的標示重量不準，或放的位置不同讀數不同。分辨方法：把 198 g 和 581 g 一起放上去錄一點（779 g）——如果讀數的增加量剛好等於兩個各自增加量的和，秤是線性的，問題在砝碼標示。"
+  ]
+}

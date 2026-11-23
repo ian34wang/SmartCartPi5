@@ -245,6 +245,13 @@ class GateCrossingDetector:
        勢方連續出現這麼多筆平滑後的樣本才算數，用來過濾單一雜訊樣本造成的
        瞬間翻轉，設成大於 1（例如 3）可以再增加一點抗雜訊能力，代價是判定
        會晚個幾筆樣本的時間。
+    4. `min_confirm_sec`（持續時間，預設 0 代表不啟用，2026-11-23 加）：新的
+       優勢方除了要連續 min_confirm_samples 筆，還要從第一筆算起持續至少這麼多
+       秒才確認。為什麼光數筆數不夠：判定是每收到一筆觀測就做一次，兩顆加起來
+       每秒 13 筆左右，3 筆只有 0.2 秒；而平滑值（尤其 max 估計量）會被單一一筆
+       特別強的封包撐住整整一個窗口，所以這 3 筆用的其實是同一筆封包——等於
+       一筆封包就能確認。2026-11-16 實機記錄裡「進場 0.5 秒後又出場」就是這樣
+       來的。改成看時間之後，判定需要的是「持續一段時間」，跟封包率無關。
 
     誠實的限制：這三層防護能大幅降低『在門口附近晃過但沒有真的穿越』被誤判
     的機率，但沒辦法做到完全消除——BLE RSSI 本身是全向、無方向性的訊號強
@@ -268,13 +275,16 @@ class GateCrossingDetector:
         hysteresis_dbm: float = 2.0,
         min_crossing_rssi_dbm: Optional[float] = None,
         min_confirm_samples: int = 1,
+        min_confirm_sec: float = 0.0,
     ):
         self.hysteresis_dbm = hysteresis_dbm
         self.min_crossing_rssi_dbm = min_crossing_rssi_dbm
         self.min_confirm_samples = max(1, min_confirm_samples)
+        self.min_confirm_sec = max(0.0, float(min_confirm_sec or 0.0))
         self._dominant: Optional[str] = None  # "a" 或 "b"：目前已確認佔優勢的一邊
         self._candidate: Optional[str] = None
         self._candidate_count = 0
+        self._candidate_since: Optional[float] = None  # 這一輪候選的第一筆時間
 
     def add_sample(self, smoothed_rssi_a: float, smoothed_rssi_b: float, timestamp: float) -> Optional[str]:
         """回傳 GATE_CROSSING_ENTERING / GATE_CROSSING_EXITING（確認了一次
@@ -291,6 +301,7 @@ class GateCrossingDetector:
         if sample_dominant is None:
             self._candidate = None
             self._candidate_count = 0
+            self._candidate_since = None
             return None
 
         if self.min_crossing_rssi_dbm is not None and dominant_rssi < self.min_crossing_rssi_dbm:
@@ -298,6 +309,7 @@ class GateCrossingDetector:
             # 的偵測範圍內，不採信這一筆。
             self._candidate = None
             self._candidate_count = 0
+            self._candidate_since = None
             return None
 
         if sample_dominant == self._candidate:
@@ -305,9 +317,11 @@ class GateCrossingDetector:
         else:
             self._candidate = sample_dominant
             self._candidate_count = 1
+            self._candidate_since = timestamp
 
         crossing = None
-        if self._candidate_count >= self.min_confirm_samples:
+        lasted = timestamp - self._candidate_since if self._candidate_since is not None else 0.0
+        if self._candidate_count >= self.min_confirm_samples and lasted >= self.min_confirm_sec - 1e-9:
             if self._dominant is not None and self._candidate != self._dominant:
                 crossing = GATE_CROSSING_EXITING if self._dominant == "a" else GATE_CROSSING_ENTERING
             self._dominant = self._candidate
@@ -318,6 +332,7 @@ class GateCrossingDetector:
         self._dominant = None
         self._candidate = None
         self._candidate_count = 0
+        self._candidate_since = None
 
 
 def is_heading_consistent(yaw_deg: float, expected_yaw_deg: float, tolerance_deg: float = 45.0) -> bool:

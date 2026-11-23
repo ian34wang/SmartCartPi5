@@ -18,21 +18,25 @@ Raspberry Pi 5 智慧購物車（上位機）。下位機是 SAMD21（MCC 產生
 |---|---|---|
 | 1 | 環境建置、硬體可靠度驗證 | 完成，實機驗證過 |
 | 2 | 資料擷取驅動層（UART / 條碼 / 相機） | 完成，實機驗證過 |
-| 3 | 定位積分與視覺融合 | 部分完成：純 UART 里程計（邏輯測過、**未實機推車驗證**）、BLE 門口判定（真 Beacon 實測過；判定規則、校正、記錄、分析已統一成一套，2026-10-28 門口現場校正完成，反應約 1~2 秒）。視覺融合/備援未開始 |
+| 3 | 定位積分與視覺融合 | 部分完成：純 UART 里程計（邏輯測過、**未實機推車驗證**）、BLE 門口判定（真 Beacon 實測過；判定規則、校正、記錄、分析已統一成一套，2026-10-28 門口現場校正完成，反應約 1~2 秒）。前方相機：地上定位點標記對齊、貨架消失點修航向（2026-11-23，只在合成影像測過，**未實機驗證**，見「現場驗證：平面圖與前方相機」） |
 | 4 | 購物流程狀態機 | 完成，邏輯測試涵蓋完整，實機資料流跑過（`tools/run_real_hardware_flow.py`） |
-| 5 | 觸控 UI + 系統整合 | **主要工作完成**：14 頁 UI 全部接上狀態機與資料庫（含會員偏好、交易紀錄、店員協助、「我的」分頁）；條碼、秤重、閘門三個硬體全部接真的，沒有任何模擬路徑。**BLE 版完整流程待實機驗收** |
-| 6 | AI（錢包管家 / 健康護照 / 即時優惠 / 異常偵測） | **完全未開始**，`ai/` 只有空的 `__init__.py` |
-| 7 | 室內導航 | 未開始，且卡在硬體與店面地圖設計 |
+| 5 | 觸控 UI + 系統整合 | **主要工作完成**：14 頁 UI 全部接上狀態機與資料庫（含會員偏好、交易紀錄、店員協助、「我的」分頁）；條碼、秤重、閘門、前方相機四個硬體全部接真的，沒有任何模擬路徑。BLE 版完整購物流程 2026-11-16 實機跑通 |
+| 6 | AI（錢包管家 / 健康護照 / 即時優惠 / 異常偵測） | 健康護照、錢包管家、即時優惠：規則版完成（2026-11-23，商品標籤 × 會員偏好）。LLM 推薦與異常偵測未開始，`ai/` 只有空的 `__init__.py` |
+| 7 | 室內導航 | 找貨頁完成（店面平面圖、貨架路線、推車位置，2026-11-23）。依推車目前位置重新規劃路線未開始 |
 
-**現在最該做的四件事**（詳見最後一章「尚未完成的功能總表」）：
+**現況（2026-11-23）**：全部硬體裝上推車並校正完（秤重、門口、光流），BLE 版完整購物流程
+2026-11-16 實機跑通。健康護照、錢包管家、找貨（照 11-23 構想圖的店面平面圖＋推車位置）、優惠頁 2026-11-23 改成真的資料驅動。
 
-1. **BLE 版完整流程實機驗收**：`python3 -m ui.app_gui`，推車從門外開始，登入 → 精靈 →
-   推進門 → 掃碼 → 結帳 → 推出門，確認每一步畫面（門口判定 2026-10-28 已校正）。
-2. 秤重機構定案後跑正式校正（`tools/calibrate_weight.py`），現在 `hx711_scale`
-   還是佔位值 1.0。
-3. 把真實商品建檔（`tools/product_admin.py`），資料庫目前只有測試資料；店員工作證
-   用 `product_admin staff-add` 建（測試資料庫有一張 `STAFF-0001`）。
-4. 商品成分／過敏原資料模型——會員偏好已經存得起來，這是「健康護照」剩下的前置條件。
+**接下來要做的**（詳見最後一章「尚未完成的功能總表」）：
+
+1. 把展示要用的商品建檔，並用 `python3 -m tools.product_admin meta <條碼>` 設定成分標籤、
+   貨架位置（L1~R4，見下面「店面平面圖」）、折扣、搭配——健康護照、找貨、優惠頁都靠這些資料。
+2. 里程計軌跡驗證（不用等場地）：`python3 -m tools.track_odometry --grid-m 0.3` 推直線、L 形、繞一圈，
+   跟捲尺量的終點比（見「行駛軌跡視覺化」）。
+3. 場地鋪完後量一格多長，填 `config.json` 的 `store.unit_m`。**沒有預設值，沒填 app 不啟動**
+   （量法見「現場驗證：平面圖與前方相機」）。
+4. 定位點標記貼到地上，用 `python3 -m tools.verify_store_vision` 跟捲尺比對，再實際推一次看找貨頁的推車點（同一節）。
+5. Phase 6 的 LLM 與異常偵測、Phase 7 的路徑規劃還沒開始。
 
 ---
 
@@ -48,22 +52,30 @@ SmartCart_Pi5/
 │   ├── uart_receiver.py      # 背景執行緒 + Queue，含 checksum 驗證與可選 CSV logger
 │   ├── barcode_scanner.py    # evdev 獨佔 USB 條碼掃描器
 │   ├── ble_beacon_scanner.py # bleak 掃描 BLE Beacon RSSI（管制區門口判定的資料來源）
-│   └── camera_stream.py      # picamera2 影像擷取 + 棋盤格畸變校正 + --color-test 診斷
+│   ├── camera_stream.py      # picamera2 影像擷取 + 棋盤格畸變校正 + --color-test 診斷
+│   └── front_camera.py       # 找貨頁推車位置用：CameraStream 擷取 → 灰階 → 縮小 → 去畸變（只去一次）
 │
 ├── core/                     # 商業邏輯與演算法（不碰硬體，可用假資料完整測試）
 │   ├── position_types.py     # 定位系統的輸出契約（PositionEstimate）
-│   ├── odometry_engine.py    # 純 UART dead-reckoning 里程計，含 squal 過濾
+│   ├── odometry_engine.py    # 純 UART dead-reckoning 里程計（感測器安裝角、鏡像、yaw 正負號、squal 過濾）
+│   ├── odometry_track.py     # 行駛軌跡：OdometryEngine 重播、誤差指標、畫圖（tools/track_odometry.py 用）
 │   ├── landmark_correction.py# BLE 地標校正的純演算法（峰值偵測、雙 Beacon 差分）
 │   ├── gate_model.py         # 門口判定的單一標準：參數、時間窗濾波、判定、重播
 │   ├── gate_monitor.py       # gate_model 的即時版本（執行期一筆一筆處理，並記錄下來）
 │   ├── gate_calibration.py   # 門口校正的計算：用實測資料重播判定規則挑參數
 │   ├── gate_recorder.py      # 門口記錄檔（執行期與校正量測同一種格式）
 │   ├── weight_convert.py     # HX711 raw -> 公克換算（校正/驗證/狀態機共用）
+│   ├── health_passport.py    # 健康護照：商品成分標籤 × 偏好（過敏原／葷素／宗教）→ 衝突
+│   ├── store_layout.py       # 店面平面圖、貨架代碼、路線、里程計 ↔ 平面圖對齊（定位點）
+│   ├── store_vision.py       # 機器視覺：定位點 ArUco 標記、貨架消失點 → 航向
+│   ├── uart_recording.py     # UART 校正錄音（秤重、光流共用的錄音格式與工具）
+│   ├── weight_calibration.py # 秤重校正的計算：多點擬合、狀態機重播定門檻
+│   ├── flow_calibration.py   # 光流與航向校正的計算：OdometryEngine 重播
 │   ├── cart_manager.py       # 購物清單資料結構（清單、數量、金額）
 │   └── cart_state_machine.py # 購物流程狀態機（登入~登出整趟流程的正確性保障）
 │
 ├── database/
-│   ├── db_manager.py         # SQLite 存取層：products + members 兩張表
+│   ├── db_manager.py         # SQLite 存取層：商品、會員、偏好、交易、店員、協助請求
 │   └── inventory.db          # （執行時產生，不進版控）
 │
 ├── ui/                       # Phase 5 觸控應用
@@ -75,15 +87,18 @@ SmartCart_Pi5/
 ├── tools/
 │   ├── build_app_ui.py       # design-cart-ui/*.dc.html -> ui/templates/index.html
 │   ├── product_admin.py      # 資料庫後台 CLI（商品、會員、店員、協助請求、交易紀錄）
+│   ├── make_anchor_marker.py # 產生定位點 ArUco 標記圖（印出來貼在長廊末端）
 │   ├── run_real_hardware_flow.py  # 純終端機的實機整合測試（三個硬體全接真的）
-│   ├── calibrate_weight.py   # HX711 重量校正：算 offset/scale 並寫回 config.json
-│   ├── calibrate_optical_flow.py  # PMW3901 光流校正：算 px_to_mm 並寫回 config.json
+│   ├── calibrate_weight.py   # 秤重校正：多點擬合、推車震動、放入測試（狀態機重播）
+│   ├── calibrate_optical_flow.py  # 光流與航向校正：px_to_mm、安裝角、鏡像、yaw 正負號
 │   ├── calibrate_gate_beacons.py  # 門口 Beacon 校正（推車走過門口錄音）/靜止剖面/即時監看（兩顆都要有電）
 │   ├── analyze_gate_log.py   # 分析門口記錄檔：重播、核對、換參數試算
 │   ├── measure_beacon_shield.py   # 單顆 Beacon 遮罩量測：開口側 vs 遮擋側
 │   ├── measure_beacon_rotation.py # Beacon 組轉角度量測：找極化對齊的安裝角度
 │   ├── verify_weight.py      # 重量校正「驗證」工具：只讀不寫
-│   └── verify_optical_flow.py# 光流校正「驗證」工具：只讀不寫
+│   ├── verify_optical_flow.py# 光流校正「驗證」工具：只讀不寫
+│   ├── verify_store_vision.py# 前方相機（定位點標記、消失點）現場驗證：只讀不寫
+│   └── track_odometry.py     # 里程計行駛軌跡視覺化（即時畫線、跟捲尺比、存圖）：只讀不寫
 │
 ├── tests/
 │   ├── test_app_gui_bridge.py# Bridge 端對端（純 Python，必跑）
@@ -92,6 +107,9 @@ SmartCart_Pi5/
 │   ├── test_measure_beacon_shield.py  # 遮罩量測的統計邏輯（純 Python）
 │   ├── test_measure_beacon_rotation.py # 轉角度量測的計算邏輯（純 Python）
 │   ├── test_calibrate_gate_beacons.py  # 門口校正的計算邏輯（純 Python）
+│   ├── test_calibrate_weight.py        # 秤重校正（純 Python，含假 UART 端對端）
+│   ├── test_calibrate_optical_flow.py  # 光流與航向校正、里程計座標轉換（純 Python）
+│   ├── test_odometry_track.py # 行駛軌跡重播與誤差指標（純 Python）
 │   └── test_ui_layout.py     # 14 頁版面與按鈕接線（需要 playwright，選用）
 │
 ├── vision/
@@ -140,6 +158,7 @@ python3 -m tools.product_admin
 | `python3 -m tools.product_admin member-list` | 列出所有會員 |
 | `python3 -m tools.product_admin member-add --member-id MEMBER-0003 --name "王小明"` | 新增/修改會員 |
 | `python3 -m tools.product_admin member-delete <member_id> [-y]` | 刪除會員 |
+| `python3 -m tools.product_admin meta <barcode>` | 成分標籤、貨架位置、折扣、搭配（不用秤） |
 | `python3 -m tools.product_admin staff-list` / `staff-add` / `staff-delete <id>` | 店員工作證（前綴 `STAFF-`） |
 | `python3 -m tools.product_admin assist-list [--all]` | 購物車送出的協助請求（預設只列待處理） |
 | `python3 -m tools.product_admin assist-resolve <id\|all> --by <處理人>` | 不到場直接標成已處理 |
@@ -173,8 +192,8 @@ python3 -m tools.product_admin
 | `python3 -m tools.calibrate_gate_beacons` | 同上，最後問要不要寫回 | **Beacon 裝好後必跑**，否則出場判定幾乎不會觸發 |
 | `python3 -m tools.calibrate_gate_beacons --from-data data/gate_calibration/<時間>` | 用存下來的錄音重算（校正錄音→挑參數；剖面→印剖面），不用硬體 | 換了判定規則或想核對時 |
 | `python3 -m tools.analyze_gate_log` | 分析最新一份門口記錄檔（執行期自動產生）：事件、一致性、差分分布 | 實際推車測試之後；加 `--set hysteresis_dbm=6` 試別的參數 |
-| `python3 -m tools.calibrate_weight` | `hx711_offset` / `hx711_scale` | 秤重機構定案後 |
-| `python3 -m tools.calibrate_optical_flow` | `optical_flow_px_to_mm` | PMW3901 安裝高度定案後 |
+| `python3 -m tools.calibrate_weight` | `hx711_offset` / `hx711_scale` / `unscanned_change_threshold_g` | 秤重機構裝好或改過後（之後要重秤商品） |
+| `python3 -m tools.calibrate_optical_flow` | `optical_flow_px_to_mm` / `flow_rotation_deg` / `flow_mirror` / `yaw_sign` | PMW3901 裝好或改過後 |
 | `python3 -m drivers.camera_stream --calibrate --num-images 15 --square-size-mm 24` | 相機內參 | **已完成**（error 0.2026） |
 
 ### 驗證（只讀 `config.json` 現有值，不會修改）
@@ -183,6 +202,8 @@ python3 -m tools.product_admin
 |---|---|
 | `python3 -m tools.verify_weight` | 放上已知重量的物品，看換算誤差幾 % |
 | `python3 -m tools.verify_optical_flow` | 推一段已知距離，看推估誤差幾 % |
+| `python3 -m tools.track_odometry [--grid-m 0.3]` | 里程計（光流 + IMU）行駛軌跡：推車時即時畫線，推完輸入捲尺量的終點與轉角，算誤差、存圖到 `data/odometry_tracks/`；沒有桌面加 `--no-window`、事後重算 `--from-data <目錄>` |
+| `python3 -m tools.verify_store_vision` | 前方相機：定位點標記算出的前方距離、相機高度跟捲尺比；貨架消失點的 $\delta$、俯角 $\beta$；標註影像存到 `data/vision_check/` |
 
 ### 建置與測試
 
@@ -195,7 +216,14 @@ python3 -m tools.product_admin
 | `python3 tests/test_measure_beacon_shield.py` | 遮罩量測的統計邏輯（純 Python） |
 | `python3 tests/test_measure_beacon_rotation.py` | 轉角度量測的計算邏輯（純 Python） |
 | `python3 tests/test_calibrate_gate_beacons.py` | 門口校正的計算邏輯（純 Python） |
+| `python3 tests/test_calibrate_weight.py` | 秤重校正（純 Python） |
+| `python3 tests/test_calibrate_optical_flow.py` | 光流與航向校正、里程計座標轉換（純 Python） |
+| `python3 tests/test_odometry_track.py` | 行駛軌跡重播與誤差指標（純 Python） |
 | `python3 tests/test_ui_layout.py` | 14 頁版面與按鈕接線（需要 playwright，選用） |
+
+`test_app_gui_bridge.py` 測的是流程邏輯，每次只餵一筆秤重讀數，所以把秤重穩定窗關掉（`settle_window_sec = 0`，
+其他參數照 `config.json`）；正式設定在 11-16 校正後是 0.3 秒，單筆讀數永遠湊不出穩定值。穩定窗本身由
+`test_calibrate_weight.py` 用真實錄音重播驗證。平面圖用 `unit_m = 0.5` 的測試值。
 
 ### 一次性權限設定（各做一次就好）
 
@@ -349,8 +377,8 @@ sudo rfkill unblock bluetooth    # 藍牙打不開時
 | 載入會員資料 | `loading_profile` | `_ui_stage` |
 | 過敏原 / 葷素 / 宗教 / 預算 | `allergens` `diet` `religion` `budget` | `_ui_stage` |
 | 購物主畫面 | `shopping` | `STATE_SHOPPING` / `AWAITING_ITEM_SCAN` / `AWAITING_WEIGHT_*` |
-| 找貨（導航） | `navigation` | 底部導覽列分頁（畫面是靜態 mockup） |
-| 優惠 | `promotions` | 底部導覽列分頁（畫面是靜態 mockup） |
+| 找貨（導航） | `navigation` | 底部導覽列分頁：點商品 → 店面平面圖畫出路線、文字指引、推車位置（商品的 `shelf`） |
+| 優惠 | `promotions` | 底部導覽列分頁：特價、搭配、依偏好與預算推薦（全部從資料庫算） |
 | 我的 | `profile` | 底部導覽列分頁：會員資料、改本次預算、重新設定偏好、最近消費紀錄 |
 | 秤重異常 | `weight_alert` | `STATE_WEIGHT_MISMATCH_ERROR` |
 | 結帳 | `checkout` | `STATE_LOCKED_FOR_CHECKOUT` |
@@ -421,18 +449,191 @@ python3 tools/build_app_ui.py     # design-cart-ui/*.dc.html -> ui/templates/ind
 送出狀態機的 `StaffRezeroAuthorized` 真的歸零。是哪位店員、前後重量都記進警告歷史
 （`staff_rezero_authorized`）。異常如果被使用者自己用其他按鈕解除了，申請自動取消。
 
-> 還沒處理的同類問題：秤重異常畫面的「放棄此次動作」，在「拿了東西但從頭到尾沒掃碼」
-> 逾時進來的那種異常下，也會把目前重量當成新基準（`_on_void_pending_item` 的 `never_scanned`
-> 分支），而且不需要店員。這是原本就有的行為，這次沒有改；要比照歸零改成需要工作證的話，
-> 是改那個分支。
+**秤重異常「放棄此次動作」**（2026-11-23 改）：掃過碼、重量不符的那一筆，直接放棄（不加入、
+不移除；穩定基準沒變，東西還在籃子裡的話下一筆讀數就會被抓成未掃碼的重量變化）。從頭到尾沒掃碼
+（拿取／放入後忘記掃碼逾時）的那種，放棄等於接受目前重量，跟歸零一樣只送出申請，要店員刷工作證。
 
-### 已知缺口（面板上對應功能會直接跳提示，不會假裝成功）
+**登入時推車已經在門內**（2026-11-23）：BLE 判定目前確認在門內那一側的話，登入當下直接算進場。
+不然要等下一次穿越門口，人已經在店裡了等不到（11-16 實測卡在這裡）。
 
-1. 「找貨」「優惠」兩頁是完全靜態的 mockup，沒有任何真實邏輯驅動
-   （沒有近效期偵測、沒有多件優惠、沒有搭配推薦）。購物畫面上的
-   「健康護照提醒：此商品含麩質穀物」也是寫死的文字，沒有真的比對商品成分
-   （偏好已經存得起來，缺的是商品成分資料）。
-2. 常購清單沒有做（載入會員資料畫面已經不再宣稱找得到）。
+### 健康護照、錢包管家、找貨、優惠（2026-11-23）
+
+全部由商品資料驅動，商品表多了四個欄位（舊資料庫啟動時自動補上）：
+
+| 欄位 | 用途 | 怎麼設 |
+|---|---|---|
+| `tags` | 成分標籤：12 種過敏原（跟偏好精靈一樣）＋豬肉、牛肉、其他肉類、海鮮、五辛、酒精 | `product_admin meta <條碼>` 或 CSV |
+| `shelf` | 貨架代號＋角落，例如 `M3` = 中架左下（見下面「店面平面圖」） | 同上 |
+| `discount_pct` | 折扣百分比（50 = 5 折），結帳金額直接套用 | 同上 |
+| `pairs_with` | 搭配推薦的條碼 | 同上 |
+
+- **健康護照**（`core/health_passport.py`）：商品標籤 × 偏好（過敏原、葷素、宗教）→ 衝突。掃碼時跳提醒、
+  比對中區塊與購物清單標出來、找貨與優惠頁也標。**只提醒不阻擋**（可能是幫別人買）。葷素規則：全素禁肉／海鮮／蛋／奶／五辛，
+  蛋奶素禁肉／海鮮／五辛，奶素再禁蛋，蛋素再禁奶，五辛素允許五辛，鍋邊素只提醒肉；清真禁豬肉、酒精，印度教與不食牛禁牛肉。
+- **錢包管家**：比對中顯示「加入後總額、預算剩多少」；總額往上跨過 80%、100% 各提醒一次；進度條超過預算變全黑並顯示超出多少；
+  結帳頁顯示原價、特價折抵、應付、預算剩餘。
+- **找貨**：點商品名稱 → 平面圖畫出從門口過去的虛線路線、標出那個角落，文字指引例如
+  「進門沿長廊直走到定位點 → 往左走到左架 → 繞到貨架後側（靠後牆）右邊那角」。觸控螢幕沒有鍵盤，所以不用打字搜尋。
+  推車位置是實心圓點（已在定位點對齊）或空心圓點（約略），見下面「店面平面圖」。
+- **優惠**：特價（有折扣的商品，在購物車裡的標「已套用」）、搭配（購物車裡商品的 `pairs_with`）、推薦（跟偏好沒衝突、
+  在剩餘預算內、有貨架位置的）；每張卡片可以「導航去貨架」。健康護照衝突的不推薦。
+
+### 店面平面圖與推車位置（`core/store_layout.py`，2026-11-23 構想圖）
+
+```
+            ┌────────────────────────────────┐  y = 8（後牆）
+            │   ┌──┐     ┌──────┐     ┌──┐   │
+            │   │左│     │  中  │     │右│   │  y = 5 ~ 7
+            │   └──┘     └──────┘     └──┘   │
+            │             ◇ 定位點           │  y = 4.25
+            └──────────┐          ┌──────────┘  y = 4
+                       │  長廊    │              x = −1 ~ +1（相機 OpenCV 校正用）
+                       └── 門 ────┘              y = 0
+              x = −4                      x = +4
+```
+
+座標單位是「格」，原點在門的正中間，$y$ 往店裡、$x$ 往右；一格 $u$ 公尺（`store.unit_m`，**要現場量**）。
+
+**貨架位置代碼**：`L` 左架（$x\in[-3,-2]$）、`M` 中架（$[-1,1]$）、`R` 右架（$[2,3]$），三座都是 $y\in[5,7]$；
+角落 `1` 左上、`2` 右上、`3` 左下、`4` 右下（「上」靠後牆、「下」靠定位點）→ `L1`~`R4` 共 12 個位置。
+推車停的點在角落往外 0.5 格。分法不對的話改 `config.json`，程式不用動，例如每座貨架只分前後兩面：
+
+```json
+"store": { "unit_m": 0.6, "slots": { "1": "後面", "2": "前面" } }
+```
+
+（`slots` 的名稱含「左／右」決定靠哪一邊、含「上／下」決定在貨架後側／前側；`hall`、`corridor`、`anchor`、
+`shelves` 也都可以覆蓋，格式見 `core/store_layout.DEFAULT_LAYOUT`。）
+
+**長廊與定位點**：長廊用來**鎖住移動方向**——推車在長廊裡只能朝店內直走，所以航向就是平面圖的 $+y$、
+橫向位置就是長廊中線。長廊末端的**定位點**地上平貼一張 ArUco 標記（`python3 -m tools.make_anchor_marker` 產生，
+印的時候保持正方形）。前方相機（約 50 cm 高、往斜前方打，OpenCV）看到它，就算出標記在推車前方、右方各幾公尺，
+反推推車在平面圖上的位置，「大圖座標」（平面圖）與「內部定位座標」（里程計，原點是開機那一刻）在這裡接起來。
+
+**座標換算**：里程計位置 $(X, Y)$（mm）→ 平面圖 $(x, y)$（格）：
+
+$$\begin{bmatrix} x \\ y \end{bmatrix} = \frac{1}{1000\,u}\begin{bmatrix} \cos\alpha & -\sin\alpha \\ \sin\alpha & \cos\alpha \end{bmatrix}\begin{bmatrix} X - X_0 \\ Y - Y_0 \end{bmatrix} + \begin{bmatrix} x_0 \\ y_0 \end{bmatrix}$$
+
+- $(X_0, Y_0)$：對齊那一刻的里程計位置；$(x_0, y_0)$：那一刻推車在平面圖上的位置
+- $u$：一格幾公尺（`store.unit_m`）
+- $\alpha$：里程計航向 → 平面圖航向的差，平面圖航向 $\theta = \psi + \alpha$，$\psi$ 是里程計（IMU）航向
+
+| 時間點 | 做什麼 | 地圖上 |
+|---|---|---|
+| BLE 判定進場 | 推車在長廊、朝店內：$\alpha = 90^\circ - \psi$，$(x_0, y_0) = (0,\ \text{entry\_y})$；之後 $x$ 鎖在長廊中線 | 空心點（約略） |
+| 相機看到地上的定位點標記 | 航向固定成正向 $\alpha = 90^\circ - \psi$；$(x_0, y_0) = (x_a - \ell_r/u,\ y_a - \ell_f/u)$ | 實心點 |
+| 之後一直 | 貨架邊緣的消失點修航向（下面） | |
+
+$(x_a, y_a) = (0, 4.25)$ 是定位點（標記）在平面圖上的位置，$\ell_f, \ell_r$ 是標記在推車前方、右方幾公尺。
+標記在視野裡的每一張影像都重新對齊一次，推車越靠近越準。`entry_y` 是 BLE 判定出進場時推車大約在長廊哪裡
+（判定比實際穿越晚 1~2 秒，預設 1 格）。登入時推車已經在店裡也一樣：推到定位點前面讓相機看到標記；
+標記被擋住的話，找貨頁有「**我在定位點**」按鈕（推車正好停在標記上時按）。走出門口、登出時位置作廢。
+
+**標記 → 推車位置**（`core/store_vision.py`）：標記四個角 → `cv2.solvePnP`（`IPPE_SQUARE`）→ 標記在相機座標
+（$x$ 右、$y$ 下、$z$ 沿光軸）裡的旋轉 $R$、位置 $\mathbf{t}$（相機 → 標記中心）。標記貼在地上，所以 $R$ 的第三欄
+$\mathbf{n}$ 就是「往上」：
+
+$$h = -\mathbf{n}\cdot\mathbf{t},\qquad \mathbf{g} = \mathbf{t} - (\mathbf{t}\cdot\mathbf{n})\,\mathbf{n},\qquad \mathbf{f} = \frac{\hat{\mathbf{z}} - (\hat{\mathbf{z}}\cdot\mathbf{n})\,\mathbf{n}}{\lVert\hat{\mathbf{z}} - (\hat{\mathbf{z}}\cdot\mathbf{n})\,\mathbf{n}\rVert},\qquad \mathbf{r} = \mathbf{f}\times\mathbf{n}$$
+
+$$\ell_f = \mathbf{g}\cdot\mathbf{f},\qquad \ell_r = \mathbf{g}\cdot\mathbf{r}$$
+
+- $h$：相機離地高度，跟 `vision.camera_height_m`（0.5）差超過 `height_tol_m`（0.15）就當誤判
+- $\mathbf{g}$：相機正下方 → 標記中心的水平向量；$\mathbf{f}$：光軸投影到地面 = 車頭方向；$\mathbf{r}$：車身右方
+- 不需要知道相機俯角，地面方向由標記本身量出來；水平距離 $\sqrt{\ell_f^2 + \ell_r^2} \le$ `anchor_trigger_m`（1.5 m）才採用
+
+**消失點修航向**：貨架都跟平面圖座標軸平行，層板、上下緣、地磚縫在影像上交於一個消失點 $(u, v)$。相機往下俯 $\beta$，
+一個跟光軸水平夾角 $\gamma$（往右為正）的水平方向在相機座標是 $(\sin\gamma,\ -\cos\gamma\sin\beta,\ \cos\gamma\cos\beta)$，投影：
+
+$$u = c_x + f_x\,\frac{\tan\gamma}{\cos\beta},\qquad v = c_y - f_y\tan\beta$$
+
+所以先由 $v$ 求俯角、再由 $u$ 求夾角：
+
+$$\beta = \arctan\frac{c_y - v}{f_y},\qquad \delta = \gamma = \arctan\frac{(u - c_x)\cos\beta}{f_x},\qquad \theta_v = \phi + \delta$$
+
+$f_x, f_y$ 焦距、$c_x, c_y$ 光心（像素），$\phi \in \{0^\circ, 90^\circ, 180^\circ, 270^\circ\}$ 取最接近目前估計的。
+誤差 $e = \theta_v - (\psi + \alpha)$，$|e| \le 15^\circ$ 才採用：$\alpha \leftarrow \alpha + w\,e$（$w$ = `vision.vp_yaw_weight`，預設 0.2），
+以推車目前位置為中心轉，畫面上的點不跳、之後的位移方向變準。找法：Canny → HoughLinesP → 只留斜線 →
+兩兩交點投票 → 最小平方。相機假設跟車身同方向（左右沒裝歪）、沒有側傾。
+
+**設定**（`config.json`，沒寫的用預設值）：
+
+```json
+"store":  { "unit_m": null },
+"vision": { "anchor_marker_id": 0, "anchor_marker_size_m": 0.15, "anchor_trigger_m": 1.5,
+            "camera_height_m": 0.5, "height_tol_m": 0.15, "vp_yaw_weight": 0.2, "fps": 5, "proc_width": 640 }
+```
+
+`store.unit_m` **沒有預設值**：沒填或不是正數，app 啟動時就報錯結束（不拿沒量過的數字畫推車位置）。
+`vision` 沒寫的欄位用 `ui/app_gui.py` 的 `_VISION_DEFAULTS`；`config.json` 目前寫了標記編號、邊長與相機高度。
+
+前方相機是 app 的第 4 個必要硬體（`drivers/front_camera.py`），開不起來 app 就不啟動：
+
+- 擷取共用 `drivers/camera_stream.CameraStream`：跟棋盤格校正同一條 picamera2 設定路徑（`preview_configuration` + `align()`），
+  全專案只有這裡開相機（一顆 CSI 相機同時只能被一個 `Picamera2` 打開）。
+- `CameraStream` 用 `calibration_file=None` 開，拿原始影格；`front_camera.py` 轉灰階、縮到 640 寬，再用預先算好的
+  對照表去畸變。**只去一次**，所以 `solvePnP` 的畸變係數傳 0、內參用縮小後的 $K'$。
+- 影格超過 1 秒沒更新就丟例外（相機斷線），由 `_VisionConsumer` 記錄。
+
+內參換算：校正解析度 $(W_c, H_c)$ = `camera.resolution` = 1280×720，處理解析度 $(W_p, H_p)$ = 640×360，
+$s_x = W_p / W_c$、$s_y = H_p / H_c$：
+
+$$f_x' = s_x f_x,\qquad c_x' = s_x c_x,\qquad f_y' = s_y f_y,\qquad c_y' = s_y c_y$$
+
+$f_x, f_y$ 是焦距、$(c_x, c_y)$ 是主點（像素）；畸變係數對正規化座標定義，不隨解析度變。校正檔只存
+`camera_matrix`、`dist_coeffs`，沒存影像尺寸；`--calibrate` 預設就是 1280×720，$c_x = 637.8 \approx W_c/2 = 640$ 也對得上。
+$c_y = 406.6$ 比 $H_c/2 = 360$ 偏 47 px，現場驗證時如果相機高度 $h$ 一直系統性偏高或偏低，先懷疑這個，重新校正。
+實際影格尺寸跟 `camera.resolution` 不同時 `FrontCamera` 直接報錯（改解析度就要重新校正）。
+
+**誤差**：長廊 2 格寬，定位點橫向最多差 1 格；位移量隨里程計累積（直線實測 ±2%），航向由消失點拉回。
+
+### 現場驗證：平面圖與前方相機
+
+標記與消失點目前只在合成影像上測過，下面是實機要做的，照順序：
+
+**1. 量一格多長** $u$（m），填 `store.unit_m`：
+
+$$u = \frac{W_c}{2} \approx \frac{d_a}{4.25}$$
+
+- $W_c$：長廊實際寬度（m），平面圖上是 2 格（$x = -1 \sim +1$）
+- $d_a$：門口（閘門線中點）到定位點標記中心的距離（m），平面圖上是 4.25 格
+
+兩個算出來差很多，代表構想圖的比例跟現場不合，要改 `store.corridor`／`store.anchor`，不是只改 $u$。
+
+**2. 印定位點標記**：`python3 -m tools.make_anchor_marker`，印的時候保持正方形。量黑色方框邊長 $s$（m，不含白邊），
+填 `vision.anchor_marker_size_m`（目前 0.15）。平貼在長廊中線、離門 $d_a$ 的地上，方向不拘。
+
+**3. 量相機高** $H$（m）：鏡頭中心離地，填 `vision.camera_height_m`（目前是約略值 0.5）。
+
+**4. 靜態比對**：`python3 -m tools.verify_store_vision`。車頭朝店內，停在標記前方約 0.6、1.0、1.4 m，各跑一輪；
+捲尺量「相機正下方的地面點 → 標記中心」沿車頭方向的距離 $\ell_f$，程式會問。
+
+| 看什麼 | 合理範圍 | 不合理時先查 |
+|---|---|---|
+| 看到標記的張數 | 接近總張數 | 標記反光、太遠（$d >$ `anchor_trigger_m` 1.5 m 只是不採用，應該還看得到） |
+| 前方距離誤差 $\hat{\ell}_f - \ell_f$ | 5 % 以內 | 各距離的**百分比**都差不多 → $s$ 量錯；越遠越差 → 內參 |
+| 相機高 $h$ 跟量的 $H$ | ±0.05 m（app 容許 ±0.15 m） | 一直偏同一邊 → 主點 $c_y$（見上面內參換算），重新校正 |
+| 車頭正對貨架時的 $\delta$ | ±2° | 相機左右裝歪（README 假設跟車身同方向） |
+| 車頭往右轉約 10° 時的 $\delta$ | 約 −10°（往左轉約 +10°） | 正負號相反 → 回報，不要自己改公式 |
+| 俯角 $\beta$ | 跟相機實際俯角接近 | 支持線段太少（地磚、層板邊不明顯） |
+
+$\hat{\ell}_f$ 是程式量的中位數，$\delta$ 是消失點方向跟光軸的水平夾角（右為正），$\beta$ 是相機俯角。
+標註影像在 `data/vision_check/<時間>/round<k>.png`，可以放報告。
+
+**5. 動態**：開 app、登入，從門口推進長廊：
+
+1. 找貨頁出現空心點，沿長廊中線往前。
+2. 離標記約 1.5 m 以內，終端機出現「看到定位點標記（前方 … m、右方 … m、相機高 … m），地圖對齊完成」，點變實心。
+3. 推到某個貨架角落的停車點（例如 `M3` 中架左下），看地圖上的點有沒有落在那附近；再往左右各推一段，看方向對不對。
+
+**6. 商品資料**：`python3 -m tools.product_admin meta <條碼>` 設貨架（`L1`~`R4`）、成分標籤、折扣、搭配（見「商品資料庫後台」）。
+
+### 已知缺口
+
+1. 位置（不是航向）只在定位點對齊，之後靠里程計累積；店裡沒有第二個位置校正點。路線是固定的「門 → 定位點 → 貨架」，
+   不會依推車目前位置重新規劃。
+2. 消失點、標記偵測只在合成影像上測過（俯角 25°~35°），還沒在實體貨架前驗證。相機位置當成推車位置（光流感測器跟相機前後差幾公分不計）。
+3. 多件優惠（第 2 件 5 折這種）沒有做，只有單件折扣。
+4. 常購清單沒有做（載入會員資料畫面已經不再宣稱找得到）。
 
 ---
 
@@ -559,7 +760,14 @@ python3 -m tools.product_admin tx-list --member MEMBER-0001  # 交易紀錄與�
 `staff`、`assistance_requests`）在 `app_gui` 或 `product_admin` 下次啟動時自動補上。
 既有的資料庫不會自動多出測試店員，要用 `staff-add` 建一張工作證。
 
-CSV 欄位固定為 `barcode,name,unit_price,standard_weight_g,weight_tolerance_g`。
+CSV 欄位為 `barcode,name,unit_price,standard_weight_g,weight_tolerance_g,tags,shelf,discount_pct,pairs_with`；
+後四欄可以省略（舊格式照樣能匯入，已設好的標籤等不會被清掉），`tags`、`pairs_with` 用分號隔開。
+
+```bash
+python3 -m tools.product_admin meta /3R8T2CX   # 成分標籤（輸入編號）、貨架 L1~R4、折扣 %、搭配條碼；不用秤
+```
+
+`edit` 重秤商品時，標籤、貨架、折扣、搭配會沿用原本的。
 
 ### 設計上的兩個重點
 
@@ -630,10 +838,9 @@ python3 -m core.odometry_engine --min-squal 30   # 過濾信心值低於 30 的�
 python3 -m core.odometry_engine --px-to-mm 1.42  # 手動覆蓋（還沒校正時測試用）
 ```
 
-**驗證狀態**：核心邏輯（旋轉矩陣正負號、位置累積、squal 過濾、`reset()`、
-端對端 mock generator → 真 `UartReceiver` → 真 `OdometryEngine`）都用假資料驗證過。
-**但還沒有在真實硬體上實際推車測試過**，而且 `optical_flow_px_to_mm` 還是佔位值 `1.0`，
-所以現在算出來的 (X, Y) 只能看趨勢，不是真實公釐數。
+**驗證狀態**（2026-11-23 更新）：2026-11-16 裝上推車做過光流與航向校正（`px_to_mm`、安裝角、鏡像、
+yaw 正負號都寫回 `config.json`）。校正那份錄音的重播結果見下面「行駛軌跡視覺化」；但那是用**同一份資料**
+校正又驗證，獨立的推車驗證要用 `tools/track_odometry.py` 推新的路線。
 
 **一個已知的小落差**（實機驗證時留意）：`process_packet()` 旋轉位移時用的是
 **上一筆封包的 yaw**（`self._state.yaw_deg` 在該行之後才更新成這筆的值），
@@ -641,6 +848,57 @@ python3 -m core.odometry_engine --px-to-mm 1.42  # 手動覆蓋（還沒校正�
 而且用區間起點的航向本身也是合理的積分近似，但開機後的第一筆位移會用初始
 `yaw_deg=0.0` 而不是真實航向來旋轉。等實機推車驗證時如果發現方向有系統性偏差，
 這裡是第一個要看的地方。
+
+### 行駛軌跡視覺化（`tools/track_odometry.py`，2026-11-23）
+
+推車的同時在螢幕上即時畫出里程計算出來的軌跡，推完輸入捲尺量的終點與實際轉角，算誤差、存圖。
+位置的算法就是 app 的 `OdometryEngine`（`config.json` 的 `odometry` 參數、`min_squal = 0`），
+所以這裡看到的準不準就是找貨頁推車點的準不準。純邏輯在 `core/odometry_track.py`。
+
+```bash
+python3 -m tools.track_odometry --grid-m 0.3     # Pi 桌面上跑；格線 0.3 m 對照地上的格子
+python3 -m tools.track_odometry --no-window      # SSH：終端機顯示，一樣存圖
+python3 -m tools.track_odometry --from-data data/odometry_tracks/<時間>   # 用錄音重算（改過參數後比較）
+```
+
+app 開著時序列埠被佔用，要先關 app。每一趟存在 `data/odometry_tracks/<開始時間>/`：原始封包（可以重算）、
+`run<k>.png` 軌跡圖、`result.json` 指標。
+
+**座標**：原點是起點，$f$ 軸是起點時的車頭方向（圖上朝上），$l$ 軸是起點時的左方，單位公尺。
+里程計全域位置 $(X_i, Y_i)$、航向 $\psi_i$（左轉為正），$i = 0 \dots N$ 是這一趟的第一筆到最後一筆：
+
+$$\begin{bmatrix} f_i \\ l_i \end{bmatrix} = \begin{bmatrix} \cos\psi_0 & \sin\psi_0 \\ -\sin\psi_0 & \cos\psi_0 \end{bmatrix}\begin{bmatrix} X_i - X_0 \\ Y_i - Y_0 \end{bmatrix}$$
+
+**指標**：
+
+$$L = \sum_{i=1}^{N} \left\lVert (X_i, Y_i) - (X_{i-1}, Y_{i-1}) \right\rVert,\qquad D = \left\lVert (f_N, l_N) \right\rVert,\qquad \Delta\psi = \sum_{i=1}^{N} \operatorname{wrap}(\psi_i - \psi_{i-1})$$
+
+$$\mathbf{e} = (f_N - f^*,\ l_N - l^*),\qquad \frac{\lVert \mathbf{e} \rVert}{L},\qquad e_\psi = \Delta\psi - \Delta\psi^*$$
+
+- $L$：路徑長；$D$：起點到終點的直線距離；$\Delta\psi$：總轉角（$\operatorname{wrap}$ 把角度差包到 $(-180^\circ, 180^\circ]$，所以繞一圈是 $360^\circ$）
+- $(f^*, l^*)$：捲尺量的終點（起點座標）；繞回起點時是 $(0, 0)$，$\lVert \mathbf{e} \rVert$ 就是閉合誤差
+- $\lVert \mathbf{e} \rVert / L$：每走一公尺差多少；$\Delta\psi^*$：實際轉角
+
+**建議的推法**（起點、終點都選地上格子的交點，捲尺好量）：
+
+| 路線 | 量什麼 | 主要看 |
+|---|---|---|
+| 沿格線直推 3 m | $(f^*, l^*) = (3, 0)$ | $f_N$ 誤差 → `px_to_mm`；$l_N$ 偏多少 → 直線會不會越推越歪 |
+| L 形（前 2 m、左轉、前 1 m） | $(2, 1)$、$\Delta\psi^* = 90^\circ$ | 轉彎後方向對不對 |
+| 繞一圈回起點（例如 2 m × 1 m 長方形） | $(0, 0)$、$\Delta\psi^* = 360^\circ$ | 閉合誤差 $\lVert \mathbf{e} \rVert / L$ |
+
+**11-16 校正錄音的重播**（`--from-data data/flow_calibration/20261116-201342`；同一份資料校正又重播，偏樂觀）：
+
+| 段落 | 實際 | $D$ | $(f_N, l_N)$ | $\Delta\psi$ |
+|---|---|---|---|---|
+| 直推 1 | 5 m | 5.051 m | (+5.046, −0.214) m | −5.6° |
+| 直推 2 | 5 m | 5.081 m | (+5.079, −0.161) m | −4.0° |
+| 直推 3 | 5 m | 4.896 m | (+4.884, −0.342) m | −4.9° |
+| 原地左轉 | 90° | — | — | +91.0° |
+
+距離 ±2%、轉角差 1°。但三趟直推的終點都偏右 0.16~0.34 m（路徑長的 3~7%），IMU 也說右轉了 4~6°：
+可能是人推的時候真的偏了，也可能是 IMU 航向漂移——那次沒量終點的左右位置，分不出來。
+新的推車驗證**記得量 $l^*$**（終點離起點那條格線多遠）。
 
 ### BLE 地標校正（`core/landmark_correction.py`）
 
@@ -1015,7 +1273,8 @@ python3 -m tools.calibrate_gate_beacons --survey
   2. 任一顆窗內少於 rssi_min_samples 筆 → 這一刻不判定
   3. 兩顆各用 rssi_estimator（p75）壓成一個值，各加自己的 rssi_offset_db → s_in、s_out
   4. d = s_in − s_out；d ≥ +H 偏門內、d ≤ −H 偏門外、中間不改判定（H = gate_hysteresis_dbm）
-     偏的那一側強度要 ≥ gate_min_crossing_rssi_dbm；連續 gate_min_confirm_samples 筆才確認
+     偏的那一側強度要 ≥ gate_min_crossing_rssi_dbm；連續 gate_min_confirm_samples 筆、
+     而且持續 gate_min_confirm_sec 秒（T_c）都偏同一側才確認
      確認的一側跟上次不同 → 一次 entering / exiting
   5. 有設 gate_exit_yaw_deg 時用 IMU 航向交叉驗證
 ```
@@ -1054,18 +1313,28 @@ python3 -m tools.calibrate_gate_beacons --monitor    # 寫回之後推車實際�
 |---|---|
 | `rssi_offset_db`（門內那顆） | 每一趟結尾停好的最後 1.5 秒，取差分 $d=s_{in}-s_{out}$ 的中位數：停在門內的 $\tilde d_{in}$、停在門外的 $\tilde d_{out}$，偏移 $=-(\tilde d_{in}+\tilde d_{out})/2$，讓兩邊對稱落在 0 的兩側 |
 | `gate_min_crossing_rssi_dbm` | 各趟結尾佔優勢那顆（校正後）強度的最小值 − 5 dB |
-| `rssi_estimator`、`rssi_smoothing_sec`、`gate_min_confirm_samples` | 網格：估計量 p75 / p90 / max × 窗口 1.0 / 1.5 / 2.0 秒 × 確認筆數 3 / 5 / 8（再加上現在的值） |
+| `rssi_estimator`、`rssi_smoothing_sec`、`gate_min_confirm_sec` | 網格：估計量 p75 / p90 / max × 窗口 1.0 / 1.5 / 2.0 秒 × 確認持續時間 $T_c$ 0 / 0.3 / 0.6 / 1.0 秒（再加上現在的值）；確認筆數固定用現在的設定 |
 | `gate_hysteresis_dbm` | 每一組網格都把遲滯從 2 到 12 dB、每 0.25 dB 試一次，**整段錄音重播**，通過下列全部檢查才算可行；取可行範圍最寬的那一組，遲滯取範圍中間 |
 
 檢查（都是把錄到的封包依時間順序餵進同一套規則，`GateDecision`，跟執行期同一份程式）：
 
-1. 每一趟剛好判出一次、方向正確，而且在這一趟結束後 $W+1$ 秒內判出（$W$ = 窗口）
+1. 每一趟剛好判出一次、方向正確，而且在這一趟結束後 $W+T_c+1$ 秒內判出（$W$ = 窗口）
 2. 走過門口的期間沒有多判的事件
 3. 停在門檻線：最多 1 次事件（剛停下時判定可能還在跟上），不能來回跳
 4. 停在店內深處：最多 1 次事件，而且不能判成 `exiting`
 5. 以上在門內偏移量 ±2 dB 時也要成立（模擬校正之後的環境漂移）
+6. `--from-data` 時，校正錄音之後的執行期記錄（`data/gate_logs/`）也一起重播：不能「來回跳」
+   ——相鄰兩個相反的事件間隔不到 3 秒（`core/gate_model.flaps`）。執行期記錄沒有標準答案，
+   但來回跳不需要答案也知道是錯的；它補的是校正錄音錄不到的狀況（推車在門口附近晃、有人經過）。
+   `--no-logs` 關掉、`--logs-since 20261116-000000` 指定從什麼時候開始的記錄
 
-同樣寬度時，偏好跟現在設定相同的、窗口短的、確認筆數少的（反應快）。
+同樣寬度時，偏好跟現在設定相同的、窗口短的、$T_c$ 短的（反應快）。
+
+**為什麼加確認持續時間 $T_c$**（2026-11-23）：11-16 裝上推車重新校正，選到的是 max 估計量。
+max 會讓一筆特別強的封包在 1 秒窗口裡「撐住」整個窗口，期間進來的每一筆觀測算出來的 $d$
+都一樣；「連續 3 筆」數的是觀測筆數，0.2 秒內就湊滿，等於只憑一筆封包就確認。實際使用的記錄裡
+因此出現「進場 0.5 秒後又出場」。改成同時要求持續 $T_c$ 秒，一筆封包就撐不過去了。
+$T_c = 0$（沒設時的預設）＝舊版行為。
 判讀：可行範圍 ≥ 1 dB → 可以；有但不到 1 dB → 勉強；沒有 → 不夠（不給參數，表上列出
 每一組最多判對幾趟、卡在哪一趟）。寫回時會在 `config.json` 記下 `gate_calibration_source`。
 
@@ -1230,6 +1499,48 @@ python3 -m drivers.camera_stream --preview
 `UartReceiver` 有 `is_stale()` 可以判斷，`CameraStream` 沒有對應機制。Phase 6 真的
 開始用相機之前應該補上。
 
+### 5. 觸控畫面花屏（WebKitGTK 的 DMA-BUF）
+
+**症狀**：`python3 -m ui.app_gui` 開起來整個畫面花掉，程式本身正常、沒有任何錯誤訊息。
+
+**環境**：Pi 5、Debian 13 (trixie)、labwc（Wayland）、螢幕直接接 DSI-1、Mesa 26.2.2、
+WebKitGTK 2.54.0——都是 2026-10-29 當時 `apt upgrade` 的最新版。
+
+**實測**（用 pywebview 直接開一張設計稿，不經過 app，逐一切換環境變數）：
+
+| 組 | 設定 | 結果 |
+|---|---|---|
+| A | `WEBKIT_DISABLE_COMPOSITING_MODE=1` + `WEBKIT_DISABLE_DMABUF_RENDERER=1` | 正常 |
+| B | 只有 `WEBKIT_DISABLE_COMPOSITING_MODE=1` | 花屏 |
+| C | 只有 `WEBKIT_DISABLE_DMABUF_RENDERER=1` | 正常 |
+| D | 全部預設 | 花屏 |
+| E | `GDK_BACKEND=x11`（改走 Xwayland） | 正常 |
+| F | `LIBGL_ALWAYS_SOFTWARE=1`（不用 GPU） | 正常 |
+
+令 $D$ = DMA-BUF 開、$G$ = 硬體 GPU（V3D）、$W$ = Wayland 原生，六組都符合
+
+$$
+\text{花屏} \iff D \land G \land W
+$$
+
+B、D 只差合成模式、都花屏，所以跟合成模式無關。DMA-BUF 是 WebKitGTK 2.42 起的預設
+（網頁行程跟 UI 行程直接共用 GPU 記憶體，少一次複製），要整條驅動鏈對記憶體排列的
+理解一致才不會出錯；V3D 驅動 + labwc 這個組合在當時的最新版上仍然不一致。
+
+**做法**（`ui/app_gui.py` 開頭的 `_RENDER_ENV`）：採用 C——關 DMA-BUF、合成模式保持
+預設（網頁由 GPU 繪製）。而且是**強制設定**：啟動時把終端機殘留的其他 `WEBKIT_*`、
+`GDK_BACKEND`、`LIBGL_ALWAYS_SOFTWARE` 等全部清掉並印出提醒，不管在哪個終端機跑都是
+同一條繪圖路徑（`tests/test_app_gui_bridge.py` 第 19 項檢查）。改用 VNC 看畫面又花屏
+時，在 `_RENDER_ENV` 加 `"WEBKIT_DISABLE_COMPOSITING_MODE": "1"`（＝A，改 CPU 繪製）。
+
+要重做這個實驗，不用改 app：
+
+```bash
+cd ~/SmartCartPi5
+T="import webview; webview.create_window('t','file://$PWD/design-cart-ui/Shopping.dc.html',width=720,height=1280); webview.start()"
+WEBKIT_DISABLE_DMABUF_RENDERER=1 python3 -c "$T"     # 換成上表各組的設定
+```
+
 ---
 
 ## UART 封包格式 v2（2026-09-01，新增 squal 欄位）
@@ -1259,52 +1570,94 @@ python3 -m drivers.uart_receiver --csv-log                # 開 CSV logger 收�
 
 ## 校正
 
-`config.json` 裡標記 `CALIBRATE_ME` 的數值都還是佔位值。硬體本身都接好、隨時可以跑，
-**只是購物車的機構（秤台安裝方式、PMW3901 離地高度）還在調整中**——現在跑出來的值
-只對「當下這個安裝方式」準，機構之後再調整就要重新校正。建議現在先用 `--dry-run`
-試跑確認流程與數字合理，等機構定案後再正式跑一次寫回。
+2026-11-16 全部裝上推車後重新校正。三個校正工具（秤重、光流與航向、門口）用**同一套做法**：
 
-| 參數 | 校正工具 | 目前值 | 影響 |
+1. **錄原始資料**：每一筆感測器讀數都存下來，並標上「這時候在做哪一步」
+   （`data/<種類>_calibration/<時間>/samples.csv` + `.meta.json`；門口用 `observations.csv`）。
+2. **用執行期同一份程式重播**：秤重丟進 `CartStateMachine`、光流丟進 `OdometryEngine`、
+   門口丟進 `GateDecision`，看實際行為對不對，而不是用公式推「應該夠」。
+3. **印判讀**（可以／勉強／不夠）、建議值與原本的值，問過才寫回 `config.json`，並記下用了哪一份錄音
+   （`*_calibration_source`），之後可以用 `--from-data` 重算。
+
+**建議順序**（後面的步驟用得到前面的結果）：
+
+| # | 指令 | 定出的參數 | 要準備的東西 |
 |---|---|---|---|
-| `weight.hx711_offset` / `hx711_scale` | `tools/calibrate_weight.py` | 0 / 1.0（佔位） | 秤重比對的公克數不準 |
-| `odometry.optical_flow_px_to_mm` | `tools/calibrate_optical_flow.py` | 1.0（佔位） | 距離不是真實公釐數 |
-| `landmarks.points[].rssi_offset_db` | `tools/calibrate_gate_beacons.py` | 0.0（**未校正**） | 兩顆 Beacon 基準差 12.5 dB，出場判定幾乎不會觸發 |
-| `landmarks.gate_hysteresis_dbm` | 同上 | 4.0（暫定） | 太小會在門口反覆翻轉判定 |
-| `landmarks.gate_min_crossing_rssi_dbm` | 同上 | −60（佔位） | 太嚴格會完全過不了；太寬鬆會在店裡別處誤判 |
-| `landmarks.points[].x_mm/y_mm` | 實測量測後手填 | 0.0（佔位） | 地標校正會把座標釘到錯的地方 |
-| `landmarks.gate_exit_yaw_deg` | 實測量測後手填 | `null`（＝停用該層驗證） | 填了才會啟用航向交叉驗證 |
-| 相機內參 | `drivers/camera_stream.py --calibrate` | **已完成**（error 0.2026） | — |
+| 1 | `python3 -m tools.calibrate_weight` | `weight.hx711_offset`、`hx711_scale`、`unscanned_change_threshold_g` | 標準砝碼（至少兩種重量） |
+| 2 | `python3 -m tools.product_admin edit <條碼>` | 每個商品的 `standard_weight_g`、`weight_tolerance_g` | scale 改了，舊的商品重量都要重秤 |
+| 3 | `python3 -m tools.calibrate_gate_beacons` | 門口的估計量、窗口、確認筆數、偏移、遲滯、絕對門檻 | Pi 裝在推車上的最終位置 |
+| 4 | `python3 -m tools.calibrate_optical_flow` | `odometry.optical_flow_px_to_mm`、`flow_rotation_deg`、`flow_mirror`、`yaw_sign` | 地上一條量好長度的直線（≥ 3 m） |
+
+每一支都可以先加 `--dry-run` 只看不寫。
+
+| 參數 | 狀態 |
+|---|---|
+| `landmarks.gate_exit_yaw_deg` | **不適用，維持 `null`**：BNO080 送上來的是相對航向（開機為 0），同一個出場方向每次開機的 yaw 都不同。要做航向驗證得改成相對判斷（出場時跟進場時差約 180°），還沒做 |
+| `landmarks.points[].x_mm/y_mm` | Phase 7 店面地圖定案後再量 |
+| 相機內參 | 已完成（error 0.2026），鏡頭沒換就不用重做 |
+
+### 秤重（`tools/calibrate_weight.py`，計算在 `core/weight_calibration.py`）
+
+| 步驟 | 段落 | 用途 |
+|---|---|---|
+| 空秤靜止 8 秒 | `zero_start` | 零點、靜止雜訊 |
+| 放砝碼靜止，可放好幾次 | `load_1`… | 最小平方 $r = a + b\,m$，看線性 |
+| 全部拿掉靜止 | `zero_end` | 零點漂移（潛變、機構沒回位） |
+| 空籃推車 20 秒 | `push_empty` | 推車震動 → 未掃碼門檻 |
+| 掃碼後放入砝碼 ×3 | `drop_1`… | 重播「掃碼 → 放入」，看會不會誤判 |
+
+$r$ 是 HX711 原始讀數，$m$ 是砝碼質量（g），$a$ = `hx711_offset`、$b$ = `hx711_scale`（count/g）。
+秤重比對只看放入前後的**重量變化**，所以決定準不準的是 $b$；$a$ 只影響顯示的絕對重量。
+
+- **靜止點用中位數**，雜訊用 $\sigma = 1.4826\,\mathrm{MAD}$：2026-11-16 第二次錄的時候手還壓著砝碼，
+  平均值被拉偏 8.7 g、標準差變成 29 g，門檻跟著被算成 87 g；改中位數後不受影響，並會提示「這段還沒放穩」。
+- **未掃碼門檻 $T$**：把推車時的讀數丟進狀態機重播，找出不會誤報「未掃碼的重量變化」的最小 $T_{\min}$，
+  $T = \max(\lceil 1.5\,T_{\min} \rceil,\ \lceil 6\sigma_s \rceil,\ T_{\text{floor}})$。實測推車震動只有 0.3 g，
+  前兩項都只有 2~3 g，所以實際由人為下限 $T_{\text{floor}} = 10$ g 決定（手扶籃子、掛購物袋不該觸發）——這一項是取捨，
+  不是量出來的，可用 `--t-floor` 改。比 $T$ 輕的商品不掃碼放進去偵測不到，工具會列出來。
+- `--quick`：只做空秤、砝碼、拿掉三步（秤台沒動、只想重定 scale 時用），門檻沿用原本的。
+- **等讀數穩定才比**（`weight.settle_window_sec` $W_s$、`settle_band_g` $B_s$，2026-11-16 加進 `CartStateMachine`）：
+  原本每一筆讀數都直接比，放入時讀數衝過頭再回來，剛好經過容差的那一筆就被判加入，之後的晃動又被當成
+  「未掃碼的重量變化」。現在只用穩定值：最近 $W_s$ 秒的讀數 $\max - \min \le B_s$ 時取中位數。
+  $B_s = \max(2, \lceil 6\sigma_s \rceil)$；$W_s$ 從 0、0.2 … 1.0 秒試，用放入錄音重播，取全部正常的最小值再多一格餘裕。
+  實測（`20261116-193855`）：不等時 0/3 趟正常，$W_s = 0.2$ 秒起 3/3，選 0.3 秒，加入約在掃碼後 2.1 秒。
+  `settle_window_sec = 0`（沒設時的預設）＝舊版行為。
+- **砝碼疊加測試**（2026-11-16）：198 g、581 g 各自的讀數增量相加，跟兩個一起放（779 g）只差 0.7 g，
+  秤是線性的；「198 g」那組砝碼實際約 195 g。
+- **放入測試**：商品重量 = 砝碼重量、容差 10%（跟 `product_admin` 自動容差一樣），看是不是
+  正常加入。若判成「重量不符」，代表放入的衝擊超過容差上限——這是比對邏輯要改成「等讀數穩定再比」，
+  不是校正參數能解決的（offset、scale 仍然可以寫回）。
+
+### 光流與航向（`tools/calibrate_optical_flow.py`，計算在 `core/flow_calibration.py`）
+
+靜止 5 秒 → 沿直線直推 3 趟（距離 $D$）→ 往車子左側橫推（選做）→ 原地左轉 90°。
+
+- $k$ = `optical_flow_px_to_mm` $= D / |S|$，$S = (\sum dx, \sum dy)$ 是一趟的累積位移，各趟平均；
+  **不濾離群值**，跟執行期的 `OdometryEngine` 一致（離群值筆數會列出來）。
+- 安裝角 $\varphi$ = `flow_rotation_deg`：直推時感測器量到的方向角。PMW3901 的軸跟車身不一定對齊。
+- 鏡像 `flow_mirror`：側推方向在直推方向 $-90^\circ$ 時為 true（從下往上看地板，軸會左右顛倒）。
+- `yaw_sign`：原地左轉（逆時針）時 yaw 增加為 +1。
+- 這四個值算好之後，每一趟原始封包都丟進 `OdometryEngine` 重播，比較推出來的距離與方向。
+
+`core/odometry_engine.py` 的座標約定（2026-11-16 改）：車身座標 前方 $f$、左方 $l$；
+
+$$
+s = (dx,\ m\,dy),\quad
+\begin{bmatrix} f \\ l \end{bmatrix} =
+\begin{bmatrix} \cos\varphi & \sin\varphi \\ -\sin\varphi & \cos\varphi \end{bmatrix} s,
+\quad \psi = \text{yaw\_sign} \cdot \text{yaw\_deg}
+$$
+
+$m = -1$ 表示鏡像。舊版直接把 $(dx, dy)$ 當成（前、右）又用逆時針旋轉，左右是反的；這三個參數沒設時
+（$\varphi = 0$、$m = +1$、yaw_sign $= +1$）行為跟舊版相同。
+
+### 驗證（只讀不寫）
 
 ```bash
-python3 -m tools.calibrate_weight --dry-run          # 只算數值印出來，不寫回
-python3 -m tools.calibrate_weight --samples 50
-python3 -m tools.calibrate_optical_flow --dry-run
-python3 -m tools.calibrate_optical_flow --countdown 5
-
-python3 -m tools.verify_weight                       # 只讀現有值，實測比對誤差
-python3 -m tools.verify_optical_flow
+python3 -m tools.verify_weight          # 砝碼抽驗
+python3 -m tools.verify_optical_flow    # 推一段已知距離
+python3 -m tools.track_odometry         # 推任意路線，畫軌跡、跟捲尺量的終點比（見「行駛軌跡視覺化」）
 ```
-
-**重量校正流程**：等 UART 有資料 → 提示「秤台淨空」→ 收集樣本算平均當 `offset`
-→ 輸入已知砝碼重量 → 提示「放上砝碼」→ 再收集樣本算
-`scale = (加砝碼平均 - offset) / 已知重量`。算完會問要不要寫回 config.json
-（`y` 才寫，只更新 `weight` 區塊，其他欄位與註解不受影響）。
-
-**光流校正流程（v2）**：等 UART 有資料 → 按 Enter 開始大字倒數（純視覺提示）→
-倒數結束開始記錄，**沒有固定時間窗**，自己按步調推車，推完再按一次 Enter 停止 →
-輸入這段實際推了多遠（公分）→ 算 `px_to_mm = 實際距離(mm) / sqrt(sum_dx² + sum_dy²)`。
-
-> **v1 → v2 改動原因**：v1 是「倒數 + 固定時間窗自動收集」，實測發現人手沒辦法
-> 剛好在固定秒數內推完固定距離，不是太快就是太慢。v2 拿掉固定時間窗。
->
-> **積分方式**：每筆封包的 `dx`/`dy` 本身就是「這個取樣週期的相對位移」（不是累積值），
-> 所以直接把記錄期間所有封包的 `dx`/`dy` 加總就是離散版的積分（黎曼和）。
->
-> **離群值過濾的已知偏差**：預設會用 MAD 過濾掉位移量異常大的樣本再加總，
-> 但被濾掉的樣本代表的位移也一併從總和中消失了，而使用者輸入的實際距離仍涵蓋
-> **整段**推行距離——所以只要有樣本被濾掉，算出的 `px_to_mm` 就會**系統性偏大**。
-> 預設 MAD×6 很少觸發，但一旦印出「濾掉 N 筆」就要留意；正式校正時建議比對一次
-> `--no-filter` 的結果。
 
 **MCU 端已知修正**：PMW3901 之前發現會有休眠現象，導致那段時間的 `dx`/`dy` 遺失或不準；
 下位機已經加上看門狗重置修正。這是韌體端的修正，Pi 端不用改，但代表這個修正之前
@@ -1321,6 +1674,9 @@ python3 tests/test_gate_monitor.py       # 必跑：BLE 門口判定邏輯（純
 python3 tests/test_measure_beacon_shield.py  # 遮罩量測的統計邏輯（純 Python）
 python3 tests/test_measure_beacon_rotation.py # 轉角度量測的計算邏輯（純 Python）
 python3 tests/test_calibrate_gate_beacons.py  # 門口校正的計算邏輯（純 Python）
+python3 tests/test_calibrate_weight.py        # 秤重校正（純 Python）
+python3 tests/test_calibrate_optical_flow.py  # 光流與航向校正（純 Python）
+python3 tests/test_odometry_track.py          # 行駛軌跡重播與誤差指標（純 Python）
 python3 tests/test_ui_layout.py          # 選用：14 頁版面與按鈕接線（需要 playwright）
 ```
 
@@ -1401,9 +1757,9 @@ s = 印出目前完整狀態          q = 結束
 
 | 項目 | 說明 | 影響 |
 |---|---|---|
-| **商品成分/過敏原資料模型** | `products` 表沒有成分或過敏原欄位 | 購物畫面的「含麩質穀物」提醒是寫死的文字，沒有真的比對（會員偏好 2026-10-28 已經存得起來） |
+| **店內第二個校正點** | 推車位置只在定位點對齊一次 | 逛久了累積誤差變大；要再加地標（例如貨架上的 Beacon）才能修 |
+| **多件優惠** | 只有單件折扣 | 「第 2 件 5 折」這種做不了 |
 | **常購清單** | 沒有資料表 | 載入會員資料畫面不列這一項 |
-| **「放棄此次動作」不需店員** | 未掃碼逾時的異常按放棄會接受目前重量（見 Phase 5「會員偏好、交易紀錄、店員協助」） | 要不要比照「重新校準歸零」改成刷工作證，待決定 |
 | **自動化測試** | 只有 `tests/test_app_gui_bridge.py` | 純函式（封包解析、旋轉矩陣、RSSI 偵測器）一個單元測試都沒有 |
 | **`CameraStream` 健康檢查** | 擷取執行緒掛掉不會被上層察覺，會一直回傳過期影格 | Phase 6 用相機之前要補 |
 
@@ -1419,9 +1775,9 @@ s = 印出目前完整狀態          q = 結束
 
 **Phase 6（`ai/`，完全未開始，只有空的 `__init__.py`，`config.json` 也沒有 AI 相關區塊）**：
 
-- **錢包管家**：目前 Bridge 只有基本的預算上限追蹤（進度條、百分比），沒有分析與建議。
-- **健康護照**：會員偏好已經存得起來，還缺上面 A 類的「商品成分資料模型」。
-- **即時優惠**：優惠頁目前是完全靜態的 mockup，沒有近效期偵測、多件優惠、搭配推薦。
+- **錢包管家**：預算提醒、加入後剩多少已經做了（Phase 5）；LLM 的消費分析與建議還沒有。
+- **健康護照**：標籤比對與提醒已經做了（Phase 5）；LLM 依成分給替代建議還沒有。
+- **即時優惠**：特價、搭配、依偏好推薦已經做了（Phase 5，規則式）；近效期自動偵測、LLM 推薦還沒有。
 - **異常偵測**：`uart_receiver.py` 的 CSV logger 就是為了收這個的訓練資料而做的
   （預設關閉，`config.json` 的 `csv_logger.enabled`），但模型本身完全沒開始。
 
@@ -1473,6 +1829,9 @@ s = 印出目前完整狀態          q = 結束
 - `database/db_manager.py`：建表 + 測試資料 seed 跑過。
 - `core/cart_state_machine.py`：透過 `tools/run_real_hardware_flow.py` 接真實 UART 秤重
   與真實掃描器跑過整條流程（**閘門那一段當時是鍵盤模擬的，BLE 版還沒實測**）。
+- BLE 門口判定：2026-10-28 推車實際走過門口校正，8 趟全對、停門檻線 0 次誤判，
+  反應約 1~2 秒（`data/gate_calibration/20261028-203856/`）。
+- `ui/app_gui.py` 的畫面：在 Pi 5 的 DSI-1 螢幕上確認過繪圖設定（見「硬體環境與踩過的坑」第 5 節）。
 
 ## 已知限制 / 尚未驗證
 

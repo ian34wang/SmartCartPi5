@@ -39,11 +39,27 @@ def check(cond, label, extra=""):
         FAILURES.append(label)
 
 
+def logic_config():
+    """config.json 的狀態機參數，但關掉秤重穩定窗（settle_window_sec = 0）。
+
+    這支測的是流程邏輯，每次只餵一筆讀數；正式的 config.json 在 11-16 校正後
+    設了 settle_window_sec > 0（讀數要穩定 W_s 秒才拿來比對），單筆讀數永遠
+    湊不出穩定值。穩定窗本身由 tests/test_calibrate_weight.py 用真實錄音重播驗證。
+    """
+    cfg = load_state_machine_config()
+    cfg["settle_window_sec"] = 0.0
+    return cfg
+
+
+# 測試用平面圖：一格 0.5 m（正式值是 config.json 的 store.unit_m，現場量）
+TEST_STORE = {"unit_m": 0.5}
+
+
 def new_bridge():
     db = DBManager(tempfile.mktemp(suffix=".db"))
     db.init_db(seed=True)   # 測試需要那 5 筆測試商品
-    sm = CartStateMachine(db=db, cart=CartManager(), config=load_state_machine_config())
-    return Bridge(db=db, sm=sm, window_holder={"window": None})
+    sm = CartStateMachine(db=db, cart=CartManager(), config=logic_config())
+    return Bridge(db=db, sm=sm, window_holder={"window": None}, store=TEST_STORE)
 
 
 def to_shopping(bridge, budget="1000"):
@@ -411,6 +427,414 @@ check(app_mod.apply_render_env(clean) == [] and clean == {"WEBKIT_DISABLE_DMABUF
 import os  # noqa: E402
 check(os.environ.get("WEBKIT_DISABLE_DMABUF_RENDERER") == "1" and "WEBKIT_DISABLE_COMPOSITING_MODE" not in os.environ,
       "載入 ui.app_gui 時已經套用（GPU 繪製、關 DMA-BUF）")
+
+print("\n[20] 硬體事件主動推給畫面的腳本必須全是 ASCII（pywebview GTK 會用字元數當位元組數截斷）")
+
+
+class _FakeWindow:
+    def __init__(self):
+        self.scripts = []
+
+    def evaluate_js(self, script):
+        self.scripts.append(script)
+
+
+import json as _json  # noqa: E402
+fw = _FakeWindow()
+b20 = new_bridge()
+b20._window_holder["window"] = fw
+b20.go_to_login()
+b20.on_hardware_barcode("MEMBER-0001")          # 會員名稱「測試會員 A」是中文
+b20.on_gate_crossing("entering")
+check(fw.scripts and all(sc.isascii() for sc in fw.scripts), "推送的腳本沒有任何非 ASCII 字元",
+      [sc for sc in fw.scripts if not sc.isascii()][:1])
+last = fw.scripts[-1]
+pl = _json.loads(last[len("window.APP && window.APP.render("):-1])
+check(pl["member_name"] == "測試會員 A", "\\uXXXX 解回來的中文跟原本一樣", pl["member_name"])
+
+print("\n[21] 健康護照：規則、掃碼提醒、購物清單標記")
+from core import health_passport as hp  # noqa: E402
+check([c.reason for c in hp.conflicts(["花生"], allergens=["花生"])] == ["過敏原：花生"], "過敏原直接比對")
+check(len(hp.conflicts(["蛋", "牛奶／羊奶"], diet="蛋奶素")) == 0, "蛋奶素可以吃蛋、奶")
+check({c.tag for c in hp.conflicts(["蛋", "牛奶／羊奶", "五辛"], diet="全素（純素）")} == {"蛋", "牛奶／羊奶", "五辛"},
+      "全素：蛋、奶、五辛都衝突")
+check({c.tag for c in hp.conflicts(["魚類"], diet="蛋奶素")} == {"魚類"}, "魚類算海鮮，素食會提醒")
+check({c.tag for c in hp.conflicts(["豬肉", "酒精", "牛肉"], religion=["伊斯蘭教（清真／Halal）"])} == {"豬肉", "酒精"},
+      "清真：豬肉、酒精")
+check(not hp.conflicts(["花生"], allergens=["都沒有"]), "「都沒有」不會衝突")
+from database.db_manager import Product  # noqa: E402
+b21 = new_bridge()
+b21.db.upsert_product(Product("PEANUT", "花生醬", 80.0, 340.0, 20.0, tags=["花生", "大豆"], shelf="M3"))
+b21.continue_as_guest()
+b21.loading_profile_choice("B")
+b21.wizard_toggle_allergen("花生")
+for stage in ("diet", "religion", "budget"):
+    b21.wizard_goto(stage)
+b21.set_budget("1000")
+b21.on_gate_crossing("entering")
+b21.on_weight_sample(0.0)
+b21.on_hardware_barcode("PEANUT")
+p = b21.get_state()
+check(p["pending_item"]["health"] == "含花生（過敏原：花生）", "比對中的商品標出衝突", p["pending_item"])
+b21.on_hardware_barcode("PEANUT")       # 已經在比對中：不重複提醒（被狀態機忽略）
+b21.on_weight_sample(340.0)
+p = b21.get_state()
+check(p["cart_count"] == 1 and "花生" in p["cart_items"][0]["health"], "只提醒不阻擋：照樣加入，清單上標出來",
+      p["cart_items"])
+
+print("\n[22] 特價：結帳金額套用折扣")
+b22 = new_bridge()
+b22.db.upsert_product(Product("SALE", "即期沙拉", 60.0, 250.0, 25.0, discount_pct=50, shelf="L3"))
+to_shopping(b22)
+b22.on_hardware_barcode("SALE")
+p = b22.get_state()
+check(p["pending_item"]["price"] == 30.0 and p["pending_item"]["list_price"] == 60.0, "比對中顯示特價與原價",
+      p["pending_item"])
+b22.on_weight_sample(250.0)
+p = b22.get_state()
+check(p["cart_total"] == 30.0 and p["cart_list_total"] == 60.0, "總額用特價，原價合計另外給", (p["cart_total"], p["cart_list_total"]))
+b22.lock_checkout()
+b22.confirm_payment("LINE Pay")
+tx = b22.db.list_transactions()[0]
+check(tx.total == 30.0 and tx.items[0].unit_price == 30.0, "交易紀錄記的是實收金額", tx)
+
+print("\n[23] 錢包管家：超過 80%、100% 各提醒一次")
+b23 = new_bridge()
+to_shopping(b23, budget="40")
+b23.on_hardware_barcode("4710018001234")   # 25 元
+b23.on_weight_sample(320.0)
+p = b23.get_state()
+check(p["notice"] is None and p["budget_remaining"] == 15.0, "62%：不提醒", (p["notice"], p["budget_remaining"]))
+b23.on_hardware_barcode("4711080012345")   # 15 元 → 40 = 100%
+b23.on_weight_sample(925.0)
+p = b23.get_state()
+check(p["notice"] and "100%" in p["notice"], "到 80% 以上提醒一次", p["notice"])
+b23.on_hardware_barcode("4710036122345")   # 30 元 → 70 > 40
+b23.on_weight_sample(970.0)
+p = b23.get_state()
+check(p["notice"] and "超過本次預算" in p["notice"] and p["budget_remaining"] == -30.0, "超過預算再提醒", p["notice"])
+p = b23.set_session_budget("200")
+p = b23.set_session_budget("50")
+check("超過本次預算" in (p["notice"] or ""), "改預算後重新判斷", p["notice"])
+
+print("\n[24] 優惠頁：特價、搭配、依偏好與預算推薦，全部從資料庫算")
+b24 = new_bridge()
+db24 = b24.db
+db24.upsert_product(Product("MILK", "鮮奶", 90.0, 950.0, 50.0, shelf="M4", pairs_with=["CEREAL"]))
+db24.upsert_product(Product("CEREAL", "穀片", 120.0, 300.0, 30.0, shelf="R3"))
+db24.upsert_product(Product("SALAD", "即期沙拉", 60.0, 250.0, 25.0, discount_pct=50, shelf="L3"))
+db24.upsert_product(Product("NUTS", "綜合堅果", 150.0, 200.0, 20.0, tags=["堅果類"], shelf="R1"))
+db24.upsert_product(Product("WINE", "紅酒", 900.0, 1200.0, 60.0, tags=["酒精"], shelf="L1"))
+b24.continue_as_guest()
+b24.loading_profile_choice("B")
+b24.wizard_toggle_allergen("堅果類")
+for stage in ("diet", "religion", "budget"):
+    b24.wizard_goto(stage)
+b24.set_budget("500")
+b24.on_gate_crossing("entering")
+b24.on_weight_sample(0.0)
+b24.on_hardware_barcode("MILK")
+b24.on_weight_sample(950.0)
+promos = b24.get_state()["promotions"]
+kinds = {c["barcode"]: c["kind"] for c in promos}
+check(kinds.get("SALAD") == "discount", "有折扣的商品出現在特價", kinds)
+check(kinds.get("CEREAL") == "pair", "購物車裡鮮奶的搭配（穀片）出現", kinds)
+check("NUTS" not in kinds, "跟過敏原衝突的不推薦", kinds)
+check("WINE" not in kinds, "超過剩餘預算（410）的不推薦", kinds)
+check("MILK" not in kinds, "已經在購物車的不推薦", kinds)
+check(all(c["can_nav"] for c in promos if c["kind"] != "discount"), "推薦的都可以導航去貨架")
+cat = {c["barcode"]: c for c in b24.get_state()["catalog"]}
+check(cat["MILK"]["in_cart"] and cat["NUTS"]["health"] and cat["SALAD"]["shelf"] == "L3", "找貨頁的商品資料齊全",
+      cat["NUTS"])
+
+print("\n[25] 沒掃碼的重量變化要放棄：要店員刷工作證")
+from core.cart_state_machine import TimeoutTick  # noqa: E402
+import time as _time  # noqa: E402
+b25 = new_bridge()
+to_shopping(b25)
+b25.on_weight_sample(300.0)                         # 放了東西沒掃碼
+b25.sm.process_event(TimeoutTick(now=_time.time() + 30))
+p = b25.get_state()
+check(p["sm_state"] == STATE_WEIGHT_MISMATCH_ERROR and p["pending_item_barcode"] is None, "逾時進入秤重異常")
+p = b25.void_pending()
+check(p["sm_state"] == STATE_WEIGHT_MISMATCH_ERROR and p["staff_pending"] == "void" and p["assist_open"],
+      "使用者按放棄只送出申請，狀態不變", (p["sm_state"], p["staff_pending"]))
+b25.on_hardware_barcode("STAFF-0001")
+p = b25.get_state()
+check(p["sm_state"] == STATE_SHOPPING and p["assist_open"] is None and "放棄" in (p["notice"] or ""),
+      "店員刷工作證後才放棄", (p["sm_state"], p["notice"]))
+b25b = new_bridge()
+to_shopping(b25b)
+b25b.on_hardware_barcode("4710428061234")
+b25b.on_weight_sample(400.0)                        # 掃過碼、重量不符
+p = b25b.void_pending()
+check(p["sm_state"] == STATE_SHOPPING and p["staff_pending"] is None, "掃過碼的那一筆不用店員就能放棄", p["sm_state"])
+
+print("\n[26] 登入時推車已經在門內：直接算進場")
+side = {"v": "a"}
+db26 = DBManager(tempfile.mktemp(suffix=".db"))
+db26.init_db(seed=True)
+b26 = Bridge(db=db26, sm=CartStateMachine(db=db26, cart=CartManager(), config=logic_config()),
+             window_holder={"window": None}, gate_side=lambda: side["v"])
+p = b26.continue_as_guest()
+check(p["sm_state"] == STATE_SHOPPING, "BLE 已確認在門內 → 登入就進場", p["sm_state"])
+b26.force_logout("換人")
+side["v"] = "b"
+p = b26.continue_as_guest()
+check(p["sm_state"] == STATE_LOGGED_IN_OUTSIDE_ZONE, "在門外 → 照常等穿越門口", p["sm_state"])
+
+print("\n[27] 舊資料庫自動補欄位；product_admin 的標籤／貨架／折扣")
+import sqlite3 as _sq  # noqa: E402
+old = tempfile.mktemp(suffix=".db")
+c = _sq.connect(old)
+c.execute("CREATE TABLE products (barcode TEXT PRIMARY KEY, name TEXT NOT NULL, unit_price REAL NOT NULL, "
+          "standard_weight_g REAL NOT NULL, weight_tolerance_g REAL NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+c.execute("INSERT INTO products VALUES ('/3R8T2CX','手機',1.0,195.0,19.5,'x')")
+c.commit()
+c.close()
+dbo = DBManager(old)
+dbo.init_db(seed=False)
+po = dbo.get_product("/3R8T2CX")
+check(po is not None and po.tags == [] and po.shelf == "" and po.discount_pct == 0, "舊資料庫補上欄位、原資料還在", po)
+import tools.product_admin as pa  # noqa: E402
+meta = pa.parse_meta({"tags": "花生;大豆", "shelf": "m3", "discount_pct": "30"}, "/3R8T2CX", po)
+check(meta == {"tags": ["花生", "大豆"], "shelf": "M3", "discount_pct": 30.0, "pairs_with": []}, "解析標籤、貨架、折扣", meta)
+for bad in ({"tags": "鹽"}, {"shelf": "B2"}, {"shelf": "M5"}, {"discount_pct": "120"}):
+    try:
+        pa.parse_meta(bad, "X", None)
+        check(False, f"錯誤的值要擋下來：{bad}")
+    except ValueError:
+        check(True, f"錯誤的值要擋下來：{bad}")
+dbo.upsert_product(pa.with_meta(po, meta))
+kept = pa.parse_meta({}, "/3R8T2CX", dbo.get_product("/3R8T2CX"))
+check(kept["tags"] == ["花生", "大豆"], "沒給的欄位沿用原本的（重秤商品不會清掉標籤）", kept)
+csvp = tempfile.mktemp(suffix=".csv")
+pa.export_csv(dbo, csvp)
+db2 = DBManager(tempfile.mktemp(suffix=".db"))
+db2.init_db(seed=False)
+ok, errs = pa.import_csv(db2, csvp)
+p2 = db2.get_product("/3R8T2CX")
+check(ok == 1 and not errs and p2.tags == ["花生", "大豆"] and p2.shelf == "M3" and p2.discount_pct == 30,
+      "CSV 匯出再匯入，標籤等都在", (ok, errs, p2))
+
+print("\n[28] 店面平面圖：貨架代碼、路線、推車位置在定位點對齊")
+import math as _m  # noqa: E402
+from core import store_layout as sl  # noqa: E402
+lay = sl.load(TEST_STORE)
+check(sl.codes(lay)[:4] == ["L1", "L2", "L3", "L4"] and len(sl.codes(lay)) == 12, "三座貨架各 4 個角", sl.codes(lay))
+check(sl.describe(lay, "m3") == "中架・左下", "代碼 → 中文位置", sl.describe(lay, "m3"))
+r = sl.route(lay, "L2")
+check(r[0] == (0.0, 0.0) and r[1] == (0, 4.25) and r[-1] == (-2, 7.5), "路線：門 → 定位點 → … → 貨架後側", r)
+check(all(lay["hall"][0] <= x <= lay["hall"][1] and y <= lay["hall"][3] for x, y in r), "路線不出店外", r)
+check("往右走到右架" in sl.instruction(lay, "R4") and "前側" in sl.instruction(lay, "R4"), "說明文字",
+      sl.instruction(lay, "R4"))
+custom = sl.load({"slots": {"F": "前面", "B": "後面上"}, "_comment": "x"})
+check(sl.codes(custom)[:2] == ["LF", "LB"] and "_comment" not in custom, "config 可以改分法", sl.codes(custom))
+
+
+for bad in (None, 0, -1, "abc"):
+    try:
+        sl.unit_m(sl.load({"unit_m": bad}))
+        check(False, f"unit_m = {bad!r} 要報錯")
+    except ValueError:
+        pass
+try:
+    fr0 = sl.StoreFrame(sl.load())
+    fr0.anchor(0.0, 0.0, 90.0)
+    fr0.feed(100.0, 0.0)
+    check(False, "沒填 unit_m 時換算推車位置要報錯（不能用沒量過的預設值）")
+except ValueError as exc:
+    check("store.unit_m" in str(exc), "沒填 unit_m：報錯並指出 config.json 的 store.unit_m", str(exc))
+check(sl.unit_m(sl.load({"unit_m": 0.6})) == 0.6, "unit_m 照 config 的值")
+
+fr = sl.StoreFrame(lay)
+fr.enter(1000.0, 1000.0, 30.0)                      # 進場：里程計航向 30° = 店內方向
+check(fr.status == fr.ROUGH, "進場：暫時對齊")
+fx_, fy_ = fr.feed(1000.0 + 500 * _m.cos(_m.radians(40)), 1000.0 + 500 * _m.sin(_m.radians(40)))
+check(fx_ == 0.0 and 1.9 < fy_ < 2.0, "長廊鎖住方向：還沒到定位點前 x 固定在中線", (fx_, fy_))
+fr.anchor(3000.0, 2000.0, 30.0)
+check(fr.status == fr.ANCHORED and fr.feed(3000.0, 2000.0) == (0.0, 4.25), "看到定位點：對齊到定位點", fr.last)
+check(abs(fr.heading(30.0) - 90.0) < 1e-9, "航向固定成正向（朝店內 = 90°）", fr.heading(30.0))
+px, py = fr.to_store(3000.0 + 1000 * _m.cos(_m.radians(30)), 2000.0 + 1000 * _m.sin(_m.radians(30)))
+check(abs(px) < 1e-6 and abs(py - 6.25) < 1e-6, "沿航向直走 1 m = 往店內 2 格", (px, py))
+px, py = fr.to_store(3000.0 + 1000 * _m.cos(_m.radians(120)), 2000.0 + 1000 * _m.sin(_m.radians(120)))
+check(abs(px + 2) < 1e-6 and abs(py - 4.25) < 1e-6, "左轉 90° 走 1 m → 往左 2 格", (px, py))
+# IMU 漂了 5°：車子其實還是朝店內（90°），IMU 卻說 35°（估計 95°）。消失點量到 90°。
+before = fr.to_store(3000.0, 2000.0)
+e = fr.correct_heading(3000.0, 2000.0, 35.0, 90.0, weight=1.0)
+check(abs(e - (-5.0)) < 1e-9 and abs(fr.heading(35.0) - 90.0) < 1e-9, "消失點修航向：誤差 −5°，修完 = 90°", (e, fr.heading(35.0)))
+check(fr.to_store(3000.0, 2000.0) == before, "修航向時推車目前位置不跳")
+check(fr.correct_heading(3000.0, 2000.0, 35.0, 120.0, weight=1.0) is None, "誤差超過 15° 不採用（多半是線找錯）")
+check(sl.StoreFrame(lay).correct_heading(0, 0, 0, 90, 1.0) is None, "還沒對齊不修航向")
+
+print("\n[29] 機器視覺：地上的定位點標記、貨架消失點（相機 50 cm 高、往下俯）")
+import numpy as _np  # noqa: E402
+import cv2 as _cv2  # noqa: E402
+from core import store_vision as sv  # noqa: E402
+W_, H_ = 640, 360
+K_ = _np.array([[450.0, 0, 320], [0, 450.0, 180], [0, 0, 1]])
+
+
+def render_scene(beta_deg, cam_h=0.5, gamma_deg=None, marker=None, marker_id=0, size_m=0.15):
+    """測試用合成影像。世界座標 X 右、Y 前（車頭）、Z 上；相機在 (0, 0, cam_h) 往下俯 beta。
+    gamma：畫一組跟車頭夾 gamma 度（往右為正）的水平線（地磚縫、貨架層板），加幾條垂直邊。
+    marker：(前方, 右方, 旋轉角) 把 ArUco 標記貼在地上。"""
+    b = _m.radians(beta_deg)
+    R = _np.stack([[1, 0, 0], [0, -_m.sin(b), -_m.cos(b)], [0, _m.cos(b), -_m.sin(b)]])
+    C = _np.array([0, 0, cam_h])
+
+    def proj(P):
+        pc = R @ (_np.asarray(P, dtype=float) - C)
+        return (K_[0, 0] * pc[0] / pc[2] + K_[0, 2], K_[1, 1] * pc[1] / pc[2] + K_[1, 2]), pc[2]
+
+    out = _np.full((H_, W_), 150, _np.uint8)
+    if gamma_deg is not None:
+        g = _m.radians(gamma_deg)
+        d, nrm = _np.array([_m.sin(g), _m.cos(g), 0]), _np.array([_m.cos(g), -_m.sin(g), 0])
+        for off in (-1.4, -0.9, 0.9, 1.4):
+            for z in (0.0, 0.25, 0.8):
+                (p1, z1), (p2, z2) = proj(off * nrm + 1.2 * d + [0, 0, z]), proj(off * nrm + 6 * d + [0, 0, z])
+                if z1 > 0 and z2 > 0:
+                    _cv2.line(out, tuple(map(int, p1)), tuple(map(int, p2)), 30, 2)
+            for k in (1.5, 2.5):
+                (p1, _), (p2, _) = proj(off * nrm + k * d), proj(off * nrm + k * d + [0, 0, 0.8])
+                _cv2.line(out, tuple(map(int, p1)), tuple(map(int, p2)), 30, 2)
+    if marker is not None:
+        fwd, right, rot = marker
+        mk = sv.make_marker(marker_id, 300)
+        hf = size_m * mk.shape[0] / 300 / 2                 # 含白邊的半邊長
+        c_, s_ = _m.cos(_m.radians(rot)), _m.sin(_m.radians(rot))
+        dst = [proj([right + c_ * ox - s_ * oy, fwd + s_ * ox + c_ * oy, 0])[0]
+               for ox, oy in ((-hf, hf), (hf, hf), (hf, -hf), (-hf, -hf))]
+        src = _np.float32([[0, 0], [mk.shape[1], 0], [mk.shape[1], mk.shape[0]], [0, mk.shape[0]]])
+        Hm = _cv2.getPerspectiveTransform(src, _np.float32(dst))
+        warped = _cv2.warpPerspective(mk, Hm, (W_, H_))
+        mask = _cv2.warpPerspective(_np.full_like(mk, 255), Hm, (W_, H_))
+        out[mask > 0] = warped[mask > 0]
+    return out
+
+
+det = sv.AnchorDetector(0, 0.15, K_)
+for beta, fwd, right, rot in ((30, 1.0, 0.1, 0), (35, 0.8, -0.2, 20), (25, 1.4, 0.0, -10)):
+    sg = det.detect(render_scene(beta, marker=(fwd, right, rot)))
+    check(sg is not None and abs(sg.forward_m - fwd) < 0.05 and abs(sg.lateral_m - right) < 0.03
+          and abs(sg.height_m - 0.5) < 0.03,
+          f"地上標記（俯角 {beta}°、轉 {rot}°）：前方 {fwd} m、右方 {right} m、相機高 0.5 m", sg)
+check(sv.AnchorDetector(1, 0.15, K_).detect(render_scene(30, marker=(1.0, 0.1, 0))) is None, "編號不對的標記不算")
+check(abs(sv.vp_offset_deg(320 + 450 * _m.tan(_m.radians(8)) / _m.cos(_m.radians(30)),
+                           180 - 450 * _m.tan(_m.radians(30)), K_) - 8.0) < 1e-9,
+      "δ 公式：俯角 30°、水平夾角 8° 的消失點 → δ = 8°")
+for beta, gamma in ((30, 6.0), (25, -10.0), (35, 0.0)):
+    sc = render_scene(beta, gamma_deg=gamma)
+    vp = sv.vanishing_point(sv.detect_lines(sc), W_, H_)
+    dlt = None if vp is None else sv.vp_offset_deg(vp.u, vp.v, K_)
+    check(dlt is not None and abs(dlt - gamma) < 1.0, f"合成貨架（俯角 {beta}°）：消失點量到 δ ≈ {gamma}°", dlt)
+check(sv.vanishing_point(sv.detect_lines(_np.full((H_, W_), 150, _np.uint8)), W_, H_) is None, "空白影像沒有消失點")
+check(abs(sv.heading_from_vp(5.0, 97.0) - 95.0) < 1e-9, "θ = φ + δ，φ 取最近的座標軸（90°）")
+check(abs(sv.heading_from_vp(-3.0, 182.0) - 177.0) < 1e-9, "朝 −x 方向時 φ = 180°")
+
+print("\n[29b] 現場驗證工具（tools/verify_store_vision.py）的量測與彙整")
+from tools import verify_store_vision as vsv  # noqa: E402
+from ui.app_gui import _VISION_DEFAULTS  # noqa: E402
+vc_ = dict(_VISION_DEFAULTS)
+sc = render_scene(30, gamma_deg=4.0, marker=(1.0, 0.1, 0))
+r_ = vsv.measure(sc, det, K_, vc_)
+check(r_["anchor"] is not None and r_["anchor"]["accepted"] and abs(r_["anchor"]["forward_m"] - 1.0) < 0.05,
+      "標記：前方 1 m、app 會採用", r_["anchor"])
+check(r_["vp"] is not None and abs(r_["vp"]["delta_deg"] - 4.0) < 1.0 and abs(r_["vp"]["beta_deg"] - 30.0) < 1.5,
+      "消失點：δ ≈ 4°、俯角 β ≈ 30°", r_["vp"])
+r_far = vsv.measure(render_scene(25, marker=(1.4, 0.0, 0), cam_h=0.5), det, K_, dict(vc_, anchor_trigger_m=1.2))
+check(r_far["anchor"] is not None and not r_far["anchor"]["accepted"], "超過 anchor_trigger_m：看到但不採用", r_far["anchor"])
+r_h = vsv.measure(sc, det, K_, dict(vc_, camera_height_m=0.8))
+check(not r_h["anchor"]["accepted"], "算出的相機高跟 config 差太多：不採用", r_h["anchor"])
+blank = vsv.measure(_np.full((H_, W_), 150, _np.uint8), det, K_, vc_)
+s_ = vsv.summarize([r_, r_, blank])
+check(s_["frames"] == 3 and s_["anchor_frames"] == 2 and s_["vp_frames"] == 2
+      and abs(s_["forward_m"] - r_["anchor"]["forward_m"]) < 1e-12, "彙整：偵測張數與中位數", s_)
+check(vsv.summarize([blank])["forward_m"] is None, "都沒看到：中位數是 None（不補值）")
+
+print("\n[30] 推車位置接進 app：進場、定位點、消失點、出場作廢")
+b28 = new_bridge()
+b28.db.upsert_product(Product("TEA", "綠茶", 20.0, 600.0, 30.0, shelf="R2"))
+b28.db.upsert_product(Product("OLD", "舊代碼", 20.0, 600.0, 30.0, shelf="B2"))   # 舊九宮格代碼直接寫進 DB
+cat = {c["barcode"]: c for c in b28.get_state()["catalog"]}
+check(cat["TEA"]["shelf_text"] == "右架・右上" and cat["TEA"]["route"][-1] == [3, 7.5] and cat["TEA"]["instruction"],
+      "找貨頁拿到中文位置、路線、說明", cat["TEA"])
+check(cat["OLD"]["shelf"] == "" and cat["OLD"]["route"] == [], "不在平面圖上的代碼不顯示（不亂畫）", cat["OLD"])
+st = b28.get_state()
+check(set(st["store"]) == {"hall", "corridor", "anchor", "shelves", "slots"}, "payload 帶平面圖", list(st["store"]))
+b28.on_pose(0.0, 0.0, 90.0, 0.0)
+check(b28.get_state()["cart_pos"] == {"status": "none"}, "還沒登入：沒有推車位置")
+p = b28.anchor_here()
+check(p["last_error"] and "管制區" in p["last_error"], "沒進管制區不能對齊", p["last_error"])
+to_shopping(b28)
+b28.on_pose(5000.0, 5000.0, 90.0, 1.0)
+b28.on_gate_crossing("entering")
+b28.on_pose(5000.0, 5000.0, 90.0, 1.1)
+check(b28.get_state()["cart_pos"]["status"] == "rough", "進場後：約略位置")
+b28.on_pose(5000.0, 6650.0, 90.0, 4.0)
+b28.on_anchor_seen(sv.AnchorSighting(forward_m=1.0, lateral_m=0.0, height_m=0.5))
+p = b28.get_state()
+check(p["cart_pos"] == {"x": 0.0, "y": 2.25, "status": "anchored"} and "定位點" in (p["notice"] or ""),
+      "看到前方 1 m 的地上標記 → 推車在定位點後 2 格，對齊並提示", (p["cart_pos"], p["notice"]))
+b28.on_pose(5000.0, 7150.0, 90.0, 4.5)              # 往前推 0.5 m，標記剩前方 0.5 m、偏右 0.1 m
+b28.on_anchor_seen(sv.AnchorSighting(forward_m=0.5, lateral_m=0.1, height_m=0.5))
+check(b28.get_state()["cart_pos"] == {"x": -0.2, "y": 3.25, "status": "anchored"},
+      "越近越準：每次看到都重新對齊（標記偏右 = 推車偏左）", b28.get_state()["cart_pos"])
+b28.on_pose(5000.0, 7650.0, 90.0, 5.0)
+check(b28.get_state()["cart_pos"] == {"x": -0.2, "y": 4.25, "status": "anchored"}, "再往前 0.5 m 正好到定位點",
+      b28.get_state()["cart_pos"])
+check(b28.get_state()["notice"] is None, "已經對齊了，再看到不重複提示")
+b28.on_pose(5000.0 - 1000.0, 7650.0, 90.0, 6.0)
+check(b28.get_state()["cart_pos"] == {"x": -2.2, "y": 4.25, "status": "anchored"}, "往左 1 m = 往左 2 格（unit_m 0.5）",
+      b28.get_state()["cart_pos"])
+b28.on_pose(4000.0, 7650.0, 93.0, 6.1)              # IMU 漂了 3°
+b28.on_vp_heading(0.0)                              # 消失點在正中間：其實正對座標軸
+check(abs(b28._frame.heading(93.0) - 90.0) < 3 * 0.8 + 1e-6 and b28._frame.heading(93.0) < 93.0,
+      "消失點把航向往 90° 拉（w = 0.2）", b28._frame.heading(93.0))
+b28.on_gate_crossing("exiting")
+check(b28.get_state()["cart_pos"] == {"status": "none"}, "走出門口：位置作廢")
+b28.on_gate_crossing("entering")
+b28.on_pose(4000.0, 6650.0, 90.0, 7.0)
+p = b28.anchor_here()
+check(p["cart_pos"]["status"] == "anchored" and p["cart_pos"]["x"] == 0.0, "按「我在定位點」手動對齊", p["cart_pos"])
+b28.force_logout()
+check(b28.get_state()["cart_pos"] == {"status": "none"}, "強制登出：位置作廢")
+
+print("\n[31] 相機執行緒：一張影像 → 定位點與消失點交給 Bridge")
+import threading as _th  # noqa: E402
+from ui.app_gui import _VISION_DEFAULTS, _VisionConsumer  # noqa: E402
+scene = render_scene(30, gamma_deg=6.0, marker=(1.0, 0.1, 0))   # 貨架 + 地上的定位點標記
+
+
+class _FakeCam:                                           # 測試用：固定回傳同一張影像
+    K = K_
+
+    def read_gray(self):
+        return scene
+
+
+class _Rec:
+    def __init__(self):
+        self.anchor, self.vp = [], []
+        self.done = _th.Event()
+
+    def on_anchor_seen(self, d):
+        self.anchor.append(d)
+
+    def on_vp_heading(self, delta):
+        self.vp.append(delta)
+        self.done.set()
+
+
+rec, stop = _Rec(), _th.Event()
+vc = _VisionConsumer(rec, _FakeCam(), sv.AnchorDetector(0, 0.15, K_), dict(_VISION_DEFAULTS, fps=20), stop)
+vc.start()
+rec.done.wait(5)
+stop.set()
+vc.join(2)
+check(rec.anchor and abs(rec.anchor[0].forward_m - 1.0) < 0.05, "看到地上標記（前方 1 m）→ on_anchor_seen", rec.anchor[:1])
+check(rec.vp and abs(rec.vp[0] - 6.0) < 1.0, "貨架消失點 → on_vp_heading(δ ≈ 6°)", rec.vp[:1])
 
 # ======================================================================
 print("\n" + "=" * 60)

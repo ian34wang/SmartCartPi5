@@ -56,7 +56,7 @@ evdev/鍵盤模式、秤重有展示模式、閘門有開發面板按鈕），�
 在解鎖後的第一筆讀數就會被重新核對（見該事件的說明），不是漏洞。
 
 用法：
-    python3 -m ui.app_gui                     # 三個硬體都要接好
+    python3 -m ui.app_gui                     # 四個硬體都要接好（掃描器、UART、BLE、前方相機）
     python3 -m ui.app_gui --fullscreen        # 全螢幕（螢幕本身是 720x1280 時建議）
     python3 -m ui.app_gui --db /path/to.db
     python3 -m ui.app_gui --port /dev/ttyAMA0 --baud 115200
@@ -154,6 +154,7 @@ from core.cart_state_machine import (
     STATE_LOGGED_IN_OUTSIDE_ZONE,
     STATE_SESSION_CLOSED,
     STATE_SHOPPING,
+    STATE_UNAUTHENTICATED,
     STATE_WEIGHT_MISMATCH_ERROR,
     StaffRezeroAuthorized,
     TimeoutTick,
@@ -164,7 +165,9 @@ from core.cart_state_machine import (
 )
 from core.gate_monitor import GATE_CROSSING_ENTERING, GateMonitor
 from core.gate_recorder import GateRecorder
+from core import health_passport, store_layout, store_vision
 from core.landmark_correction import load_landmark_config
+from core.odometry_engine import OdometryEngine
 from core.weight_convert import raw_to_grams
 from database.db_manager import DBManager, Member, MemberPreferences, Transaction, TransactionItem
 
@@ -196,11 +199,35 @@ _ASSIST_REASONS = {
     "general": "呼叫店員協助",
 }
 _REZERO_REASON = "秤重異常：申請重新校準歸零（需店員刷工作證確認）"
+_VOID_UNSCANNED_REASON = "秤重異常：拿取／放入後沒掃碼，申請放棄（需店員刷工作證確認）"
+_BUDGET_WARN_RATIO = 0.8
+_PROMO_MAX = 6
+# 推車位置推給找貨頁地圖的間隔（秒）。整頁重畫太重，只呼叫 APP.setPos 移動那一點
+_POS_PUSH_SEC = 0.5
+# 機器視覺（config.json 的 vision 區塊，沒寫的用這些；意義見 core/store_vision.py）
+_VISION_DEFAULTS = {
+    "anchor_marker_id": 0,          # 定位點 ArUco 標記編號（DICT_4X4_50）
+    "anchor_marker_size_m": 0.15,   # 標記黑框實際邊長（m），印出來量
+    "anchor_trigger_m": 1.5,        # 標記離推車（水平）這麼近以內才採用，越近越準
+    "camera_height_m": 0.5,         # 相機離地高度；由標記算出來的高度差太多（height_tol_m）就當誤判
+    "height_tol_m": 0.15,
+    "vp_yaw_weight": 0.2,           # 消失點修航向的權重 w
+    "vp_min_lines": 4,              # 消失點至少要幾條線支持
+    "vp_max_angle_deg": 28.0,       # 消失點在光軸左右幾度內才採用（約半個水平視角）
+    "fps": 5.0,                     # 每秒處理幾張
+    "proc_width": 640,              # 縮到這個寬度再處理
+}
+# 推車不在管制區裡時，地圖上不顯示推車位置（對齊作廢）
+_OUT_OF_ZONE_STATES = (STATE_UNAUTHENTICATED, STATE_LOGGED_IN_OUTSIDE_ZONE, STATE_SESSION_CLOSED)
 _RECENT_TX_LIMIT = 5
 
 
 def _fmt_time(t: Optional[float]) -> str:
     return "" if t is None else time.strftime("%m/%d %H:%M", time.localtime(t))
+
+
+def summary_or_empty(found) -> str:
+    return health_passport.summary(found) if found else ""
 
 
 def _fmt_budget(b: Optional[float]) -> str:
@@ -223,10 +250,26 @@ class Bridge:
     `self._state_payload()`，前端收到後直接 `render()`。
     """
 
-    def __init__(self, db: DBManager, sm: CartStateMachine, window_holder: dict):
+    def __init__(self, db: DBManager, sm: CartStateMachine, window_holder: dict, gate_side=None,
+                 store: Optional[dict] = None, vision: Optional[dict] = None):
         self.db = db
         self.sm = sm
         self._window_holder = window_holder
+        # 回傳門口判定目前確認的一側："a" 門內 / "b" 門外 / None 還沒確認。登入當下推車已經在
+        # 門內的話，直接算進場（見 _enter_if_inside）。測試時不給就是不知道。
+        self._gate_side = gate_side
+        # 店面平面圖（config.json 的 store 區塊，見 core/store_layout.py）與推車位置對齊。
+        # _pose 是里程計最新一筆 (X mm, Y mm, yaw deg, t)，UART 執行緒寫、其他執行緒讀，用鎖保護。
+        self._layout = store_layout.load(store)
+        self._frame = store_layout.StoreFrame(self._layout)
+        self._pose: Optional[tuple] = None
+        self._pose_lock = threading.Lock()
+        self._pos_sent = None
+        # 消失點修航向的互補濾波權重 w（config.json 的 vision.vp_yaw_weight）
+        self._vp_weight = float((vision or {}).get("vp_yaw_weight", _VISION_DEFAULTS["vp_yaw_weight"]))
+        self._warned_shelf: set = set()   # 貨架代碼不在平面圖上的商品，各警告一次
+        # 錢包管家：上一次提醒到哪一級（0 沒提醒、1 已過 80%、2 已超過預算），往上跨才提醒一次
+        self._budget_level = 0
         self._last_error: Optional[str] = None
 
         # 精靈流程狀態（見檔案開頭說明，狀態機本身不知道這一層）
@@ -270,6 +313,7 @@ class Bridge:
         self._editing_prefs = False
         self._prefs_snapshot = None
         self._staff_pending = None
+        self._budget_level = 0
 
     def _is_guest(self) -> bool:
         return self.sm.get_session().member_id == self._guest_member_id
@@ -373,11 +417,19 @@ class Bridge:
             },
             "budget": self._budget,
             "cart_items": [
-                {"name": it.name, "quantity": it.quantity, "subtotal": it.subtotal}
+                {"barcode": it.barcode, "name": it.name, "quantity": it.quantity, "subtotal": it.subtotal,
+                 "list_subtotal": it.list_subtotal, "health": self._health_text(it.barcode)}
                 for it in items
             ],
             "cart_count": self.sm.cart.item_count(),
             "cart_total": self.sm.cart.total_price(),
+            "cart_list_total": self.sm.cart.list_total(),
+            "budget_remaining": None if self._budget is None else self._budget - self.sm.cart.total_price(),
+            "pending_item": self._pending_payload(s),
+            "catalog": self._catalog_payload(),
+            "store": store_layout.to_client(self._layout),
+            "cart_pos": self._cart_pos_payload(),
+            "promotions": self._promotions_payload(),
             "pending_item_barcode": s.pending_item_barcode,
             "pending_item_mode": s.pending_item_mode,
             "unscanned_baseline_g": s.unscanned_baseline_g,
@@ -398,6 +450,158 @@ class Bridge:
             "last_scan": self._last_scan,
             "gate_events": self._gate_events,
         }
+
+    # ------------------------------------------------------------------
+    # 健康護照、錢包管家、找貨、優惠
+    # ------------------------------------------------------------------
+    def _health(self, product) -> list:
+        if product is None:
+            return []
+        return health_passport.conflicts(product.tags, self._wizard_allergens, self._wizard_diet,
+                                         self._wizard_religion)
+
+    def _health_text(self, barcode: str) -> str:
+        try:
+            return health_passport.summary(self._health(self.db.get_product(barcode)))
+        except sqlite3.Error:
+            logger.exception("讀商品資料失敗")
+            return ""
+
+    def _pending_payload(self, s) -> Optional[dict]:
+        """正在比對的那一筆：名稱、價格、加入後的總額與預算、健康護照衝突。"""
+        if not s.pending_item_barcode:
+            return None
+        try:
+            p = self.db.get_product(s.pending_item_barcode)
+        except sqlite3.Error:
+            p = None
+        if p is None:
+            return {"barcode": s.pending_item_barcode, "name": s.pending_item_barcode}
+        sign = 1 if s.pending_item_mode != "remove" else -1
+        after = self.sm.cart.total_price() + sign * p.effective_price
+        return {
+            "barcode": p.barcode, "name": p.name, "price": p.effective_price, "list_price": p.unit_price,
+            "total_after": after,
+            "remaining_after": None if self._budget is None else self._budget - after,
+            "health": summary_or_empty(self._health(p)) if sign > 0 else "",
+        }
+
+    def _catalog_payload(self) -> list:
+        """找貨頁用：全部商品（小店的商品數量不多，一次給完）。"""
+        try:
+            products = self.db.list_products()
+        except sqlite3.Error:
+            logger.exception("讀商品資料失敗")
+            return []
+        lay = self._layout
+        out = []
+        for p in products:
+            shelf = p.shelf if store_layout.is_valid(lay, p.shelf) else ""
+            if p.shelf and not shelf and (p.barcode, p.shelf) not in self._warned_shelf:
+                self._warned_shelf.add((p.barcode, p.shelf))
+                logger.warning("商品 %s 的貨架位置 %r 不在平面圖上（代碼見 core/store_layout.py），找貨頁不顯示",
+                               p.barcode, p.shelf)
+            out.append({
+                "barcode": p.barcode, "name": p.name, "price": p.effective_price, "list_price": p.unit_price,
+                "discount_pct": p.discount_pct, "shelf": shelf, "in_cart": self.sm.cart.has_item(p.barcode),
+                "health": summary_or_empty(self._health(p)),
+                "shelf_text": store_layout.describe(lay, shelf) if shelf else "",
+                "instruction": store_layout.instruction(lay, shelf) if shelf else "",
+                "route": [list(pt) for pt in store_layout.route(lay, shelf)] if shelf else [],
+                "spot": list(store_layout.slot_point(lay, shelf)) if shelf else None,
+            })
+        return out
+
+    def _where(self, p) -> str:
+        """優惠卡片上的「位置 中架・左下」；沒設或代碼不在平面圖上就空字串。"""
+        return store_layout.describe(self._layout, p.shelf) if store_layout.is_valid(self._layout, p.shelf) else ""
+
+    def _cart_pos_payload(self) -> Optional[dict]:
+        with self._pose_lock:
+            pos, status = self._frame.last, self._frame.status
+        if pos is None or status == store_layout.StoreFrame.NONE:
+            return {"status": status}
+        return {"x": round(pos[0], 2), "y": round(pos[1], 2), "status": status}
+
+    def _promotions_payload(self) -> list:
+        """優惠頁的卡片，全部從資料庫算出來：
+            特價  有設 discount_pct 的商品（已在購物車的標「已套用」）
+            搭配  購物車裡的商品設定的 pairs_with，還沒拿的
+            推薦  跟偏好沒有衝突、而且買得起（不超過剩餘預算）的商品，還沒拿的、有貨架位置的
+        健康護照衝突的商品不會出現在搭配與推薦裡。
+        """
+        try:
+            products = {p.barcode: p for p in self.db.list_products()}
+        except sqlite3.Error:
+            logger.exception("讀商品資料失敗")
+            return []
+        cart = self.sm.cart
+        remaining = None if self._budget is None else self._budget - cart.total_price()
+        cards, seen = [], set()
+        for p in products.values():
+            if p.discount_pct > 0:
+                saved = p.unit_price - p.effective_price
+                applied = cart.has_item(p.barcode)
+                cards.append({
+                    "kind": "discount", "barcode": p.barcode,
+                    "title": f"特價 {p.name}" + ("　已套用！" if applied else ""),
+                    "body": f"原價 ${p.unit_price:.0f} → ${p.effective_price:.0f}（{100 - p.discount_pct:g} 折，"
+                            f"每件省 ${saved:.0f}）" + (f"；位置 {self._where(p)}" if self._where(p) else ""),
+                    "health": summary_or_empty(self._health(p)),
+                    "can_nav": bool(self._where(p)) and not applied,
+                })
+                seen.add(p.barcode)
+        for it in cart.list_items():
+            src = products.get(it.barcode)
+            for bc in (src.pairs_with if src else []):
+                q = products.get(bc)
+                if q is None or cart.has_item(bc) or bc in seen or self._health(q):
+                    continue
+                cards.append({"kind": "pair", "barcode": bc, "title": f"搭配推薦：{q.name}",
+                              "body": f"購物車裡有「{it.name}」，要不要搭配「{q.name}」（${q.effective_price:.0f}）？"
+                                      + (f"位置 {self._where(q)}" if self._where(q) else ""),
+                              "health": "", "can_nav": bool(self._where(q))})
+                seen.add(bc)
+        picks = [p for p in products.values()
+                 if p.barcode not in seen and not cart.has_item(p.barcode) and self._where(p) and not self._health(p)
+                 and (remaining is None or p.effective_price <= remaining)]
+        picks.sort(key=lambda p: (-p.discount_pct, p.effective_price))
+        for p in picks[:max(0, _PROMO_MAX - len(cards))]:
+            why = "符合你的健康設定" + ("、在剩餘預算內" if remaining is not None else "")
+            cards.append({"kind": "pick", "barcode": p.barcode, "title": f"適合你：{p.name}",
+                          "body": f"${p.effective_price:.0f}，{why}；位置 {self._where(p)}", "health": "", "can_nav": True})
+        return cards[:_PROMO_MAX]
+
+    def _check_budget(self) -> None:
+        """錢包管家：總額往上跨過 80%、100% 各提醒一次（降回去再上來會再提醒）。"""
+        if not self._budget:
+            self._budget_level = 0
+            return
+        total = self.sm.cart.total_price()
+        level = 2 if total > self._budget else 1 if total >= _BUDGET_WARN_RATIO * self._budget else 0
+        if level > self._budget_level:
+            if level == 2:
+                self._notice = f"錢包管家：已超過本次預算 ${self._budget:.0f}（目前 ${total:.0f}，超出 ${total - self._budget:.0f}）"
+            else:
+                self._notice = f"錢包管家：已用掉預算的 {total / self._budget:.0%}（剩 ${self._budget - total:.0f}）"
+        self._budget_level = level
+
+    def _enter_if_inside(self) -> None:
+        """剛登入時推車已經在門內（BLE 已確認在門內那一側）→ 直接算進場。
+
+        不然要等「下一次穿越門口」才會進場，但人已經在店裡了，等不到——2026-11-16
+        實測就卡在這裡。未登入就推進來的那一次，狀態機當時已經記過「未登入進入」的警告。
+        """
+        if self._gate_side is None or self.sm.get_session().state != STATE_LOGGED_IN_OUTSIDE_ZONE:
+            return
+        try:
+            side = self._gate_side()
+        except Exception:  # noqa: BLE001 — 讀不到就當不知道，照原本等穿越門口
+            logger.exception("讀門口判定狀態失敗")
+            return
+        if side == "a":
+            self.sm.process_event(GateEntryDetected(timestamp=time.time()))
+            logger.info("登入時推車已經在門內，直接算進場")
 
     def _assist_open_payload(self) -> Optional[dict]:
         try:
@@ -490,7 +694,13 @@ class Bridge:
         if window is None:
             return
         try:
-            payload = json.dumps(self._state_payload(), ensure_ascii=False)
+            # ensure_ascii=True（中文變成 \uXXXX）是必要的，不是風格選擇：pywebview 的 GTK 版
+            # evaluate_js 把「字元數」當成 WebKit 要的「位元組數」傳進去，腳本裡只要有中文
+            # （UTF-8 一個字 3 bytes）就會被截斷，WebKit 報 "SyntaxError: Unexpected end of
+            # script"，畫面停在舊狀態——2026-11-16 實測：會員名稱「測試會員」進了 payload
+            # 之後，BLE 判定進場、狀態機也轉成購物中了，畫面卻一直顯示等待進入管制區。
+            # 全部 ASCII 時字元數 = 位元組數；\uXXXX 在 JS 裡解析出來的字串完全一樣。
+            payload = json.dumps(self._state_payload(), ensure_ascii=True)
             window.evaluate_js(f"window.APP && window.APP.render({payload})")
         except Exception:  # noqa: BLE001 — 背景執行緒，推送失敗不該讓硬體執行緒掛掉
             logger.exception("推送畫面狀態到前端失敗")
@@ -522,12 +732,14 @@ class Bridge:
             # 被拒絕（條碼格式不對／查無會員／已經有人登入著）。訊息沿用狀態機
             # 寫好的原因，不要在這裡重複判斷一次規則。
             return self._fail(new_alert.message)
+        self._enter_if_inside()
         self._ui_stage = "loading_profile"
         return self._state_payload()
 
     def continue_as_guest(self) -> dict:
         self._last_error = None
         self.sm.process_event(LoginScanned(member_id=self._guest_member_id, timestamp=time.time()))
+        self._enter_if_inside()
         self._ui_stage = "loading_profile"
         return self._state_payload()
 
@@ -638,6 +850,8 @@ class Bridge:
         self._save_prefs()
         if not self._last_error:
             self._notice = f"本次預算改為 {_fmt_budget(budget)}"
+        self._budget_level = 0
+        self._check_budget()
         return self._state_payload()
 
     def edit_preferences(self) -> dict:
@@ -737,14 +951,20 @@ class Bridge:
         self._last_error = None
         now = time.time()
         done = []
-        if self._staff_pending == "rezero" and self.sm.get_session().state == STATE_WEIGHT_MISMATCH_ERROR:
+        if self._staff_pending in ("rezero", "void") and self.sm.get_session().state == STATE_WEIGHT_MISMATCH_ERROR:
             marker = self._alert_marker()
-            self.sm.process_event(StaffRezeroAuthorized(staff_id=staff.staff_id, timestamp=now))
+            if self._staff_pending == "rezero":
+                self.sm.process_event(StaffRezeroAuthorized(staff_id=staff.staff_id, timestamp=now))
+                ok_text, bad_text = "已重新校準歸零", "重新校準歸零失敗"
+            else:
+                self.sm.process_event(VoidPendingItemRequested(timestamp=now))
+                logger.info("店員 %s 確認放棄未掃碼的重量變化", staff.staff_id)
+                ok_text, bad_text = "已確認放棄這次動作", "放棄失敗"
             if self.sm.get_session().state == STATE_WEIGHT_MISMATCH_ERROR:
                 alert = self._new_alert_since(marker)
-                self._last_error = alert.message if alert else "重新校準歸零失敗"
+                self._last_error = alert.message if alert else bad_text
             else:
-                done.append("已重新校準歸零")
+                done.append(ok_text)
             self._staff_pending = None
         try:
             n = self.db.resolve_assistance_requests(staff.staff_id, now)
@@ -760,6 +980,21 @@ class Bridge:
         return self._apply(RetryWeightCheckRequested(timestamp=time.time()))
 
     def void_pending(self) -> dict:
+        """放棄此次動作。
+
+        掃過碼的那一筆（比對不符）：直接放棄，不加入也不移除。這不會開漏洞——穩定基準沒變，
+        東西如果還在籃子裡，下一筆讀數就會被抓成未掃碼的重量變化。
+        從頭到尾沒掃碼（拿取／放入後忘記掃碼逾時）：放棄等於接受籃子裡現在的重量，跟「重新校準
+        歸零」一樣，所以只送出申請，要店員刷工作證才生效（2026-11-23 改）。
+        """
+        s = self.sm.get_session()
+        if s.state == STATE_WEIGHT_MISMATCH_ERROR and s.pending_item_barcode is None:
+            self._last_error = None
+            if self._create_request(_VOID_UNSCANNED_REASON):
+                self._staff_pending = "void"
+                if self._notice is None:
+                    self._notice = "沒有掃碼的重量變化要店員確認才能放棄，已通知店員"
+            return self._state_payload()
         return self._apply(VoidPendingItemRequested(timestamp=time.time()))
 
     # ------------------------------------------------------------------
@@ -771,6 +1006,8 @@ class Bridge:
         self._reset_wizard_profile()
         self._open_tx_id = None
         self._ui_stage = "main"
+        with self._pose_lock:
+            self._frame.clear()
         return self._state_payload()
 
     def quit(self) -> None:
@@ -802,6 +1039,11 @@ class Bridge:
             # 都要講出來，包含狀態機只記 INFO 的那幾種（還沒進管制區、上一筆
             # 秤重比對還沒完成）。
             self._apply(ItemScanned(barcode=code, timestamp=time.time()), surface_info=True)
+            s = self.sm.get_session()
+            if s.pending_item_barcode == code and s.pending_item_mode == "add" and self._notice is None:
+                found = self._health(self.db.get_product(code))
+                if found:
+                    self._notice = f"健康護照提醒：{health_passport.summary(found)}"
         self._push_state()
 
     def on_weight_sample(self, grams: float) -> None:
@@ -818,6 +1060,7 @@ class Bridge:
         if self.sm.get_session().state != before_state or new_alert is not None:
             if new_alert is not None and new_alert.severity != SEVERITY_INFO:
                 self._last_error = new_alert.message
+            self._check_budget()
             self._push_state()
 
     def on_gate_crossing(self, crossing: str) -> None:
@@ -826,9 +1069,87 @@ class Bridge:
         now = time.time()
         if crossing == GATE_CROSSING_ENTERING:
             self._apply(GateEntryDetected(timestamp=now))
+            # 推車剛進門、在長廊裡：先暫時對齊地圖，走到定位點停住再正式對齊（core/store_layout.py）
+            with self._pose_lock:
+                if self._pose is not None and self.sm.get_session().state not in _OUT_OF_ZONE_STATES:
+                    self._frame.enter(*self._pose[:3])
         else:
             self._apply(GateExitDetected(timestamp=now))
+            with self._pose_lock:
+                self._frame.clear()
         self._push_state()
+
+    def on_pose(self, x_mm: float, y_mm: float, yaw_deg: float, t: float) -> None:
+        """里程計每算出一筆位置就呼叫（UART 執行緒）。"""
+        out_of_zone = self.sm.get_session().state in _OUT_OF_ZONE_STATES
+        with self._pose_lock:
+            self._pose = (x_mm, y_mm, yaw_deg, t)
+            if out_of_zone:
+                if self._frame.aligned:
+                    self._frame.clear()
+                return
+            self._frame.feed(x_mm, y_mm)
+
+    def _anchor_locked(self, at=None) -> bool:
+        """用最新的里程計位置對齊（呼叫端持有 _pose_lock）。回傳這次是不是從沒對齊變成對齊。"""
+        was = self._frame.status
+        self._frame.anchor(*self._pose[:3], at=at)
+        self._frame.feed(*self._pose[:2])
+        return was != store_layout.StoreFrame.ANCHORED
+
+    def on_anchor_seen(self, sighting) -> None:
+        """相機看到地上的定位點標記（_VisionConsumer，sighting 是 core/store_vision.AnchorSighting）：
+        推車位置 = 定位點 − (右方, 前方)（航向固定朝店內，右方 = +x、前方 = +y），正式對齊。"""
+        if self.sm.get_session().state in _OUT_OF_ZONE_STATES:
+            return
+        a, u = self._layout["anchor"], store_layout.unit_m(self._layout)
+        at = (float(a["x"]) - sighting.lateral_m / u, float(a["y"]) - sighting.forward_m / u)
+        with self._pose_lock:
+            if self._pose is None:
+                return
+            first = self._anchor_locked(at)
+        if first:
+            self._notice = f"已在{a['name']}對齊地圖，推車位置會顯示在找貨頁"
+            logger.info("看到定位點標記（前方 %.2f m、右方 %.2f m、相機高 %.2f m），地圖對齊完成",
+                        sighting.forward_m, sighting.lateral_m, sighting.height_m)
+            self._push_state()
+
+    def on_vp_heading(self, delta_deg: float) -> None:
+        """貨架消失點的方向 δ（_VisionConsumer）→ 修正平面圖航向（core/store_layout.StoreFrame.correct_heading）。"""
+        with self._pose_lock:
+            if self._pose is None or self._frame.status != store_layout.StoreFrame.ANCHORED:
+                return
+            x, y, yaw, _ = self._pose
+            theta_v = store_vision.heading_from_vp(delta_deg, self._frame.heading(yaw))
+            e = self._frame.correct_heading(x, y, yaw, theta_v, self._vp_weight)
+        if e is not None:
+            logger.debug("消失點修正航向：誤差 %.1f°", e)
+
+    def anchor_here(self) -> dict:
+        """找貨頁「我在定位點」：相機沒對到標記時（例如標記被擋住），客人推到定位點手動對齊。"""
+        if self.sm.get_session().state in _OUT_OF_ZONE_STATES:
+            return self._fail("推車還沒進入管制區，進門後再對齊")
+        with self._pose_lock:
+            if self._pose is None:
+                return self._fail("還沒收到里程計資料（UART），沒辦法對齊")
+            self._anchor_locked()
+        self._last_error = None
+        self._notice = f"已在{self._layout['anchor']['name']}對齊地圖"
+        return self._state_payload()
+
+    def push_pos(self) -> None:
+        """把推車位置推給找貨頁地圖（_PosPusher 定時呼叫，位置有變才推）。"""
+        pos = self._cart_pos_payload()
+        if pos == self._pos_sent:
+            return
+        window = self._window_holder.get("window")
+        if window is None:
+            return
+        self._pos_sent = pos
+        try:
+            window.evaluate_js(f"window.APP && window.APP.setPos && window.APP.setPos({json.dumps(pos, ensure_ascii=True)})")
+        except Exception:  # noqa: BLE001
+            logger.exception("推送推車位置到前端失敗")
 
     def on_sensor_connection_changed(self, connected: bool) -> None:
         """UART 封包斷流/恢復。"""
@@ -910,8 +1231,10 @@ class _UartWeightConsumer(threading.Thread):
         scale: float,
         stale_timeout: float,
         stop_event: threading.Event,
+        odometry: Optional[OdometryEngine] = None,
     ):
         super().__init__(name="UartWeightConsumer", daemon=True)
+        self.odometry = odometry
         self.bridge = bridge
         self.uart = uart
         self.gate_monitor = gate_monitor
@@ -938,8 +1261,61 @@ class _UartWeightConsumer(threading.Thread):
                     self.bridge.on_sensor_connection_changed(True)
                 self.gate_monitor.update_heading(packet.yaw_deg)
                 self.bridge.on_weight_sample(raw_to_grams(packet.hx711_raw, self.offset, self.scale))
+                if self.odometry is not None:
+                    est = self.odometry.process_packet(packet)
+                    self.bridge.on_pose(est.x_mm, est.y_mm, est.yaw_deg, time.time())
             except Exception:  # noqa: BLE001
                 logger.exception("處理 UART 封包時發生未預期例外")
+
+
+class _VisionConsumer(threading.Thread):
+    """前方相機：每張影像找定位點標記與貨架消失點（core/store_vision.py），結果交給 Bridge。"""
+
+    def __init__(self, bridge: "Bridge", camera, detector, vcfg: dict, stop_event: threading.Event):
+        super().__init__(name="VisionConsumer", daemon=True)
+        self.bridge = bridge
+        self.camera = camera
+        self.detector = detector
+        self.cfg = vcfg
+        self.stop_event = stop_event
+
+    def run(self) -> None:
+        period = 1.0 / max(0.5, float(self.cfg["fps"]))
+        failures = 0
+        while not self.stop_event.is_set():
+            t0 = time.time()
+            try:
+                gray = self.camera.read_gray()
+                failures = 0
+                sight = self.detector.detect(gray)
+                if (sight is not None and sight.ground_m <= float(self.cfg["anchor_trigger_m"])
+                        and abs(sight.height_m - float(self.cfg["camera_height_m"])) <= float(self.cfg["height_tol_m"])):
+                    self.bridge.on_anchor_seen(sight)
+                h, w = gray.shape[:2]
+                vp = store_vision.vanishing_point(store_vision.detect_lines(gray), w, h,
+                                                  min_lines=int(self.cfg["vp_min_lines"]))
+                if vp is not None:
+                    delta = store_vision.vp_offset_deg(vp.u, vp.v, self.camera.K)
+                    if abs(delta) <= float(self.cfg["vp_max_angle_deg"]):
+                        self.bridge.on_vp_heading(delta)
+            except Exception:  # noqa: BLE001
+                failures += 1
+                if failures in (1, 10, 100):
+                    logger.exception("相機影像處理失敗（連續第 %d 次）", failures)
+            self.stop_event.wait(max(0.0, period - (time.time() - t0)))
+
+
+class _PosPusher(threading.Thread):
+    """每 _POS_PUSH_SEC 秒把推車位置推給找貨頁地圖。"""
+
+    def __init__(self, bridge: "Bridge", stop_event: threading.Event):
+        super().__init__(name="PosPusher", daemon=True)
+        self.bridge = bridge
+        self.stop_event = stop_event
+
+    def run(self) -> None:
+        while not self.stop_event.wait(_POS_PUSH_SEC):
+            self.bridge.push_pos()
 
 
 class _GateConsumer(threading.Thread):
@@ -1004,6 +1380,11 @@ def _main() -> int:
         return _fail(f"找不到 {_TEMPLATE_PATH}。用 `python3 tools/build_app_ui.py` 產生。")
 
     try:
+        store_layout.unit_m(store_layout.load(full_cfg.get("store")))
+    except ValueError as exc:
+        return _fail(f"店面平面圖設定不完整：{exc}")
+
+    try:
         import webview
     except ImportError:
         return _fail(
@@ -1034,16 +1415,17 @@ def _main() -> int:
         return _fail(f"門口 Beacon 設定不完整：{exc}")
 
     # ------------------------------------------------------------------
-    # 三個硬體，任何一個接不上就不啟動
+    # 四個硬體，任何一個接不上就不啟動
     # ------------------------------------------------------------------
     stop_event = threading.Event()
     scanner = None
     uart = None
     ble = None
+    camera = None
 
     def _cleanup() -> None:
         stop_event.set()
-        for dev in (scanner, uart, ble):
+        for dev in (scanner, uart, ble, camera):
             if dev is not None:
                 try:
                     dev.stop()
@@ -1057,7 +1439,7 @@ def _main() -> int:
 
         scanner = BarcodeScanner(device_name_hint=args.scanner_hint, out_queue=queue.Queue())
         scanner.start()
-        print(f"[1/3] 條碼掃描器已連上（裝置名稱關鍵字：{args.scanner_hint!r}）")
+        print(f"[1/4] 條碼掃描器已連上（裝置名稱關鍵字：{args.scanner_hint!r}）")
     except Exception as exc:  # noqa: BLE001
         _cleanup()
         return _fail(
@@ -1078,7 +1460,7 @@ def _main() -> int:
             time.sleep(0.1)
         if uart.out_queue.empty():
             raise RuntimeError(f"序列埠開起來了，但 5 秒內沒有收到任何合法封包（{args.port}）")
-        print(f"[2/3] UART 已連上並收到封包（{args.port} @ {args.baud}）")
+        print(f"[2/4] UART 已連上並收到封包（{args.port} @ {args.baud}）")
     except Exception as exc:  # noqa: BLE001
         _cleanup()
         return _fail(
@@ -1107,7 +1489,7 @@ def _main() -> int:
             [gate_monitor.inside_beacon_id, gate_monitor.outside_beacon_id],
             timeout_sec=args.beacon_timeout,
         )
-        print(f"[3/3] 門口 Beacon 都掃到了。{gate_monitor.describe()}")
+        print(f"[3/4] 門口 Beacon 都掃到了。{gate_monitor.describe()}")
     except Exception as exc:  # noqa: BLE001
         _cleanup()
         return _fail(
@@ -1117,9 +1499,36 @@ def _main() -> int:
             "  3) 查實際位址/名稱：python3 -m drivers.ble_beacon_scanner --list"
         )
 
+    # 4) 前方相機（定位點標記、貨架消失點 → 找貨頁的推車位置）
+    vision_cfg = dict(_VISION_DEFAULTS, **{k: v for k, v in full_cfg.get("vision", {}).items() if not k.startswith("_")})
+    try:
+        from core.store_vision import AnchorDetector
+        from drivers.front_camera import FrontCamera
+
+        camera = FrontCamera(full_cfg.get("camera", {}), proc_width=int(vision_cfg["proc_width"]))
+        anchor_detector = AnchorDetector(vision_cfg["anchor_marker_id"], vision_cfg["anchor_marker_size_m"], camera.K)
+        print(f"[4/4] 前方相機已開（處理 {camera.size[0]}x{camera.size[1]}，"
+              f"定位點標記 #{vision_cfg['anchor_marker_id']}、邊長 {vision_cfg['anchor_marker_size_m']} m）")
+    except Exception as exc:  # noqa: BLE001
+        _cleanup()
+        return _fail(
+            f"前方相機開不起來：{exc}\n"
+            "  1) picamera2 與 OpenCV：sudo apt install python3-picamera2 python3-opencv\n"
+            "  2) 相機排線、rpicam-hello --list-cameras 看得到相機嗎\n"
+            "  3) 校正檔：python3 -m drivers.camera_stream --calibrate（config.json 的 camera.calibration_file）"
+        )
+
     # ------------------------------------------------------------------
     window_holder: dict = {"window": None}
-    bridge = Bridge(db=db, sm=sm, window_holder=window_holder)
+    bridge = Bridge(db=db, sm=sm, window_holder=window_holder,
+                    gate_side=lambda: gate_monitor.snapshot()["dominant"], store=full_cfg.get("store"),
+                    vision=vision_cfg)
+    # 里程計（光流 + IMU，參數是 tools/calibrate_optical_flow.py 在長廊校正寫回的）→ 找貨頁的推車位置
+    odo_cfg = full_cfg.get("odometry", {})
+    if odo_cfg.get("optical_flow_px_to_mm", 1.0) == 1.0:
+        print("[警告] config.json 的 odometry.optical_flow_px_to_mm 還是 CALIBRATE_ME 佔位值，"
+              "找貨頁的推車位置不準。用 tools/calibrate_optical_flow.py 在長廊校正。")
+    odometry = OdometryEngine.from_config(odo_cfg)
 
     window = webview.create_window(
         "SmartCart",
@@ -1136,7 +1545,10 @@ def _main() -> int:
     threads = [
         _TimeoutTicker(bridge, stop_event),
         _BarcodeScannerConsumer(bridge, scanner, stop_event),
-        _UartWeightConsumer(bridge, uart, gate_monitor, weight_offset, weight_scale, stale_timeout, stop_event),
+        _UartWeightConsumer(bridge, uart, gate_monitor, weight_offset, weight_scale, stale_timeout, stop_event,
+                            odometry=odometry),
+        _PosPusher(bridge, stop_event),
+        _VisionConsumer(bridge, camera, anchor_detector, vision_cfg, stop_event),
         _GateConsumer(bridge, ble, gate_monitor, stop_event),
     ]
 
@@ -1153,7 +1565,7 @@ def _main() -> int:
     if _RENDER_ENV_CHANGED:
         print("[提醒] 忽略終端機殘留的繪圖設定（app 固定用 GPU 繪製、關 DMA-BUF）："
               + "、".join(_RENDER_ENV_CHANGED))
-    print(f"\n三個硬體都就緒。視窗 {SCREEN_W}x{SCREEN_H}，右上角 DEV 診斷面板 / ✕ 退出。\n")
+    print(f"\n四個硬體都就緒。視窗 {SCREEN_W}x{SCREEN_H}，右上角 DEV 診斷面板 / ✕ 退出。\n")
     webview.start()
     _cleanup()
     return 0

@@ -27,14 +27,19 @@ squal 過濾：協定 v2 新增的 squal（PMW3901 追蹤信心值，0-255）用
 合適——信心值太低的那一筆 dx/dy 不可信，直接跳過不要累加進位置（但 yaw
 還是照樣更新，因為 yaw 是 BNO080 的資料，跟 squal 無關）。
 
-旋轉矩陣的座標系與正負號約定（先講清楚，避免以後接視覺校正時混淆）：
-    - yaw_deg 是全域座標系下的航向角，遵循數學慣例逆時針為正（跟 BNO080
-      韌體端輸出的定義要對得起來——這點要跟韌體端/實際走位測試互相印證，
-      如果實測發現方向轉錯，多半是這裡的正負號跟 BNO080 的定義對不起來，
-      不是積分邏輯本身有問題）。
-    - dx 是 sensor 局部座標系裡「車頭正前方」的位移，dy 是「車身右側」的
-      位移（PMW3901 實際的軸向對應要以貼在車上的方向為準，如果跟這裡假設
-      的不一樣，把 dx/dy 對調或加負號即可，不影響其他邏輯）。
+座標系與正負號（2026-11-16 起由 tools/calibrate_optical_flow.py 實測決定）：
+    - 車身座標：前方 f、左方 l（右手系，逆時針為正）。
+    - 全域座標：原點是開機（或 reset()）那一刻；yaw 逆時針為正。BNO080 送上來的
+      yaw_deg 是相對航向（開機為 0，Game Rotation Vector），方向是不是逆時針為正
+      由校正的「原地左轉」量出來：odometry.yaw_sign = +1 或 −1，用 yaw = yaw_sign × yaw_deg。
+    - PMW3901 的 (dx, dy) 是感測器自己的軸，跟車身不一定對齊（裝的角度、從下往上看
+      還可能左右顛倒）。換到車身座標：
+          s = (dx, m·dy)                        m = −1 if odometry.flow_mirror else +1
+          f =  cos φ · s_x + sin φ · s_y        φ = odometry.flow_rotation_deg
+          l = −sin φ · s_x + cos φ · s_y
+      φ 是「直直往前推」時感測器量到的位移方向角；m 由「往左側推」決定。
+      這三個參數沒設時是 φ = 0、m = +1、yaw_sign = +1，跟舊版行為一樣。
+    - 再用 yaw 把 (f, l) 轉到全域：rotate_local_to_global(f, l, yaw)。
 
 用法（獨立測試 / 即時監看，行為風格比照其他 drivers/tools 的 CLI）：
     python3 -m core.odometry_engine --port /dev/ttyAMA0
@@ -67,6 +72,14 @@ _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 # ----------------------------------------------------------------------
 # 純邏輯部分（可離線用假資料測試，不需要真的 UART/硬體）
 # ----------------------------------------------------------------------
+def sensor_to_cart(dx: float, dy: float, rotation_deg: float = 0.0, mirror: bool = False) -> tuple:
+    """PMW3901 感測器軸的位移 (dx, dy) → 車身座標 (前方 f, 左方 l)。見檔案開頭的公式。"""
+    sx, sy = dx, (-dy if mirror else dy)
+    phi = math.radians(rotation_deg)
+    c, s = math.cos(phi), math.sin(phi)
+    return c * sx + s * sy, -s * sx + c * sy
+
+
 def rotate_local_to_global(dx_mm: float, dy_mm: float, yaw_deg: float) -> tuple:
     """把 sensor 局部座標系的位移向量 (dx_mm, dy_mm)，依目前航向角 yaw_deg
     轉成全域座標系的位移向量 (dX_mm, dY_mm)。標準 2D 旋轉矩陣，逆時針為正：
@@ -95,10 +108,16 @@ class OdometryEngine:
         px_to_mm: float,
         min_squal: int = 0,
         in_queue: Optional["object"] = None,
+        rotation_deg: float = 0.0,
+        mirror: bool = False,
+        yaw_sign: int = 1,
     ):
         self.px_to_mm = px_to_mm
         self.min_squal = min_squal
         self._in_queue = in_queue
+        self.rotation_deg = rotation_deg
+        self.mirror = mirror
+        self.yaw_sign = 1 if yaw_sign >= 0 else -1
 
         self._lock = threading.Lock()
         # position_source/yaw_source 目前是常數：這支引擎本身就只做純 UART
@@ -114,6 +133,18 @@ class OdometryEngine:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
+    @classmethod
+    def from_config(cls, odometry_cfg: dict, min_squal: int = 0, in_queue=None,
+                    px_to_mm: Optional[float] = None) -> "OdometryEngine":
+        """用 config.json 的 odometry 區塊建立（校正工具寫回的參數都在那裡）。"""
+        return cls(
+            px_to_mm=odometry_cfg.get("optical_flow_px_to_mm", 1.0) if px_to_mm is None else px_to_mm,
+            min_squal=min_squal, in_queue=in_queue,
+            rotation_deg=float(odometry_cfg.get("flow_rotation_deg", 0.0)),
+            mirror=bool(odometry_cfg.get("flow_mirror", False)),
+            yaw_sign=int(odometry_cfg.get("yaw_sign", 1)),
+        )
+
     # ------------------------------------------------------------------
     def process_packet(self, packet: UartPacket) -> PositionEstimate:
         """處理一筆封包，回傳更新後的狀態快照（thread-safe）。"""
@@ -122,14 +153,13 @@ class OdometryEngine:
                 # 這筆光流讀數信心不足，位置不累加，但 yaw 是 BNO080 給的，
                 # 跟 PMW3901 追蹤品質無關，還是照樣更新，避免朝向卡住不動。
                 self._state.skipped_low_confidence_count += 1
-                self._state.yaw_deg = packet.yaw_deg
+                self._state.yaw_deg = self.yaw_sign * packet.yaw_deg
             else:
-                dx_mm = packet.dx * self.px_to_mm
-                dy_mm = packet.dy * self.px_to_mm
-                dX, dY = rotate_local_to_global(dx_mm, dy_mm, self._state.yaw_deg)
+                f, l = sensor_to_cart(packet.dx, packet.dy, self.rotation_deg, self.mirror)
+                dX, dY = rotate_local_to_global(f * self.px_to_mm, l * self.px_to_mm, self._state.yaw_deg)
                 self._state.x_mm += dX
                 self._state.y_mm += dY
-                self._state.yaw_deg = packet.yaw_deg
+                self._state.yaw_deg = self.yaw_sign * packet.yaw_deg
 
             self._state.sample_count += 1
             self._state.timestamp = packet.timestamp
@@ -268,12 +298,12 @@ def _main() -> int:
         )
 
     receiver = UartReceiver(port=args.port, baudrate=args.baud)
-    engine = OdometryEngine(px_to_mm=args.px_to_mm, min_squal=args.min_squal, in_queue=receiver.out_queue)
+    engine = OdometryEngine.from_config(cfg.get("odometry", {}), min_squal=args.min_squal,
+                                        in_queue=receiver.out_queue, px_to_mm=args.px_to_mm)
 
     receiver.start()
     engine.start()
     print(f"監聽 {args.port} @ {args.baud}，即時積分中...（Ctrl+C 結束）")
-    print("建議測試方式：現在歸零，把車沿一段量好的固定距離推過去，比對印出的距離跟實際量到的差多少。")
 
     try:
         last_printed_count = 0

@@ -62,6 +62,7 @@ class GateMonitor:
         hysteresis_dbm: float = 4.0,
         min_crossing_rssi_dbm: Optional[float] = None,
         min_confirm_samples: int = 1,
+        min_confirm_sec: float = 0.0,
         expected_exit_yaw_deg: Optional[float] = None,
         heading_tolerance_deg: float = 45.0,
         rssi_offsets: Optional[Dict[str, float]] = None,
@@ -81,6 +82,7 @@ class GateMonitor:
             hysteresis_dbm=hysteresis_dbm,
             min_crossing_rssi_dbm=min_crossing_rssi_dbm,
             min_confirm_samples=max(1, min_confirm_samples),
+            min_confirm_sec=max(0.0, float(min_confirm_sec or 0.0)),
             offsets=dict(rssi_offsets or {}),
             exit_yaw_deg=expected_exit_yaw_deg,
             heading_tolerance_deg=heading_tolerance_deg,
@@ -110,6 +112,7 @@ class GateMonitor:
             hysteresis_dbm=p.hysteresis_dbm,
             min_crossing_rssi_dbm=p.min_crossing_rssi_dbm,
             min_confirm_samples=p.min_confirm_samples,
+            min_confirm_sec=p.min_confirm_sec,
             expected_exit_yaw_deg=p.exit_yaw_deg,
             heading_tolerance_deg=p.heading_tolerance_deg,
             rssi_offsets=p.offsets,
@@ -261,6 +264,7 @@ class GateMonitor:
             f"門口 Beacon：內側={self.inside_beacon_id} 外側={self.outside_beacon_id}　"
             f"平滑={self.smoothing_sec:.1f}s/{self.smoothing_method}　"
             f"遲滯={self.params.hysteresis_dbm:.1f}dB　"
+            f"確認={self.params.min_confirm_samples}筆且{self.params.min_confirm_sec:g}秒　"
             f"校正偏移={offs}　{heading}{warn}{rec}"
         )
 

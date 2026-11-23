@@ -43,7 +43,6 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 
 from core.cart_manager import CartManager
 from core.cart_state_machine import (
@@ -175,7 +174,7 @@ def _main() -> int:
     sm = CartStateMachine(db=db, cart=CartManager(), config=sm_cfg)
     login_prefix = sm_cfg.get("login_barcode_prefix", "")
 
-    odometry = OdometryEngine(px_to_mm=args.px_to_mm, min_squal=args.min_squal)
+    odometry = OdometryEngine.from_config(cfg.get("odometry", {}), min_squal=args.min_squal, px_to_mm=args.px_to_mm)
 
     landmark_cfg = load_landmark_config()
     try:

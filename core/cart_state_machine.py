@@ -73,6 +73,19 @@ Phase 4：購物流程狀態機——「底層架構的支持」，負責保障�
     這個模型完全可以用假的 WeightSampleReceived 事件做離線邏輯測試，不需要
     真的秤重硬體（跟 core/odometry_engine.py 的測試哲學一致）。
 
+等讀數穩定才比（2026-11-16 加，config.json 的 weight.settle_window_sec、settle_band_g）：
+    原本每一筆讀數都直接拿去比，實測放入商品時讀數會先衝過頭、晃一下才停（衝擊
+    最多多了 69 g），於是「剛好經過容差範圍的那一筆」就被判成加入、並被當成新的
+    基準，之後讀數繼續往穩定值走，多出來的 10~20 g 又觸發「未掃碼的重量變化」。
+    現在三個判斷都改用「穩定值」：
+        令最近 W_s 秒（settle_window_sec）內的讀數為 w_1…w_n，
+        若 n ≥ 3、這些讀數涵蓋了至少 0.8·W_s 秒、且 max(w) − min(w) ≤ B_s（settle_band_g），
+        則穩定值 w̃ = median(w)；否則這一刻「還沒穩」，不做判斷。
+    用到穩定值的地方：比對加入／移除、偵測未掃碼的重量變化、未掃碼變化自動解除。
+    還沒穩的時候只更新 current_weight_g，逾時照樣由 TimeoutTick 計算。
+    W_s = 0（config 沒設時的預設）代表每一筆都視為穩定，跟舊版行為完全一樣。
+    W_s、B_s 由 tools/calibrate_weight.py 用實際放入的錄音重播挑出來。
+
 用法（本機互動模擬整套流程，不需要真實硬體）：
     這支沒有 CLI——它是純邏輯模組，沒有硬體、也沒有互動入口。要在真實硬體上
     跑完整流程請用 `tools/run_real_hardware_flow.py`（終端機）或
@@ -83,7 +96,9 @@ from __future__ import annotations
 
 import json
 import logging
+import statistics
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Union
@@ -364,6 +379,7 @@ class CartStateMachine:
         self._max_alert_history = max_alert_history
         self._session = CartSession()
         self._alerts: List[CartAlert] = []
+        self._weights: "deque" = deque()     # 最近的 (t, g)，算穩定值用
 
     # ------------------------------------------------------------------
     def get_session(self) -> CartSession:
@@ -575,7 +591,8 @@ class CartStateMachine:
             s.unscanned_baseline_g = None
             s.unscanned_change_started_at = None
         else:
-            baseline = s.current_weight_g
+            # 用穩定的基準（不是掃碼當下那一筆，那一筆可能剛好在晃）
+            baseline = s.stable_weight_g if s.stable_weight_g is not None else s.current_weight_g
             mode = ITEM_SCAN_MODE_ADD
 
         if mode == ITEM_SCAN_MODE_ADD:
@@ -625,16 +642,39 @@ class CartStateMachine:
     # ------------------------------------------------------------------
     # 秤重比對
     # ------------------------------------------------------------------
+    def _settled(self, event: WeightSampleReceived) -> Optional[float]:
+        """把這一筆放進視窗，回傳穩定值 w̃；還沒穩回傳 None（定義見檔案開頭）。"""
+        window = float(self.cfg.get("settle_window_sec", 0.0) or 0.0)
+        if window <= 0:
+            return event.grams
+        band = float(self.cfg.get("settle_band_g", 2.0))
+        w = self._weights
+        w.append((event.timestamp, event.grams))
+        while w and w[0][0] <= event.timestamp - window:
+            w.popleft()
+        if len(w) < 3:
+            return None
+        # 視窗前緣之前那一筆已經被丟掉，所以用「最舊一筆距今多久」看涵蓋了多少時間
+        if event.timestamp - w[0][0] < 0.8 * window:
+            return None
+        vals = [g for _, g in w]
+        if max(vals) - min(vals) > band:
+            return None
+        return statistics.median(vals)
+
     def _on_weight_sample(self, event: WeightSampleReceived) -> None:
         s = self._session
         s.current_weight_g = event.grams
+        settled = self._settled(event)
+        if settled is None:
+            return          # 還在晃：只更新目前重量，不做任何判斷
 
         if s.state == STATE_SHOPPING:
-            self._track_unscanned_drift(event)
+            self._track_unscanned_drift(settled, event.timestamp)
             return
 
         if s.state == STATE_AWAITING_ITEM_SCAN:
-            self._check_unscanned_drift_resolved(event)
+            self._check_unscanned_drift_resolved(settled, event.timestamp)
             return
 
         if s.state not in _AWAITING_WEIGHT_STATES:
@@ -650,13 +690,13 @@ class CartStateMachine:
             logger.error("狀態是 %s 但 pending_item 欄位不完整，忽略這筆秤重樣本", s.state)
             return
 
-        delta = event.grams - baseline
+        delta = settled - baseline
 
         if abs(delta - expected) <= tolerance:
             self._commit_pending_item()
             self._clear_pending()
             s.state = STATE_SHOPPING
-            s.stable_weight_g = event.grams
+            s.stable_weight_g = settled
             s.last_activity_at = event.timestamp
             return
 
@@ -697,32 +737,32 @@ class CartStateMachine:
     # ------------------------------------------------------------------
     # 掃碼前就發生的重量變化（先拿取/放入，還沒掃碼）
     # ------------------------------------------------------------------
-    def _track_unscanned_drift(self, event: WeightSampleReceived) -> None:
-        """STATE_SHOPPING 底下持續呼叫，偵測『重量已經變了但還沒掃碼』。"""
+    def _track_unscanned_drift(self, grams: float, timestamp: float) -> None:
+        """STATE_SHOPPING 底下持續呼叫（只用穩定值），偵測『重量已經變了但還沒掃碼』。"""
         s = self._session
         threshold = self.cfg.get("unscanned_change_threshold_g", 20.0)
 
         if s.stable_weight_g is None:
-            s.stable_weight_g = event.grams
+            s.stable_weight_g = grams
             return
 
-        delta = event.grams - s.stable_weight_g
+        delta = grams - s.stable_weight_g
         if abs(delta) < threshold:
             # 雜訊範圍內，順便讓穩定值跟上小幅漂移，避免長期累積誤判。
-            s.stable_weight_g = event.grams
+            s.stable_weight_g = grams
             return
 
         s.state = STATE_AWAITING_ITEM_SCAN
         s.unscanned_baseline_g = s.stable_weight_g
-        s.unscanned_change_started_at = event.timestamp
+        s.unscanned_change_started_at = timestamp
         self._alert(
             SEVERITY_WARNING, ALERT_UNSCANNED_WEIGHT_CHANGE,
             f"偵測到重量{'增加' if delta > 0 else '減少'} {abs(delta):.1f}g，"
             f"但尚未掃描條碼，請掃描剛才拿取／放入的商品",
-            event.timestamp,
+            timestamp,
         )
 
-    def _check_unscanned_drift_resolved(self, event: WeightSampleReceived) -> None:
+    def _check_unscanned_drift_resolved(self, grams: float, timestamp: float) -> None:
         """STATE_AWAITING_ITEM_SCAN 底下持續呼叫：重量如果自己又回到變化前
         的基準值附近（例如手滑碰到籃子），視為虛驚一場，自動回到 SHOPPING，
         不需要使用者做任何操作；否則就只是更新目前重量，繼續等掃碼或逾時
@@ -731,15 +771,15 @@ class CartStateMachine:
         s = self._session
         threshold = self.cfg.get("unscanned_change_threshold_g", 20.0)
         baseline = s.unscanned_baseline_g
-        if baseline is not None and abs(event.grams - baseline) < threshold:
+        if baseline is not None and abs(grams - baseline) < threshold:
             self._alert(
                 SEVERITY_INFO, ALERT_UNSCANNED_WEIGHT_AUTO_RESOLVED,
                 "先前偵測到的重量變化已經恢復到原本的基準值附近，視為虛驚一場，自動解除",
-                event.timestamp,
+                timestamp,
             )
             s.unscanned_baseline_g = None
             s.unscanned_change_started_at = None
-            s.stable_weight_g = event.grams
+            s.stable_weight_g = grams
             s.state = STATE_SHOPPING
 
     # ------------------------------------------------------------------
@@ -1026,5 +1066,7 @@ def load_state_machine_config() -> dict:
     cfg["weight_match_timeout_sec"] = weight_cfg.get("weight_match_timeout_sec", 5.0)
     cfg["unscanned_change_threshold_g"] = weight_cfg.get("unscanned_change_threshold_g", 20.0)
     cfg["unscanned_change_timeout_sec"] = weight_cfg.get("unscanned_change_timeout_sec", 8.0)
+    cfg["settle_window_sec"] = weight_cfg.get("settle_window_sec", 0.0)
+    cfg["settle_band_g"] = weight_cfg.get("settle_band_g", 2.0)
     # 拿掉純註解欄位（前綴底線），避免混進來
     return {k: v for k, v in cfg.items() if not k.startswith("_")}

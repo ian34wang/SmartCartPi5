@@ -49,6 +49,7 @@ tools/product_admin.py
     python3 -m tools.product_admin delete 4710018001234
     python3 -m tools.product_admin import products.csv       # 從 CSV 批次匯入/更新
     python3 -m tools.product_admin export products_backup.csv
+    python3 -m tools.product_admin meta 4710018001234       # 成分標籤、貨架位置、折扣、搭配（不用秤）
     python3 -m tools.product_admin staff-list               # 店員工作證
     python3 -m tools.product_admin staff-add                # 新增／修改店員（工作證可直接刷）
     python3 -m tools.product_admin staff-delete STAFF-0002
@@ -62,7 +63,15 @@ tools/product_admin.py
     config.json 的 serial 設定，跟購物車正式運作時同一份）。
 
 CSV 格式（匯入/匯出都用這個欄位順序，第一行是標題列）：
-    barcode,name,unit_price,standard_weight_g,weight_tolerance_g
+    barcode,name,unit_price,standard_weight_g,weight_tolerance_g,tags,shelf,discount_pct,pairs_with
+
+    後四欄可以沒有（舊格式的 CSV 照樣能匯入，已經設好的標籤等不會被清掉）：
+    - tags：成分標籤，用分號隔開，例如「花生;大豆」（可用的標籤見 core/health_passport.TAG_OPTIONS）
+    - shelf：貨架位置，貨架代號 + 角落編號，例如 M3 = 中架左下角。預設平面圖（core/store_layout.py，
+      可用 config.json 的 store 區塊改）：L 左架、M 中架、R 右架；1 左上、2 右上、3 左下、4 右下
+      （「上」靠後牆、「下」靠定位點）→ L1~L4、M1~M4、R1~R4
+    - discount_pct：折扣百分比，50 = 5 折，0 或空白 = 沒有
+    - pairs_with：搭配推薦的條碼，用分號隔開
 
     - barcode：商品條碼（文字，保留前導 0）
     - unit_price：單價（元）
@@ -89,12 +98,15 @@ from typing import List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core import store_layout  # noqa: E402
+from core.health_passport import TAG_OPTIONS  # noqa: E402
 from database.db_manager import DBManager, Member, Product, Staff  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 _CSV_FIELDS = ["barcode", "name", "unit_price", "standard_weight_g", "weight_tolerance_g"]
+_CSV_META_FIELDS = ["tags", "shelf", "discount_pct", "pairs_with"]
 _AUTO_TOLERANCE_RATIO = 0.10  # 自動容差 = 量到的標準重量 × 這個比例
 
 
@@ -144,6 +156,64 @@ def parse_product_row(row: dict) -> Product:
     )
 
 
+def _split(v) -> list:
+    return [x.strip() for x in str(v or "").replace("；", ";").split(";") if x.strip()]
+
+
+def load_store_layout() -> dict:
+    """店面平面圖：預設值套上 config.json 的 store 區塊（跟購物車 app 同一份）。"""
+    try:
+        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return store_layout.load(json.load(f).get("store"))
+    except FileNotFoundError:
+        return store_layout.load()
+
+
+def _shelf_help(lay: dict) -> str:
+    names = "、".join(f"{s['id']} {s['name']}" for s in lay["shelves"])
+    slots = "、".join(f"{k} {v}" for k, v in lay["slots"].items())
+    return f"貨架代號 + 角落編號（{names}；{slots}），例如 {store_layout.codes(lay)[0]}"
+
+
+def parse_meta(row: dict, barcode: str, existing: Optional[Product], lay: Optional[dict] = None) -> dict:
+    """標籤、貨架、折扣、搭配。row 裡沒有的欄位沿用 existing（沒有就是空的）。錯了丟 ValueError。"""
+    out = {
+        "tags": list(existing.tags) if existing else [],
+        "shelf": existing.shelf if existing else "",
+        "discount_pct": existing.discount_pct if existing else 0.0,
+        "pairs_with": list(existing.pairs_with) if existing else [],
+    }
+    if row.get("tags") not in (None,):
+        tags = _split(row["tags"])
+        bad = [t for t in tags if t not in TAG_OPTIONS]
+        if bad:
+            raise ValueError(f"條碼 {barcode}：不認得的標籤 {bad}（可用：{'、'.join(TAG_OPTIONS)}）")
+        out["tags"] = tags
+    if row.get("shelf") not in (None,):
+        lay = lay or load_store_layout()
+        shelf = store_layout.normalize(str(row["shelf"]))
+        if shelf and not store_layout.is_valid(lay, shelf):
+            raise ValueError(f"條碼 {barcode}：貨架位置 {shelf!r} 不在平面圖上，要填{_shelf_help(lay)}")
+        out["shelf"] = shelf
+    if row.get("discount_pct") not in (None,):
+        raw = str(row["discount_pct"]).strip()
+        try:
+            pct = float(raw) if raw else 0.0
+        except ValueError:
+            raise ValueError(f"條碼 {barcode}：discount_pct 看不懂（{raw!r}），要填 0~100")
+        if not 0 <= pct < 100:
+            raise ValueError(f"條碼 {barcode}：discount_pct 要在 0~100 之間（50 = 5 折）")
+        out["discount_pct"] = pct
+    if row.get("pairs_with") not in (None,):
+        out["pairs_with"] = [b for b in _split(row["pairs_with"]) if b != barcode]
+    return out
+
+
+def with_meta(product: Product, meta: dict) -> Product:
+    return Product(product.barcode, product.name, product.unit_price, product.standard_weight_g,
+                   product.weight_tolerance_g, **meta)
+
+
 def import_csv(db: DBManager, csv_path: str) -> tuple[int, list[str]]:
     """回傳 (成功筆數, 失敗訊息列表)——就算某幾行有問題，其他正常的行還是
     會照樣匯入，不會因為第 30 行打錯字就讓前面 29 行全部匯入失敗。
@@ -158,10 +228,11 @@ def import_csv(db: DBManager, csv_path: str) -> tuple[int, list[str]]:
         for i, row in enumerate(reader, start=2):  # 第 1 行是標題，資料從第 2 行開始
             try:
                 product = parse_product_row(row)
+                meta = parse_meta(row, product.barcode, db.get_product(product.barcode))
             except ValueError as exc:
                 errors.append(f"第 {i} 行：{exc}")
                 continue
-            db.upsert_product(product)
+            db.upsert_product(with_meta(product, meta))
             ok += 1
     return ok, errors
 
@@ -169,10 +240,13 @@ def import_csv(db: DBManager, csv_path: str) -> tuple[int, list[str]]:
 def export_csv(db: DBManager, csv_path: str) -> int:
     products = db.list_products()
     with open(csv_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_CSV_FIELDS)
+        writer = csv.DictWriter(f, fieldnames=_CSV_FIELDS + _CSV_META_FIELDS)
         writer.writeheader()
         for p in products:
-            writer.writerow(p.to_dict())
+            d = p.to_dict()
+            d["tags"] = ";".join(p.tags)
+            d["pairs_with"] = ";".join(p.pairs_with)
+            writer.writerow(d)
     return len(products)
 
 
@@ -369,10 +443,13 @@ def _print_products(products: list[Product]) -> None:
     if not products:
         print("（目前資料庫裡沒有商品）")
         return
-    print(f"{'條碼':<16} {'名稱':<24} {'單價':>8} {'標準重量(g)':>12} {'容差(±g)':>10}")
-    print("-" * 76)
+    print(f"{'條碼':<16} {'名稱':<24} {'單價':>8} {'標準重量(g)':>12} {'容差(±g)':>10}  貨架 折扣  標籤／搭配")
+    print("-" * 100)
     for p in products:
-        print(f"{p.barcode:<16} {p.name:<24} {p.unit_price:>8.0f} {p.standard_weight_g:>12.1f} {p.weight_tolerance_g:>10.1f}")
+        disc = f"{100 - p.discount_pct:g}折" if p.discount_pct else "—"
+        extra = "、".join(p.tags) + (f"｜搭配 {','.join(p.pairs_with)}" if p.pairs_with else "")
+        print(f"{p.barcode:<16} {p.name:<24} {p.unit_price:>8.0f} {p.standard_weight_g:>12.1f} {p.weight_tolerance_g:>10.1f}"
+              f"  {p.shelf or '—':<4} {disc:<5} {extra}")
     print(f"共 {len(products)} 筆")
 
 
@@ -410,7 +487,9 @@ def cmd_add(db: DBManager, args, gauge: WeightGauge) -> None:
             print("已取消，沒有新增。")
             return
 
-    existed = db.get_product(product.barcode) is not None
+    old = db.get_product(product.barcode)
+    existed = old is not None
+    product = with_meta(product, parse_meta({}, product.barcode, old))
     db.upsert_product(product)
     print(f"{'已更新' if existed else '已新增'}：{product.barcode}　{product.name}　${product.unit_price:.0f}　{product.standard_weight_g:.1f}±{product.weight_tolerance_g:.1f}g")
 
@@ -424,8 +503,49 @@ def cmd_edit(db: DBManager, args, gauge: WeightGauge) -> None:
     if product is None:
         print("已取消，沒有異動。")
         return
+    product = with_meta(product, parse_meta({}, product.barcode, existing))   # 標籤等沿用原本的
     db.upsert_product(product)
     print(f"已更新：{product.barcode}　{product.name}　${product.unit_price:.0f}　{product.standard_weight_g:.1f}±{product.weight_tolerance_g:.1f}g")
+
+
+def cmd_meta(db: DBManager, args, _gauge: Optional[WeightGauge] = None) -> None:
+    """成分標籤、貨架、折扣、搭配。不用秤；每一項直接 Enter 保留原值。"""
+    existing = db.get_product(args.barcode)
+    if existing is None:
+        print(f"[錯誤] 條碼 {args.barcode} 不在資料庫裡，沒有異動")
+        return
+    print(f"{existing.name}（{existing.barcode}）——每一項直接 Enter 保留原值，輸入 - 清空")
+    print("成分標籤：" + "  ".join(f"{i}) {t}" for i, t in enumerate(TAG_OPTIONS, 1)))
+    cur = ",".join(str(TAG_OPTIONS.index(t) + 1) for t in existing.tags if t in TAG_OPTIONS)
+    row = {}
+    ans = input(f"  輸入編號，用逗號隔開（目前：{'、'.join(existing.tags) or '無'}）[{cur}]：").strip()
+    if ans == "-":
+        row["tags"] = ""
+    elif ans:
+        try:
+            row["tags"] = ";".join(TAG_OPTIONS[int(x) - 1] for x in ans.replace("，", ",").split(",") if x.strip())
+        except (ValueError, IndexError):
+            print("[錯誤] 編號看不懂，沒有異動。")
+            return
+    for key, label, cur in (("shelf", "貨架位置：" + _shelf_help(load_store_layout()), existing.shelf),
+                            ("discount_pct", "折扣百分比（50 = 5 折，0 = 沒有）", f"{existing.discount_pct:g}"),
+                            ("pairs_with", "搭配推薦的條碼（可直接刷，多個用分號隔開）", ";".join(existing.pairs_with))):
+        ans = input(f"  {label} [{cur}]：").strip()
+        if ans == "-":
+            row[key] = ""
+        elif ans:
+            row[key] = ans
+    try:
+        meta = parse_meta(row, existing.barcode, existing)
+    except ValueError as exc:
+        print(f"[錯誤] {exc}，沒有異動。")
+        return
+    unknown = [b for b in meta["pairs_with"] if db.get_product(b) is None]
+    if unknown:
+        print(f"[警告] 搭配的條碼 {unknown} 還沒建檔，建好之後才會出現在優惠頁")
+    db.upsert_product(with_meta(existing, meta))
+    print(f"已更新：標籤 {'、'.join(meta['tags']) or '無'}｜貨架 {meta['shelf'] or '—'}｜"
+          f"折扣 {meta['discount_pct']:g}%｜搭配 {','.join(meta['pairs_with']) or '無'}")
 
 
 def cmd_delete(db: DBManager, args, _gauge: Optional[WeightGauge] = None) -> None:
@@ -635,6 +755,7 @@ def _run_menu(db: DBManager, gauge: WeightGauge) -> None:
             "4) 刪除商品\n"
             "5) 從 CSV 匯入\n"
             "6) 匯出成 CSV\n"
+            "15) 成分標籤／貨架／折扣／搭配（不用秤）\n"
             "--- 會員 ---\n"
             "7) 列出所有會員\n"
             "8) 新增／修改會員（會員條碼可直接刷）\n"
@@ -679,6 +800,10 @@ def _run_menu(db: DBManager, gauge: WeightGauge) -> None:
         elif choice == "9":
             member_id = input("要刪除哪個會員代碼：").strip()
             cmd_member_delete(db, argparse.Namespace(member_id=member_id, yes=False))
+        elif choice == "15":
+            barcode = input("哪個條碼（可直接刷）：").strip()
+            if barcode:
+                cmd_meta(db, argparse.Namespace(barcode=barcode))
         elif choice == "10":
             cmd_staff_list(db, None)
         elif choice == "11":
@@ -750,6 +875,9 @@ def _main() -> int:
     p_mdel.add_argument("member_id")
     p_mdel.add_argument("-y", "--yes", action="store_true", help="不詢問直接刪除")
 
+    p_meta = sub.add_parser("meta", help="成分標籤、貨架位置、折扣、搭配（不用秤）")
+    p_meta.add_argument("barcode")
+
     sub.add_parser("staff-list", help="列出店員工作證")
     p_sadd = sub.add_parser("staff-add", help="新增／修改店員（不加參數走互動輸入，工作證可直接刷）")
     p_sadd.add_argument("--staff-id")
@@ -787,6 +915,7 @@ def _main() -> int:
         "import": cmd_import, "export": cmd_export,
         "member-list": cmd_member_list, "member-add": cmd_member_add,
         "member-delete": cmd_member_delete,
+        "meta": cmd_meta,
         "staff-list": cmd_staff_list, "staff-add": cmd_staff_add, "staff-delete": cmd_staff_delete,
         "assist-list": cmd_assist_list, "assist-resolve": cmd_assist_resolve, "tx-list": cmd_tx_list,
     }

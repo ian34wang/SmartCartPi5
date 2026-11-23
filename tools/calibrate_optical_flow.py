@@ -1,57 +1,41 @@
 """
 tools/calibrate_optical_flow.py
 
-PMW3901 光流感測器「像素位移 -> 實際公釐數」校正互動工具。
+PMW3901 光流與 BNO080 航向的校正。錄音與互動在這裡，計算在 core/flow_calibration.py
+（符號、公式、判讀標準都寫在那邊）。
 
-背景：
-    odometry.optical_flow_px_to_mm 是 config.json 裡標記 CALIBRATE_ME 的
-    佔位值，跟感測器安裝高度、鏡頭視角、CPI 設定有關，沒辦法用理論公式
-    算出來，需要實際拖車測試：
+一次錄完四件事，全部存成原始封包，事後可以用 --from-data 重算：
 
-        1. 把購物車推過一段距離，同時累計 PMW3901 回報的 dx/dy。
-        2. total_pixels = sqrt(sum_dx^2 + sum_dy^2)
-        3. px_to_mm = 實際距離(mm) / total_pixels
+    1. 推車停著不動 5 秒                       → 靜止時光流會不會亂跳、yaw 漂移多快
+    2. 沿地上一條直線往前推量好的距離，推好幾趟  → optical_flow_px_to_mm、感測器安裝角
+    3. 往車子左側橫推一小段（選做）              → 感測器有沒有左右顛倒
+    4. 原地向左（逆時針）轉 90°                 → yaw 的正負號
 
-    v2 改動（原本的「倒數 + 固定時間窗自動收集」流程不好用，人手動推車
-    沒辦法剛好在固定秒數內走完固定距離，不是太快就是太慢）：現在不再
-    強制「距離跟時間都要對得剛剛好」——只保留一個 5 秒的視覺化大倒數
-    當「準備」的緩衝，倒數結束後開始記錄，記錄時間完全由使用者自己
-    掌控：按 Enter 開始記錄後直接去推車，推完了再按一次 Enter 停止記錄，
-    然後才輸入這段距離實際量到多少（可以是推之前先量好的，也可以是
-    推完之後才量的，都可以）。
+算出來的參數會丟進 core/odometry_engine.OdometryEngine（執行期同一份程式）重播每一趟，
+比較推出來的距離與方向。
 
-    整合方式：每一筆封包的 dx/dy 本身就是「這個取樣週期的相對位移」
-    （不是累積值，見 uart_receiver.py 的封包格式說明），所以直接把
-    收到的所有封包的 dx/dy 累加（離散版的積分／黎曼和）就是整段時間
-    的總位移，不需要再乘取樣間隔。
+錄音存在 data/flow_calibration/<時間>/（samples.csv + samples.meta.json + result.json）。
 
-    離群值處理：如果某幾筆封包的位移量明顯比其他筆大很多（PMW3901
-    在追蹤不穩、光線不足、離地高度不對時偶爾會吐出異常值），這種單筆
-    離群值不會像雜訊一樣互相抵銷，會直接偏移整段的加總，所以預設會用
-    中位數絕對偏差（MAD）過濾掉明顯異常的樣本再加總；不想濾可以加
-    --no-filter。
+會寫回 config.json 的 odometry 區塊：optical_flow_px_to_mm、flow_rotation_deg、flow_mirror、
+yaw_sign，以及 flow_calibration_source。
 
-目前狀態：
-    硬體（PMW3901、UART）本身是接好、可以跑的，只是購物車結構
-    （PMW3901 安裝位置、離地高度）還在調整中——安裝高度會直接影響
-    px_to_mm 的比例，所以現在跑出來的值只對「這個當下的安裝方式」準，
-    結構之後再調整，很可能就要重新校正一次，不是一勞永逸的最終值。
-    所以現在可以照下面用法實際跑跑看（建議先用 --dry-run 只看數字、
-    不寫回 config.json），等安裝位置真正定案後，再正式跑一次把結果
-    寫回 config.json。
+準備：地上找一條直線（磁磚縫，或貼一條膠帶），量好一段距離，建議 3 m 以上；起點、終點
+做記號。推的時候車頭對準直線、速度跟平常一樣。
 
 用法：
-    python3 -m tools.calibrate_optical_flow --port /dev/ttyAMA0
-    python3 -m tools.calibrate_optical_flow --dry-run
-    python3 -m tools.calibrate_optical_flow --countdown 5
-    python3 -m tools.calibrate_optical_flow --no-filter    # 關掉離群值過濾
+    python3 -m tools.calibrate_optical_flow --dry-run          # 錄音、計算，不寫回
+    python3 -m tools.calibrate_optical_flow                    # 同上，最後問要不要寫回
+    python3 -m tools.calibrate_optical_flow --runs 5
+    python3 -m tools.calibrate_optical_flow --from-data data/flow_calibration/20261116-160000
+
+這支檔案裡的 big_countdown / filter_outliers / record_drag_until_stopped / sum_samples /
+compute_px_to_mm 是給 tools/verify_optical_flow.py 用的。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import logging
 import math
 import queue
 import shutil
@@ -62,11 +46,30 @@ import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from drivers.uart_receiver import UartPacket, UartReceiver
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-logger = logging.getLogger(__name__)
+from core.flow_calibration import GOOD_CV, FlowCalibration, calibrate  # noqa: E402
+from core.uart_recording import (  # noqa: E402
+    UartTap,
+    countdown,
+    load,
+    new_session_dir,
+    save_result,
+    update_config,
+    wait_for_stream,
+)
+from drivers.uart_receiver import UartPacket, UartReceiver  # noqa: E402
 
-_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+_REPO = Path(__file__).resolve().parent.parent
+_CONFIG_PATH = _REPO / "config.json"
+_ROOT = _REPO / "data" / "flow_calibration"
+
+
+def _rel(p: Path) -> str:
+    try:
+        return str(Path(p).resolve().relative_to(_REPO))
+    except ValueError:
+        return str(p)
 
 
 # ----------------------------------------------------------------------
@@ -135,28 +138,6 @@ def compute_px_to_mm(sum_dx: float, sum_dy: float, actual_distance_mm: float) ->
     if total_pixels == 0:
         raise ValueError("累積像素位移為 0，無法計算 px_to_mm（檢查拖曳期間感測器是否真的有在動、UART 是否正常收到封包）")
     return actual_distance_mm / total_pixels
-
-
-# ----------------------------------------------------------------------
-# config.json 讀寫（保留其他欄位與註解，只更新 odometry 區塊）
-# ----------------------------------------------------------------------
-def load_config() -> dict:
-    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def write_optical_flow_calibration(px_to_mm: float) -> None:
-    config = load_config()
-    odometry_cfg = config.setdefault("odometry", {})
-    odometry_cfg["optical_flow_px_to_mm"] = px_to_mm
-    odometry_cfg["_optical_flow_comment"] = (
-        f"已於 {time.strftime('%Y-%m-%d %H:%M:%S')} 用 tools/calibrate_optical_flow.py 實測校正"
-        "（實測距離(mm) / 拖曳期間累積像素位移）。安裝高度或感測器有更動時需要重新校正。"
-    )
-    with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    logger.info("已寫回 config.json：optical_flow_px_to_mm=%s", px_to_mm)
 
 
 # ----------------------------------------------------------------------
@@ -231,145 +212,198 @@ def big_countdown(seconds: int) -> None:
 
 
 # ----------------------------------------------------------------------
-# 互動流程
+# 錄音
 # ----------------------------------------------------------------------
-def _wait_for_enter_then_stop(stop_event: threading.Event) -> None:
+def _ask_float(prompt: str) -> float:
+    while True:
+        try:
+            v = float(input(prompt).strip())
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+        print("    請輸入大於 0 的數字。")
+
+
+def _live(tap: UartTap, stop: threading.Event) -> None:
+    while not stop.is_set():
+        last = tap.last
+        if last is not None:
+            print(f"\r    錄音中（{tap.count()} 筆）yaw={last.yaw_deg:+7.1f}°  squal={last.squal:3d}   ",
+                  end="", flush=True)
+        time.sleep(0.2)
+
+
+def _until_enter(tap: UartTap, label: str, prompt: str, **info) -> None:
+    tap.begin(label)
+    stop = threading.Event()
+    th = threading.Thread(target=_live, args=(tap, stop), daemon=True)
+    th.start()
+    input()
+    stop.set()
+    th.join(timeout=1.0)
+    print()
+    tap.end(**info)
+
+
+def record(receiver, out_dir: Path, runs: int, static_sec: float) -> Optional[UartTap]:
+    tap = UartTap(receiver, out_dir / "samples.csv", kind="flow_calibration", extra_meta={"runs": runs})
+    tap.start()
+    print("\n" + "=" * 80)
+    print("光流與航向校正：靜止 → 直推幾趟 → 側推（選做）→ 原地左轉 90°")
+    print("=" * 80)
     try:
-        input()
-    except EOFError:
-        pass
-    stop_event.set()
+        input(f"\n[1] 推車停好、不要碰，按 Enter（靜止 {static_sec:.0f} 秒）：")
+        tap.begin("static")
+        countdown(static_sec, tap, "靜止中")
+        tap.end()
+
+        print("\n[2] 直推：地上找一條直線（磁磚縫或膠帶），量好一段距離，建議 3 m 以上。")
+        d_mm = _ask_float("    這段距離幾公分：") * 10.0
+        for i in range(1, runs + 1):
+            input(f"    第 {i}/{runs} 趟：車子停在起點、車頭對準直線，按 Enter 開始錄：")
+            print("    推到終點停好，再按 Enter：")
+            _until_enter(tap, f"fwd_{i}", "", distance_mm=d_mm)
+            if i < runs:
+                input("    把車子拉回起點（這段不錄），按 Enter 繼續：")
+
+        print("\n[3] 側推（選做）：車頭方向不變，把車子往「車子的左邊」橫著推 50 cm 以上。")
+        ans = input("    輪子能橫著走就按 Enter 開始錄（s = 跳過）：").strip().lower()
+        if ans != "s":
+            print("    推好停住，再按 Enter：")
+            _until_enter(tap, "left_1", "")
+
+        print("\n[4] 原地左轉：車頭對齊地上一條線，原地向左（逆時針，從上往下看）轉 90°，對齊另一條垂直的線。")
+        input("    對齊好，按 Enter 開始錄：")
+        print("    轉好停住，再按 Enter：")
+        _until_enter(tap, "turn_left", "", angle_deg=90.0)
+    except KeyboardInterrupt:
+        tap.stop()
+        print("\n中斷。已錄到的部分在", _rel(out_dir))
+        return None
+    tap.stop()
+    return tap
 
 
-def run_calibration(
-    port: str,
-    baudrate: int,
-    countdown_sec: int,
-    dry_run: bool,
-    filter_enabled: bool = True,
-    mad_multiplier: float = 6.0,
-) -> Optional[float]:
-    receiver = UartReceiver(port=port, baudrate=baudrate)
+# ----------------------------------------------------------------------
+# 輸出、寫回
+# ----------------------------------------------------------------------
+def print_report(cal: FlowCalibration, odo: dict) -> None:
+    if cal.error:
+        print(f"\n[無法校正] {cal.error}")
+        return
+    print("\n" + "=" * 86)
+    print("直推（S = 累積位移向量，k = D/|S|，θ = 感測器軸上的方向；重播 = 用算出的參數跑 OdometryEngine）")
+    print(f"{'趟':<8}{'D (mm)':>8}{'|S| (count)':>13}{'k (mm/count)':>14}{'θ (°)':>8}{'Δyaw (°)':>10}"
+          f"{'squal 中/5%':>13}{'重播誤差':>12}")
+    print("-" * 86)
+    for r in cal.runs:
+        k = "—" if r.k is None else f"{r.k:.5f}"
+        rep = "—" if r.replay_err_pct is None else f"{r.replay_err_pct:+.1f}% {r.replay_heading_err_deg:+.1f}°"
+        print(f"{r.label:<8}{(r.distance_mm or 0):>8.0f}{r.counts:>13.0f}{k:>14}{r.theta_deg:>8.1f}"
+              f"{r.yaw_change_deg:>10.1f}{f'{r.squal_median:.0f}/{r.squal_p5:.0f}':>13}{rep:>12}")
+    cv = "—" if cal.cv is None else f"{cal.cv:.2%}"
+    print(f"\n  k = {cal.px_to_mm:.5f} mm/count（各趟變異 {cv}，標準 ≤ {GOOD_CV:.0%}）")
+    print(f"  直推方向各趟最大偏離 {cal.theta_spread_deg:.1f}°")
+    if cal.lateral is not None:
+        d = "—" if cal.lateral_delta_deg is None else f"{cal.lateral_delta_deg:+.0f}°"
+        print(f"  側推方向 − 直推方向 = {d}  →  鏡像 {'是' if cal.mirror else '否' if cal.mirror is False else '判斷不出'}")
+        if cal.lateral.replay_heading_err_deg is not None:
+            print(f"    重播側推：方向誤差 {cal.lateral.replay_heading_err_deg:+.1f}°（應該在起點航向 +90°）")
+    print(f"  安裝角 φ = {cal.rotation_deg:+.1f}°")
+    if cal.turn_measured_deg is not None:
+        print(f"  原地左轉 90°：yaw 變了 {cal.turn_measured_deg:+.1f}°  →  yaw_sign = {cal.yaw_sign}")
+    if cal.static_flow_per_sec is not None:
+        drift = cal.static_yaw_drift_deg_per_min
+        print(f"  靜止時：光流 {cal.static_flow_per_sec:.1f} count/秒，yaw 漂移 "
+              f"{'—' if drift is None else f'{drift:+.2f}°/分'}")
+
+    print("\n判讀：")
+    print(f"  {'✓ 可以' if cal.verdict == '可以' else '○ 勉強'}")
+    for s in cal.issues:
+        print(f"  - {s}")
+
+    def tag(new, old):
+        return "（不變）" if old == new else f"（原本 {old}）"
+
+    print("\n建議參數：")
+    print(f"  odometry.optical_flow_px_to_mm = {cal.px_to_mm:.5f}{tag(round(cal.px_to_mm, 5), odo.get('optical_flow_px_to_mm'))}")
+    print(f"  odometry.flow_rotation_deg     = {cal.rotation_deg:+.1f}{tag(round(cal.rotation_deg, 1), odo.get('flow_rotation_deg'))}")
+    print(f"  odometry.flow_mirror           = {str(bool(cal.mirror)).lower()}{tag(bool(cal.mirror), odo.get('flow_mirror'))}")
+    print(f"  odometry.yaw_sign              = {cal.yaw_sign or 1}{tag(cal.yaw_sign or 1, odo.get('yaw_sign'))}")
+
+
+def write_back(cal: FlowCalibration, source: str) -> None:
+    stamp = time.strftime("%Y-%m-%d %H:%M")
+    update_config(_CONFIG_PATH, "odometry", {
+        "optical_flow_px_to_mm": round(cal.px_to_mm, 5),
+        "flow_rotation_deg": round(cal.rotation_deg, 1),
+        "flow_mirror": bool(cal.mirror),
+        "yaw_sign": cal.yaw_sign or 1,
+        "flow_calibration_source": source,
+    }, {
+        "_optical_flow_comment": f"{stamp} tools/calibrate_optical_flow.py：各趟直推 實際距離/累積位移長度 的平均（mm/count）。"
+                                 "感測器高度或位置有改要重新校正。",
+        "_flow_rotation_deg_comment": "PMW3901 安裝角：直推時感測器（去鏡像後）量到的方向角。core/odometry_engine.sensor_to_cart 用它把感測器軸轉成車身前/左。",
+        "_flow_mirror_comment": "PMW3901 的軸是否左右顛倒（側推方向在直推方向 −90°）。",
+        "_yaw_sign_comment": "BNO080 yaw 的正負號：原地左轉（逆時針）時 yaw 增加為 +1。yaw 是相對航向（開機為 0）。",
+        "_flow_calibration_source_comment": "最後一次寫回光流參數的校正錄音，用 tools/calibrate_optical_flow.py --from-data 可以重算。",
+    })
+    print(f"\n已寫回 {_CONFIG_PATH}")
+
+
+def finish(cal: FlowCalibration, out_dir: Path, dry_run: bool) -> int:
+    cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    print_report(cal, cfg.get("odometry", {}))
+    save_result(out_dir, {**{k: v for k, v in cal.__dict__.items() if k not in ("runs", "lateral")},
+                          "runs": [r.__dict__ for r in cal.runs],
+                          "lateral": None if cal.lateral is None else cal.lateral.__dict__})
+    print(f"\n錄音與結果：{_rel(out_dir)}/")
+    if cal.px_to_mm is None:
+        return 1
+    if dry_run:
+        print("--dry-run：沒有寫回 config.json。")
+        return 0
+    if input("\n要寫回 config.json 嗎？(y 確認，其他任何輸入都不寫)：").strip().lower() != "y":
+        print("沒有寫回。")
+        return 0
+    write_back(cal, _rel(out_dir))
+    print("接下來：python3 -m core.odometry_engine 推一圈回到原點，看終點離原點多遠。")
+    return 0
+
+
+def _main() -> int:
+    cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    ap = argparse.ArgumentParser(description="PMW3901 光流與 BNO080 航向校正")
+    ap.add_argument("--dry-run", action="store_true", help="錄音、計算，不寫回 config.json")
+    ap.add_argument("--from-data", default=None, help="用存下來的錄音重算（目錄或 samples.csv）")
+    ap.add_argument("--runs", type=int, default=3, help="直推幾趟（預設 3）")
+    ap.add_argument("--static-sec", type=float, default=5.0, help="靜止幾秒（預設 5）")
+    ap.add_argument("--port", default=cfg.get("serial", {}).get("port", "/dev/ttyAMA0"))
+    ap.add_argument("--baud", type=int, default=cfg.get("serial", {}).get("baudrate", 115200))
+    args = ap.parse_args()
+
+    if args.from_data:
+        path = Path(args.from_data)
+        out_dir = path if path.is_dir() else path.parent
+        rec = load(path)
+        print(f"讀入 {_rel(out_dir)}：{sum(len(v) for v in rec.samples.values())} 筆、{len(rec.segments)} 段")
+        return finish(calibrate(rec), out_dir, args.dry_run)
+
+    receiver = UartReceiver(port=args.port, baudrate=args.baud)
     receiver.start()
     try:
-        print("等待 UART 連線與資料流...")
-        deadline = time.time() + 5.0
-        got_first = False
-        while time.time() < deadline:
-            if not receiver.out_queue.empty():
-                got_first = True
-                break
-            time.sleep(0.1)
-        if not got_first:
-            print("5 秒內沒有收到任何封包，請確認接線與 config.json 的 serial.port。")
-            return None
-
-        print(
-            "\n等一下倒數結束就會開始記錄，記錄期間你可以用自己的步調把車推過去，"
-            "不用趕——推完之後按 Enter 停止記錄，再告訴我實際推了多遠（可以是先量好"
-            "的距離，也可以是推完才量的）。"
-        )
-        input("按 Enter 開始倒數...")
-        big_countdown(countdown_sec)
-        print("開始記錄！請把車推過去，推完後按 Enter 停止記錄...")
-
-        _drain(receiver.out_queue)
-        stop_event = threading.Event()
-        stop_thread = threading.Thread(target=_wait_for_enter_then_stop, args=(stop_event,), daemon=True)
-        stop_thread.start()
-        samples = record_drag_until_stopped(receiver.out_queue, stop_event)
-        stop_thread.join(timeout=1.0)
-
-        raw_count = len(samples)
-        if filter_enabled:
-            filtered_samples, dropped = filter_outliers(samples, mad_multiplier)
-        else:
-            filtered_samples, dropped = samples, 0
-        sum_dx, sum_dy = sum_samples(filtered_samples)
-
-        dropped_note = f"，濾掉 {dropped} 筆離群值" if dropped else ""
-        print(f"\n記錄結束，共收到 {raw_count} 筆封包{dropped_note}，sum_dx={sum_dx:g}, sum_dy={sum_dy:g}")
-
-        if not filtered_samples:
-            print("沒有可用的樣本，無法計算，請重試。")
-            return None
-
-        actual_distance_mm = _prompt_float("\n這段推車的實際距離是幾公分？") * 10.0
-
-        px_to_mm = compute_px_to_mm(sum_dx, sum_dy, actual_distance_mm)
-        print(f"\n計算結果：optical_flow_px_to_mm = {px_to_mm:.6f}")
-
-        if dry_run:
-            print("（--dry-run 模式，不寫回 config.json）")
-            return px_to_mm
-
-        answer = input("是否要把這個結果寫回 config.json？[y/N] ").strip().lower()
-        if answer == "y":
-            write_optical_flow_calibration(px_to_mm)
-            print("已寫回 config.json。")
-        else:
-            print("已取消，config.json 未變更。")
-        return px_to_mm
+        print(f"等待 UART 資料流（{args.port}）...", flush=True)
+        if not wait_for_stream(receiver):
+            print(f"[錯誤] 5 秒內沒有收到任何 UART 封包：確認下位機有在送、接線、config.json 的 serial.port（{args.port}）。")
+            return 1
+        out_dir = new_session_dir(_ROOT)
+        tap = record(receiver, out_dir, args.runs, args.static_sec)
     finally:
         receiver.stop()
-
-
-def _drain(q: "queue.Queue[UartPacket]") -> None:
-    while True:
-        try:
-            q.get_nowait()
-        except queue.Empty:
-            break
-
-
-def _prompt_float(prompt: str) -> float:
-    while True:
-        raw = input(prompt).strip()
-        try:
-            value = float(raw)
-            if value > 0:
-                return value
-            print("請輸入大於 0 的數字。")
-        except ValueError:
-            print("請輸入有效的數字。")
-
-
-# ----------------------------------------------------------------------
-def _main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-    default_port = "/dev/ttyAMA0"
-    default_baud = 115200
-    try:
-        cfg = load_config()
-        default_port = cfg.get("serial", {}).get("port", default_port)
-        default_baud = cfg.get("serial", {}).get("baudrate", default_baud)
-    except (OSError, json.JSONDecodeError):
-        pass
-
-    parser = argparse.ArgumentParser(description="PMW3901 光流位移校正互動工具")
-    parser.add_argument("--port", default=default_port, help=f"UART 裝置節點（預設讀 config.json，目前為 {default_port}）")
-    parser.add_argument("--baud", type=int, default=default_baud, help="鮑率")
-    parser.add_argument("--countdown", type=int, default=5, help="開始記錄前的大倒數秒數，預設 5")
-    parser.add_argument("--dry-run", action="store_true", help="只計算結果並印出，不寫回 config.json")
-    parser.add_argument("--no-filter", action="store_true", help="關掉離群值過濾，全部樣本都拿來加總")
-    parser.add_argument("--mad-multiplier", type=float, default=6.0, help="離群值過濾的門檻倍數，預設 6.0（越小濾得越兇）")
-    args = parser.parse_args()
-
-    try:
-        result = run_calibration(
-            port=args.port,
-            baudrate=args.baud,
-            countdown_sec=args.countdown,
-            dry_run=args.dry_run,
-            filter_enabled=not args.no_filter,
-            mad_multiplier=args.mad_multiplier,
-        )
-    except KeyboardInterrupt:
-        print("\n已中斷。")
+    if tap is None:
         return 1
-
-    return 0 if result is not None else 1
+    return finish(calibrate(tap.recording()), out_dir, args.dry_run)
 
 
 if __name__ == "__main__":

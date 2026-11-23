@@ -1,0 +1,42 @@
+{
+  "odometry": {
+    "optical_flow_px_to_mm": 0.74674,
+    "_optical_flow_comment": "2026-11-16 20:26 tools/calibrate_optical_flow.py：各趟直推 實際距離/累積位移長度 的平均（mm/count）。感測器高度或位置有改要重新校正。",
+    "optical_flow_sample_rate_hz": 20,
+    "yaw_source": "bno080",
+    "vision_yaw_fusion_weight": 0.0,
+    "_vision_yaw_fusion_weight_comment": "Phase 3 視覺融合權重（0=完全信任IMU，1=完全信任視覺），Phase 1+2 階段先保持 0，尚未啟用視覺校正。",
+    "flow_rotation_deg": 94.2,
+    "flow_mirror": true,
+    "yaw_sign": 1,
+    "flow_calibration_source": "data/flow_calibration/20261116-201342",
+    "_flow_rotation_deg_comment": "PMW3901 安裝角：直推時感測器（去鏡像後）量到的方向角。core/odometry_engine.sensor_to_cart 用它把感測器軸轉成車身前/左。",
+    "_flow_mirror_comment": "PMW3901 的軸是否左右顛倒（側推方向在直推方向 −90°）。",
+    "_yaw_sign_comment": "BNO080 yaw 的正負號：原地左轉（逆時針）時 yaw 增加為 +1。yaw 是相對航向（開機為 0）。",
+    "_flow_calibration_source_comment": "最後一次寫回光流參數的校正錄音，用 tools/calibrate_optical_flow.py --from-data 可以重算。"
+  },
+  "min_squal": 0,
+  "runs": [
+    {
+      "label": "run1",
+      "samples": 3786,
+      "skipped_low_squal": 0,
+      "duration_s": 248.20720148086548,
+      "path_m": 26.838265101294237,
+      "end_f_m": 0.21531411086839863,
+      "end_l_m": 0.9792057219313043,
+      "displacement_m": 1.0025986296629652,
+      "turn_deg": 12.599999999999255,
+      "gaps": 3,
+      "max_gap_s": 0.21181941032409668,
+      "squal_median": 114.0,
+      "squal_p5": 96,
+      "end_err_m": null,
+      "end_err_f_m": null,
+      "end_err_l_m": null,
+      "end_err_pct_of_path": null,
+      "distance_err_m": null,
+      "turn_err_deg": null
+    }
+  ]
+}

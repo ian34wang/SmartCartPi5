@@ -23,18 +23,25 @@ core/gate_calibration.py
     偏移量   每一趟結束時推車是停著的：進場那幾趟的結尾是「門內靜止」、出場那幾趟
              的結尾是「門外靜止」。偏移量取兩者差分中位數的中點。
     絕對門檻 這些靜止結尾裡，佔優勢那顆校正後強度的最小值 − 5 dB。
-    其餘     估計量（p75 / p90 / max）× 窗口（1.0 / 1.5 / 2.0 秒）× 連續確認筆數
-             （3 / 5 / 8）× 遲滯（2~12 dB 每 0.25）全部試，通過下列檢查的才算可行；
-             選「可行遲滯範圍最寬」的組合，取範圍中間的遲滯。一樣寬時優先保留現在
-             的設定、再來是比較短的窗口與比較少的確認筆數（判定比較快）。
+    其餘     估計量（p75 / p90 / max）× 窗口（1.0 / 1.5 / 2.0 秒）× 確認持續時間 T_c
+             （0 / 0.3 / 0.6 / 1.0 秒）× 遲滯（2~12 dB 每 0.25）全部試，通過下列檢查的
+             才算可行；選「可行遲滯範圍最寬」的組合，取範圍中間的遲滯。一樣寬時優先保留
+             現在的設定、再來是比較短的窗口與比較短的 T_c（判定比較快）。確認筆數固定用
+             現在的設定（gate_min_confirm_samples），持續時間才是決定性的那一個——
+             理由見 core/landmark_correction.GateCrossingDetector 的第 4 點。
 
 檢查（整段錄音照時間順序一次重播，狀態會一路延續，跟實際執行一模一樣）：
     1. 每一趟都剛好判出一次對的事件（進場那趟 entering、出場那趟 exiting），
-       而且發生在這一趟開始之後、結束後 (窗口 + 1) 秒以內（容許濾波延遲）
+       而且發生在這一趟開始之後、結束後 (窗口 + T_c + 1) 秒以內（容許濾波延遲）
     2. 走過門口的這段期間沒有任何多餘的事件
     3. 停在門檻線那 20 秒：最多一次事件（剛停下時判定可能還在跟上），不能來回跳；
        停在店內深處那 20 秒：不能判成出場，也不能來回跳
     4. 以上在門內那顆偏移量 ±2 dB 時也都要成立（模擬校正之後的環境漂移）
+    5. 執行期記錄（data/gate_logs/，同一個佈署之後錄的）重播：不能「來回跳」——相鄰兩個
+       相反的事件間隔不到 3 秒（core/gate_model.flaps）。執行期記錄沒有標準答案，但來回跳
+       不需要答案也知道是錯的；這一條補的是校正錄音錄不到的情況：推車在門口附近晃、
+       有人經過、停下來講話。2026-11-16 的校正 8 趟全對、停門檻線 0 次誤判，實際使用時
+       卻出現「進場 0.5 秒後又出場」，就是因為校正錄音裡沒有這種狀況。
 
 另外保留「5 個位置的靜止剖面」（survey）：不挑參數，只用來看佈署的形狀——門外、
 門內的平台夠不夠寬、門檻線附近雜訊多大，調擺法的時候用。
@@ -46,11 +53,11 @@ import statistics
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from core.gate_model import Evaluation, GateDecision, GateParams, Observation, evaluate
+from core.gate_model import Evaluation, GateDecision, GateParams, Observation, decide, evaluate, flaps
 
 ESTIMATORS = ("p75", "p90", "max")
 WINDOWS = (1.0, 1.5, 2.0)
-CONFIRMS = (3, 5, 8)
+CONFIRM_SECS = (0.0, 0.3, 0.6, 1.0)
 H_MIN, H_MAX, H_STEP = 2.0, 12.0, 0.25
 DRIFT_DB = 2.0
 ABS_MARGIN_DB = 5.0
@@ -119,7 +126,7 @@ def check_session(evals: Sequence[Evaluation], params: GateParams, session: Sess
     """照時間順序重播一次（GateDecision，跟執行期同一份程式），邊走邊檢查。"""
     passes = session.passes
     quiet = session.quiet
-    grace = params.smoothing_sec + 1.0
+    grace = params.smoothing_sec + params.min_confirm_sec + 1.0
     zone_end = passes[-1].t1 + grace if passes else float("-inf")
     dec = GateDecision(params)
     idx = 0
@@ -237,13 +244,15 @@ def _runs(values: List[float]) -> Optional[Tuple[float, float]]:
 class Candidate:
     estimator: str
     window: float
-    confirm: int
+    confirm_sec: float
     offset: float
     min_crossing: float
     info: dict
     passing: List[float]
     interval: Optional[Tuple[float, float]]
     best_partial: Tuple[int, float, str]   # 不含漂移時最多判對幾趟、在哪個遲滯、卡在哪
+    log_flaps: Optional[int] = None        # 執行期記錄重播的來回跳次數（範圍中間的遲滯；沒給記錄時 None）
+    flap_blocked: int = 0                  # 錄音檢查都過、卻因為執行期記錄會來回跳而被排除的遲滯個數
 
     @property
     def width(self) -> float:
@@ -259,13 +268,21 @@ class Calibration:
     check: Optional[SessionCheck]       # 建議參數（不含漂移）的逐趟結果
     candidates: List[Candidate]
     n_passes: int
+    log_events: Optional[List[List[Tuple[float, str]]]] = None   # 建議參數重播每份執行期記錄的事件
+    base_log_events: Optional[List[List[Tuple[float, str]]]] = None  # 現在的設定重播的事件（比較用）
+
+
+def _log_flaps(log_evals: Sequence[Sequence[Evaluation]], params: GateParams) -> int:
+    return sum(len(flaps(decide(ev, params).events)) for ev in log_evals)
 
 
 def calibrate_session(session: Session, base: GateParams,
                       estimators: Sequence[str] = ESTIMATORS,
                       windows: Sequence[float] = WINDOWS,
-                      confirms: Sequence[int] = CONFIRMS,
+                      confirm_secs: Sequence[float] = CONFIRM_SECS,
+                      logs: Sequence[Sequence[Observation]] = (),
                       progress=None) -> Calibration:
+    """logs：同一個佈署之後的執行期記錄（每份一串觀測），用來排除會來回跳的參數（檢查第 5 條）。"""
     n = len(session.passes)
     if n < 2 or not any(m.kind == "entering" for m in session.passes) \
             or not any(m.kind == "exiting" for m in session.passes):
@@ -273,7 +290,7 @@ def calibrate_session(session: Session, base: GateParams,
     base = replace(base, exit_yaw_deg=None)  # 校正時不做航向驗證
     ests = list(dict.fromkeys([base.estimator, *estimators]))
     wins = sorted({round(base.smoothing_sec, 3), *windows})
-    confs = sorted({base.min_confirm_samples, *confirms})
+    confs = sorted({round(base.min_confirm_sec, 3), *confirm_secs})
     hs = [round(H_MIN + i * H_STEP, 2) for i in range(int(round((H_MAX - H_MIN) / H_STEP)) + 1)]
 
     cands: List[Candidate] = []
@@ -287,6 +304,7 @@ def calibrate_session(session: Session, base: GateParams,
                 progress(done, total)
             p = replace(base, estimator=est, smoothing_sec=w)
             evals = evaluate(session.obs, p)
+            log_evals = [evaluate(lg, p) for lg in logs]
             offset, mc, info = offset_and_threshold(evals, session)
             if offset is None:
                 if info["kind"] == "reversed":
@@ -294,40 +312,57 @@ def calibrate_session(session: Session, base: GateParams,
                 error = info["error"]
                 continue
             for conf in confs:
-                pc = replace(p, min_confirm_samples=conf)
+                pc = replace(p, min_confirm_sec=conf)
                 passing: List[float] = []
                 best = (-1, 0.0, "")
+                blocked = 0
                 for h in hs:
                     ck = check_session(evals, _with(pc, offset, h, mc), session)
                     if ck.correct > best[0]:
                         best = (ck.correct, h, ck.reason)
                     if not ck.passed:
                         continue
-                    if all(check_session(evals, _with(pc, offset + d, h, mc), session).passed
-                           for d in (-DRIFT_DB, DRIFT_DB)):
-                        passing.append(h)
-                cands.append(Candidate(est, w, conf, offset, mc, info, passing, _runs(passing), best))
+                    if not all(check_session(evals, _with(pc, offset + d, h, mc), session).passed
+                               for d in (-DRIFT_DB, DRIFT_DB)):
+                        continue
+                    if log_evals and _log_flaps(log_evals, _with(pc, offset, h, mc)) > 0:
+                        blocked += 1
+                        continue
+                    passing.append(h)
+                iv = _runs(passing)
+                lf = None
+                if log_evals:
+                    h_mid = (iv[0] + iv[1]) / 2 if iv else best[1]
+                    lf = _log_flaps(log_evals, _with(pc, offset, h_mid, mc))
+                cands.append(Candidate(est, w, conf, offset, mc, info, passing, iv, best, lf, blocked))
 
     if not cands:
         return Calibration(error or "資料不足。", "錯誤", None, None, None, [], n)
 
     def pref(c: Candidate):
         same = (c.estimator == base.estimator) + (abs(c.window - base.smoothing_sec) < 1e-9) + \
-               (c.confirm == base.min_confirm_samples)
-        return (round(c.width, 2), same, -c.window, -c.confirm)
+               (abs(c.confirm_sec - base.min_confirm_sec) < 1e-9)
+        return (round(c.width, 2), same, -c.window, -c.confirm_sec)
 
     feasible = [c for c in cands if c.interval is not None]
     if not feasible:
-        return Calibration(None, "不夠", None, None, None, cands, n)
+        cal = Calibration(None, "不夠", None, None, None, cands, n)
+        if logs:
+            cal.base_log_events = [decide(evaluate(lg, base), base).events for lg in logs]
+        return cal
     chosen = max(feasible, key=pref)
     h = round((chosen.interval[0] + chosen.interval[1]) / 2.0 / H_STEP) * H_STEP
     params = _with(replace(base, estimator=chosen.estimator, smoothing_sec=chosen.window,
-                           min_confirm_samples=chosen.confirm),
+                           min_confirm_sec=chosen.confirm_sec),
                    round(chosen.offset, 1), round(h, 2), round(chosen.min_crossing, 1))
     evals = evaluate(session.obs, params)
     check = check_session(evals, params, session, early_exit=False)
     verdict = "可以" if chosen.width >= GOOD_WIDTH_DB else "勉強"
-    return Calibration(None, verdict, params, chosen, check, cands, n)
+    cal = Calibration(None, verdict, params, chosen, check, cands, n)
+    if logs:
+        cal.log_events = [decide(evaluate(lg, params), params).events for lg in logs]
+        cal.base_log_events = [decide(evaluate(lg, base), base).events for lg in logs]
+    return cal
 
 
 # ======================================================================

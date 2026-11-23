@@ -8,6 +8,7 @@
     python3 tests/test_gate_model.py
 """
 import math
+from dataclasses import replace
 import random
 import sys
 import tempfile
@@ -116,6 +117,38 @@ a = [(5.0, IN, -60.0, None), (6.0, OUT, -61.0, None)]
 b = [(100.0, IN, -50.0, None), (100.5, OUT, -52.0, None)]
 c = concat([a, b], gap_sec=0.1)
 check([round(o[0], 6) for o in c] == [0.0, 1.0, 1.1, 1.6], "時間平移正確", c)
+
+print("\n[6] 確認持續時間 min_confirm_sec：一筆強封包撐住窗口時，看筆數會確認、看時間不會")
+from core.gate_model import flaps, replay  # noqa: E402
+from core.landmark_correction import GateCrossingDetector  # noqa: E402
+
+d0 = GateCrossingDetector(hysteresis_dbm=4.0, min_confirm_samples=3)
+d1 = GateCrossingDetector(hysteresis_dbm=4.0, min_confirm_samples=3, min_confirm_sec=0.5)
+for det in (d0, d1):
+    for i in range(10):
+        det.add_sample(-50.0, -60.0, i * 0.1)            # 確認在門內
+ev0 = [d0.add_sample(-60.0, -50.0, 1.0 + i * 0.07) for i in range(4)]   # 0.21 秒、4 筆偏門外
+ev1 = [d1.add_sample(-60.0, -50.0, 1.0 + i * 0.07) for i in range(4)]
+check("exiting" in ev0, "只看筆數：0.2 秒內 3 筆就確認出場", ev0)
+check(not any(ev1), "要持續 0.5 秒：0.2 秒還不確認", ev1)
+ev1b = [d1.add_sample(-60.0, -50.0, 1.28 + i * 0.07) for i in range(6)]   # 到 1.63 秒
+check(ev1b.count("exiting") == 1 and ev1b.index("exiting") == 4,
+      "從第一筆（1.00 秒）算起滿 0.5 秒（1.56 秒那筆）才確認，而且只報一次", ev1b)
+d1.add_sample(-55.0, -55.0, 2.0)                           # 掉回模糊區間 → 重新計時
+ev1c = [d1.add_sample(-50.0, -60.0, 2.1 + i * 0.1) for i in range(5)]   # 2.1~2.5：0.4 秒
+check(not any(ev1c), "中斷之後從頭計時：新一輪 0.4 秒還不確認", ev1c)
+check(d1.add_sample(-50.0, -60.0, 2.6) == "entering", "新一輪第一筆（2.1 秒）算起滿 0.5 秒才確認進場")
+
+pt = replace(PARAMS, min_confirm_sec=0.6)
+obs6 = walk(seed=8)
+check(run_online(obs6, pt) == replay(obs6, pt).events, "有設持續時間時，執行期 GateMonitor 與重播仍然一模一樣")
+check(GateParams.from_landmark_config({"gate_beacon_pair": {"inside_id": IN, "outside_id": OUT},
+                                       "gate_min_confirm_sec": 0.6}).min_confirm_sec == 0.6,
+      "config.json 的 gate_min_confirm_sec 讀得到")
+check(GateParams.from_landmark_config({"gate_beacon_pair": {"inside_id": IN, "outside_id": OUT}}).min_confirm_sec == 0,
+      "config 沒設時是 0（舊版行為）")
+check(flaps([(0.0, "entering"), (0.5, "exiting"), (10.0, "entering"), (14.0, "exiting")]) == [(0.0, 0.5)],
+      "flaps：只算間隔不到 3 秒的相反事件")
 
 print("\n" + "=" * 60)
 if FAILURES:

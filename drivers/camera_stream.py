@@ -50,7 +50,8 @@ class CameraStream:
     """用 picamera2 在背景執行緒持續擷取影格，主執行緒用 get_latest_frame() 取最新一張。
 
     畸變校正是選用的：如果提供 calibration_file 且檔案存在，每一影格會先套用
-    cv2.undistort() 再存進 buffer；沒有校正檔就直接輸出原始影格（並記一次警告）。
+    cv2.undistort() 再存進 buffer；給了 calibration_file 但檔案不在，輸出原始影格並記一次警告。
+    calibration_file=None 是刻意要原始影格（例如 drivers/front_camera.py 縮小後自己去畸變），不警告。
 
     注意色彩通道順序：目前程式碼假設 get_latest_frame() 回傳的 numpy array可以
     直接餵給 cv2 系列函式（cv2.imshow、cv2.cvtColor(..., COLOR_BGR2GRAY) 等）用，
@@ -84,6 +85,7 @@ class CameraStream:
         self._camera_matrix: Optional[np.ndarray] = None
         self._dist_coeffs: Optional[np.ndarray] = None
         self._undistort_warned = False
+        self._calibration_requested = bool(calibration_file)
         if calibration_file:
             self._load_calibration(Path(calibration_file))
 
@@ -92,6 +94,7 @@ class CameraStream:
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._latest_frame: Optional[np.ndarray] = None
+        self._latest_time: Optional[float] = None   # 最新一張影格擷取完成的 time.monotonic()
         self._frame_ready = threading.Event()
 
     # ------------------------------------------------------------------
@@ -110,7 +113,7 @@ class CameraStream:
 
     def _undistort(self, frame: np.ndarray) -> np.ndarray:
         if self._camera_matrix is None or self._dist_coeffs is None:
-            if not self._undistort_warned:
+            if self._calibration_requested and not self._undistort_warned:
                 logger.warning("尚未載入相機內參，輸出未校正影格（影響消失點/視覺定位精度）")
                 self._undistort_warned = True
             return frame
@@ -158,7 +161,17 @@ class CameraStream:
             frame = self._undistort(frame)
             with self._lock:
                 self._latest_frame = frame
+                self._latest_time = time.monotonic()
             self._frame_ready.set()
+
+    def frame_age(self) -> Optional[float]:
+        """最新一張影格距今幾秒；還沒拿到任何影格回 None。
+
+        get_latest_frame() 只要拿過一張就會一直回傳東西——背景執行緒如果因為相機
+        斷線而結束，回傳的會是同一張舊影格。要確認影像還是活的，看這個值。
+        """
+        with self._lock:
+            return None if self._latest_time is None else time.monotonic() - self._latest_time
 
     def get_latest_frame(self, timeout: Optional[float] = 1.0) -> Optional[np.ndarray]:
         """取得目前最新的一張影格（已套用畸變校正，如果有校正檔的話）。"""

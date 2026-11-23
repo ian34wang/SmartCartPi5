@@ -100,7 +100,7 @@ def patch_nth_open_tags(html, tag_pattern, injections):
 
 
 def remove_balanced_div(html, start_marker, count=1):
-    """移除從 `start_marker`（例如 '<div class="pending-box">'）開始、一路配
+    r"""移除從 `start_marker`（例如 '<div class="pending-box">'）開始、一路配
     對到它自己真正的結束 `</div>` 為止的整段內容（含頭尾標籤本身），用「數
     開合標籤層數」而不是固定寫死「後面跟著幾個 `</div>`」——原本
     `patch_shopping()` 是用 `r'...</div>\s*</div>\s*</div>'` 這種寫死三層
@@ -340,6 +340,19 @@ def patch_navigation(body):
         '<button class="close-btn">✕ 關閉導航</button>',
         '<button class="close-btn" onclick="APP.showTab(\'shopping\')">✕ 關閉導航</button>',
     )
+    # 2026-11-23：從靜態 mockup 改成真的——店面平面圖（core/store_layout.py：入口長廊、定位點、
+    # 三座貨架，商品的 shelf 欄位是「貨架代號 + 角落」）。觸控螢幕沒有
+    # 鍵盤，所以不用打字搜尋，改成點商品名稱；路徑指引與地圖由 render() 依 payload.catalog 畫。
+    body = replace_balanced_div(body, '<div class="search-input">',
+                                '<div class="search-input" style="color:#1a1a1a;">點下面的商品名稱，地圖會畫出路線</div>')
+    body = replace_balanced_div(
+        body, '<div class="section">',
+        '<div class="section">\n  <div class="section-title">目前導航路徑指引</div>\n'
+        '  <div id="f-nav-info"></div>\n  <div id="f-nav-list" class="nav-list"></div>\n'
+        '  <div class="nav-pos"><span id="f-nav-pos"></span>'
+        '<button class="nav-anchor-btn" onclick="APP.callApi(\'anchor_here\')">我在定位點</button></div>\n</div>')
+    body = must_replace(body, "賣場平面圖（最短路徑）", "賣場平面圖")
+    body = replace_balanced_div(body, '<div class="map-box">', '<div class="map-box" id="f-nav-map"></div>')
     body = patch_nth_open_tags(
         body,
         r'<div class="navitem( active)?( nav-badge)?">',
@@ -359,6 +372,10 @@ def patch_promotions(body):
         '<button class="back-btn">← 返回購物車</button>',
         '<button class="back-btn" onclick="APP.showTab(\'shopping\')">← 返回購物車</button>',
     )
+    # 2026-11-23：卡片改由 render() 依 payload.promotions 產生（特價、搭配、依偏好與預算推薦），
+    # 不再是寫死的範例。
+    body = must_replace(body, "即時專屬優惠與綠色惜食推薦", "專屬優惠與推薦")
+    body = replace_balanced_div(body, '<div class="cards">', '<div class="cards" id="f-promo-cards" style="overflow:auto;"></div>')
     body = patch_nth_open_tags(
         body,
         r'<div class="navitem( active)?( nav-badge)?">',
@@ -565,8 +582,30 @@ TEMPLATE = r"""<!doctype html>
     position:absolute; left:50%; bottom:40px; transform:translateX(-50%); z-index:99999;
     background:#1a1a1a; color:#fff; padding:12px 20px; border-radius:20px; font-size:16px;
     max-width:80%; text-align:center; opacity:0; transition:opacity .2s;
+    /* 透明時也蓋在底部導覽列上，會吃掉觸控（2026-11-23 測試發現）：提示本來就不用點 */
+    pointer-events:none;
   }
   #f-toast.show { opacity:1; }
+
+  /* 健康護照、錢包管家、找貨、優惠（2026-11-23） */
+  .health-warn { margin-top:6px; padding:6px 10px; border:2px solid #1a1a1a; border-radius:6px; background:#fff3cd;
+                 font-size:17px; font-weight:700; }
+  .item-sub { font-size:15px; color:#777; margin-top:2px; }
+  .item-sub.warn { color:#a15c00; font-weight:700; }
+  .price-old { text-decoration:line-through; color:#999; margin-right:6px; font-size:15px; }
+  .over-budget { background:#1a1a1a !important; }
+  #screen-navigation .nav-list { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; max-height:170px; overflow:auto; }
+  #screen-navigation .nav-chip { border:2px solid #1a1a1a; border-radius:18px; padding:8px 14px; font-size:18px; background:#fff; }
+  #screen-navigation .nav-chip.selected { background:#1a1a1a; color:#fff; }
+  #screen-navigation .nav-chip.warn { border-style:dashed; }
+  #screen-navigation .map-box { display:block !important; padding:4px; min-height:0; }
+  #screen-navigation .map-box svg { width:100%; height:100%; display:block; }
+  #screen-navigation .nav-instruction { font-size:24px !important; }
+  #screen-navigation .nav-pos { display:flex; align-items:center; justify-content:space-between; gap:10px;
+                                margin-top:10px; font-size:17px; color:#555; }
+  #screen-navigation .nav-anchor-btn { border:2px solid #1a1a1a; border-radius:8px; background:#fff; font-family:inherit;
+                                       font-size:18px; padding:8px 14px; white-space:nowrap; }
+  #screen-promotions .card-health { margin-top:6px; font-size:16px; color:#a15c00; font-weight:700; }
 
   /* 有待處理的協助請求時一直顯示，直到店員刷工作證處理掉 */
   #f-assist-banner {
@@ -758,6 +797,8 @@ TEMPLATE = r"""<!doctype html>
   }
 
   // ------------------------------------------------------------------
+  function money(v) { return "$" + Math.round(v); }
+
   function renderCartItems(containerId, items, withIndex) {
     var el = document.getElementById(containerId);
     if (!el) return;
@@ -767,7 +808,132 @@ TEMPLATE = r"""<!doctype html>
     }
     el.innerHTML = items.map(function (it, i) {
       var label = (withIndex ? (i + 1) + ". " : "") + esc(it.name) + (it.quantity > 1 ? " ×" + it.quantity : "");
-      return '<div class="item-row"><span>' + label + '</span><span>$' + it.subtotal.toFixed(0) + '</span></div>';
+      var price = (it.list_subtotal > it.subtotal + 0.005 ? '<span class="price-old">' + money(it.list_subtotal) + '</span>' : "") +
+        money(it.subtotal);
+      var sub = it.health ? '<div class="item-sub warn">⚠ 健康護照：' + esc(it.health) + '</div>' : "";
+      return '<div class="item-row" style="flex-wrap:wrap;"><span style="flex:1;">' + label + sub + '</span><span>' + price + '</span></div>';
+    }).join("");
+  }
+
+  // 找貨：店面平面圖（payload.store，core/store_layout.py）。座標單位是「格」，原點在門的正中間，
+  // y 往店裡；畫面上門在下面。路線、說明文字、停車點都是 Python 算好的（catalog[].route/instruction/spot）。
+  var navTarget = null;
+  var MAP_S = 56, MAP_PAD = 0.6;
+  function mapBox(st) {
+    return { x0: Math.min(st.hall[0], st.corridor[0]) - MAP_PAD, x1: Math.max(st.hall[1], st.corridor[1]) + MAP_PAD,
+             y0: Math.min(st.hall[2], st.corridor[2]) - MAP_PAD - 0.4, y1: Math.max(st.hall[3], st.corridor[3]) + MAP_PAD };
+  }
+  function mapPt(b, x, y) { return [((x - b.x0) * MAP_S).toFixed(1), ((b.y1 - y) * MAP_S).toFixed(1)]; }
+  function posText(cp) {
+    var st = (cp && cp.status) || "none";
+    if (st === "anchored") return "● 推車位置：已在定位點對齊";
+    if (st === "rough") return "◌ 推車位置：約略（推到定位點，相機看到標記就會對齊）";
+    return "推車位置：還沒對齊（推到定位點讓相機看到標記，或按右邊按鈕）";
+  }
+  function setPos(cp) {
+    if (lastState) lastState.cart_pos = cp;
+    var label = document.getElementById("f-nav-pos");
+    if (label) label.textContent = posText(cp);
+    var dot = document.getElementById("f-cart-dot");
+    var st = lastState && lastState.store;
+    if (!dot || !st) return;
+    if (!cp || cp.x === undefined) { dot.setAttribute("visibility", "hidden"); return; }
+    var q = mapPt(mapBox(st), cp.x, cp.y);
+    dot.setAttribute("cx", q[0]); dot.setAttribute("cy", q[1]);
+    dot.setAttribute("fill", cp.status === "anchored" ? "#1a1a1a" : "#fff");
+    dot.setAttribute("visibility", "visible");
+  }
+  function mapSvg(st, located, target) {
+    var b = mapBox(st), W = (b.x1 - b.x0) * MAP_S, H = (b.y1 - b.y0) * MAP_S;
+    var P = function (x, y) { return mapPt(b, x, y).join(","); };
+    var h = st.hall, c = st.corridor, out = [];
+    out.push('<svg viewBox="0 0 ' + W.toFixed(0) + ' ' + H.toFixed(0) + '" preserveAspectRatio="xMidYMid meet">');
+    out.push('<polygon points="' + [P(h[0], h[2]), P(c[0], h[2]), P(c[0], c[2]), P(c[1], c[2]), P(c[1], h[2]),
+      P(h[1], h[2]), P(h[1], h[3]), P(h[0], h[3])].join(" ") + '" fill="#fff" stroke="#1a1a1a" stroke-width="3"/>');
+    var d0 = mapPt(b, c[0], c[2]), d1 = mapPt(b, c[1], c[2]);
+    out.push('<line x1="' + d0[0] + '" y1="' + d0[1] + '" x2="' + d1[0] + '" y2="' + d1[1] + '" stroke="#1a1a1a" stroke-width="9"/>');
+    var dl = mapPt(b, (c[0] + c[1]) / 2, c[2] - 0.45);
+    out.push('<text x="' + dl[0] + '" y="' + dl[1] + '" font-size="19" text-anchor="middle" fill="#1a1a1a">門（閘門）</text>');
+    var cl = mapPt(b, (c[0] + c[1]) / 2, (c[2] + c[3]) / 2);
+    out.push('<text x="' + cl[0] + '" y="' + cl[1] + '" font-size="18" text-anchor="middle" fill="#777">長廊</text>');
+    st.shelves.forEach(function (sh) {
+      var r = sh.rect, tl = mapPt(b, r[0], r[3]);
+      out.push('<rect x="' + tl[0] + '" y="' + tl[1] + '" width="' + ((r[1] - r[0]) * MAP_S).toFixed(1) + '" height="' +
+        ((r[3] - r[2]) * MAP_S).toFixed(1) + '" fill="#e8e8e8" stroke="#1a1a1a" stroke-width="2"/>');
+      var mid = mapPt(b, (r[0] + r[1]) / 2, (r[2] + r[3]) / 2);
+      out.push('<text x="' + mid[0] + '" y="' + mid[1] + '" font-size="20" font-weight="700" text-anchor="middle" dominant-baseline="middle">' + esc(sh.name) + '</text>');
+    });
+    if (target && target.route && target.route.length > 1) {
+      out.push('<polyline points="' + target.route.map(function (q) { return P(q[0], q[1]); }).join(" ") +
+        '" fill="none" stroke="#1a1a1a" stroke-width="3" stroke-dasharray="9 7"/>');
+    }
+    var counts = {};
+    located.forEach(function (p) { counts[p.shelf] = (counts[p.shelf] || 0) + 1; });
+    located.forEach(function (p) {
+      if (counts[p.shelf] < 0 || !p.spot) return;
+      var isT = target && target.shelf === p.shelf, q = mapPt(b, p.spot[0], p.spot[1]);
+      out.push('<circle cx="' + q[0] + '" cy="' + q[1] + '" r="' + (isT ? 15 : 10) + '" fill="' + (isT ? "#1a1a1a" : "#fff") +
+        '" stroke="#1a1a1a" stroke-width="2"/>');
+      out.push('<text x="' + q[0] + '" y="' + q[1] + '" font-size="' + (isT ? 15 : 12) + '" text-anchor="middle" dominant-baseline="central" fill="' +
+        (isT ? "#fff" : "#1a1a1a") + '">' + (isT ? "★" : counts[p.shelf]) + '</text>');
+      counts[p.shelf] = -1;
+    });
+    var an = st.anchor, aq = mapPt(b, an.x, an.y);
+    out.push('<rect x="' + (aq[0] - 9) + '" y="' + (aq[1] - 9) + '" width="18" height="18" fill="#fff" stroke="#1a1a1a" stroke-width="3" transform="rotate(45 ' + aq[0] + ' ' + aq[1] + ')"/>');
+    out.push('<text x="' + (+aq[0] + 16) + '" y="' + (+aq[1] + 6) + '" font-size="17" fill="#1a1a1a">' + esc(an.name) + '</text>');
+    out.push('<circle id="f-cart-dot" r="11" stroke="#1a1a1a" stroke-width="3" fill="#1a1a1a" visibility="hidden"/>');
+    out.push('</svg>');
+    return out.join("");
+  }
+  function renderNav(payload) {
+    var info = document.getElementById("f-nav-info");
+    var list = document.getElementById("f-nav-list");
+    var map = document.getElementById("f-nav-map");
+    if (!info || !list || !map || !payload.store) return;
+    var cat = payload.catalog || [];
+    var located = cat.filter(function (p) { return p.shelf; });
+    var target = null;
+    located.forEach(function (p) { if (p.barcode === navTarget) target = p; });
+    if (target) {
+      info.innerHTML =
+        '<div class="nav-line">目標商品 → ' + esc(target.name) + "　" + money(target.price) + '</div>' +
+        '<div class="nav-line">商品位置 → ' + esc(target.shelf_text) + "（" + esc(target.shelf) + "）" +
+        (target.in_cart ? "（已在購物車）" : "") + '</div>' +
+        '<div class="nav-instruction">' + esc(target.instruction) + '</div>' +
+        (target.health ? '<div class="health-warn">⚠ 健康護照：' + esc(target.health) + '</div>' : "");
+    } else {
+      info.innerHTML = '<div class="muted">' + (located.length ? "點下面的商品名稱，地圖會畫出從門口過去的路線" :
+        "商品還沒設定貨架位置（python3 -m tools.product_admin meta &lt;條碼&gt;）") + '</div>';
+    }
+    list.innerHTML = located.map(function (p) {
+      var cls = "nav-chip" + (p.barcode === navTarget ? " selected" : "") + (p.health ? " warn" : "");
+      return '<div class="' + cls + '" onclick="APP.navTo(\'' + esc(p.barcode) + '\')">' +
+        (p.health ? "⚠ " : "") + esc(p.name) + " · " + esc(p.shelf_text) + '</div>';
+    }).join("");
+    map.innerHTML = mapSvg(payload.store, located, target);
+    setPos(payload.cart_pos);
+  }
+  function navTo(barcode) {
+    navTarget = barcode;
+    if (lastState) renderNav(lastState);
+    showTab("navigation");
+  }
+
+  function renderPromos(payload) {
+    var el = document.getElementById("f-promo-cards");
+    if (!el) return;
+    var cards = payload.promotions || [];
+    if (!cards.length) {
+      el.innerHTML = '<div class="card"><div class="card-body">目前沒有優惠或推薦。店家可以用 ' +
+        'python3 -m tools.product_admin meta 幫商品設定折扣、搭配與貨架位置。</div></div>';
+      return;
+    }
+    el.innerHTML = cards.map(function (c) {
+      return '<div class="card"><div class="card-title">' + esc(c.title) + '</div>' +
+        '<div class="card-body">' + esc(c.body) + '</div>' +
+        (c.health ? '<div class="card-health">⚠ 健康護照：' + esc(c.health) + '</div>' : "") +
+        (c.can_nav ? '<div class="card-cta" onclick="APP.navTo(\'' + esc(c.barcode) + '\')">導航去貨架 →</div>' : "") +
+        '</div>';
     }).join("");
   }
 
@@ -851,10 +1017,16 @@ TEMPLATE = r"""<!doctype html>
     }
     var fillEl = document.getElementById("f-progress-fill");
     if (fillEl) {
-      var pct = payload.budget ? Math.min(100, (payload.cart_total / payload.budget) * 100) : 0;
+      var rawPct = payload.budget ? (payload.cart_total / payload.budget) * 100 : 0;
+      var pct = Math.min(100, rawPct);
       fillEl.style.width = pct.toFixed(0) + "%";
+      fillEl.classList.toggle("over-budget", rawPct > 100);
       var pctEl = document.getElementById("f-progress-pct");
-      if (pctEl) pctEl.textContent = payload.budget ? (pct.toFixed(0) + "% 已使用") : "無預算上限";
+      if (pctEl) {
+        if (!payload.budget) pctEl.textContent = "無預算上限";
+        else if (rawPct > 100) pctEl.textContent = "超出預算 " + money(payload.cart_total - payload.budget);
+        else pctEl.textContent = rawPct.toFixed(0) + "% 已使用，剩 " + money(payload.budget - payload.cart_total);
+      }
     }
     var countEl = document.getElementById("f-cart-count-line");
     if (countEl) countEl.textContent = "購物車 = " + payload.cart_count + " 件";
@@ -864,7 +1036,12 @@ TEMPLATE = r"""<!doctype html>
 
     var coTotals = document.getElementById("f-co-totals");
     if (coTotals) {
-      coTotals.innerHTML = '<div class="final">應付金額 = $' + payload.cart_total.toFixed(0) + '</div>';
+      var saved = (payload.cart_list_total || payload.cart_total) - payload.cart_total;
+      coTotals.innerHTML =
+        (saved > 0.005 ? '<div>商品原價 = ' + money(payload.cart_list_total) + '</div><div>特價折抵 = −' + money(saved) + '</div>' : "") +
+        '<div class="final">應付金額 = ' + money(payload.cart_total) + (saved > 0.005 ? "（已為您省 " + money(saved) + "）" : "") + '</div>' +
+        (payload.budget ? '<div>' + (payload.budget_remaining >= 0 ? "預算剩 " + money(payload.budget_remaining) :
+          "超出預算 " + money(-payload.budget_remaining)) + '</div>' : "");
     }
 
     var pendingWrap = document.getElementById("f-pending-box-wrap");
@@ -879,10 +1056,20 @@ TEMPLATE = r"""<!doctype html>
           '<div class="pulse-row"><div class="pulse-dot"></div>偵測中 ... 進場前掃碼不會被受理</div></div>';
       } else if (payload.pending_item_barcode) {
         var modeText = payload.pending_item_mode === "remove" ? "移除購物車" : "加入購物車";
+        var pi = payload.pending_item || {name: payload.pending_item_barcode};
+        var priceLine = "";
+        if (pi.price != null) {
+          priceLine = '<div class="pending-line">' +
+            (pi.list_price > pi.price + 0.005 ? '<span class="price-old">' + money(pi.list_price) + '</span>' : "") +
+            money(pi.price) + '　→ ' + (payload.pending_item_mode === "remove" ? "移除" : "加入") + '後總額 ' + money(pi.total_after) +
+            (pi.remaining_after != null ? (pi.remaining_after >= 0 ? "（預算剩 " + money(pi.remaining_after) + "）" :
+              "（超出預算 " + money(-pi.remaining_after) + "）") : "") + '</div>';
+        }
         pendingWrap.innerHTML =
           '<div class="pending-box">' +
           '<div class="mode-badge">系統判定：' + modeText + '</div>' +
-          '<div class="pending-line">已掃描條碼：' + esc(payload.pending_item_barcode) + '</div>' +
+          '<div class="pending-line">' + esc(pi.name) + '</div>' + priceLine +
+          (pi.health ? '<div class="health-warn">⚠ 健康護照：' + esc(pi.health) + '</div>' : "") +
           '<div class="pulse-row"><div class="pulse-dot"></div>核對中 ...　目前重量 ' +
           (payload.current_weight_g != null ? payload.current_weight_g.toFixed(1) + 'g' : '（無讀數）') + '</div>' +
           '</div>';
@@ -896,6 +1083,9 @@ TEMPLATE = r"""<!doctype html>
         pendingWrap.innerHTML = "";
       }
     }
+
+    renderNav(payload);
+    renderPromos(payload);
 
     // 重量異常
     var waFacts = document.getElementById("f-wa-facts");
@@ -915,7 +1105,9 @@ TEMPLATE = r"""<!doctype html>
     var waStaff = document.getElementById("f-wa-staff");
     if (waStaff) {
       waStaff.textContent = payload.staff_pending === "rezero" ?
-        "已送出歸零申請：等待店員刷工作證確認（確認後以目前重量為新基準）" : "";
+        "已送出歸零申請：等待店員刷工作證確認（確認後以目前重量為新基準）" :
+        payload.staff_pending === "void" ?
+        "已送出放棄申請：這次是沒掃碼的重量變化，等待店員刷工作證確認" : "";
     }
 
     // 我的
@@ -1013,8 +1205,8 @@ TEMPLATE = r"""<!doctype html>
     callApi: callApi, showTab: showTab, toast: toast, toggleDevPanel: toggleDevPanel,
     wizardToggle: wizardToggle, wizardSetDiet: wizardSetDiet,
     budgetPick: budgetPick, confirmBudget: confirmBudget, selectPay: selectPay,
-    confirmPayment: confirmPayment, profileCustomBudget: profileCustomBudget,
-    render: render,
+    confirmPayment: confirmPayment, profileCustomBudget: profileCustomBudget, navTo: navTo,
+    render: render, setPos: setPos,
   };
 })();
 </script>

@@ -40,7 +40,7 @@ IN, OUT = "GATE-INSIDE", "GATE-OUTSIDE"
 FAILURES = []
 BASE = GateParams(IN, OUT, smoothing_sec=1.0, estimator="p75", min_samples=3, min_confirm_samples=3,
                   hysteresis_dbm=4.0, min_crossing_rssi_dbm=-60.0, offsets={IN: 0.0, OUT: 0.0})
-FAST = dict(estimators=("p75", "max"), windows=(1.0, 1.5), confirms=(3, 5))   # 測試用的小網格
+FAST = dict(estimators=("p75", "max"), windows=(1.0, 1.5), confirm_secs=(0.0, 0.6))   # 測試用的小網格
 
 
 def check(cond, label, extra=""):
@@ -287,6 +287,57 @@ try:
 finally:
     builtins.input, tool.HOLD_SEC = real_input, real_hold
     live.stop_ev.set()
+
+print("\n[9] 執行期記錄：校正錄音錄不到的「停在門內、偶爾一筆很強的門外封包」會來回跳，要被排除")
+from core.gate_calibration import _log_flaps  # noqa: E402
+from core.gate_model import evaluate, flaps, replay  # noqa: E402
+
+
+def spiky_log(seed=11, minutes=1.5, spike_every=4.0, spike_db=18.0):
+    """推車從門外推進來，停在門內 1 m；門外那顆每隔幾秒有一筆特別強的封包（反射、有人經過）。"""
+    rnd = random.Random(seed)
+    obs = []
+    dur = minutes * 60
+    for bid in (IN, OUT):
+        t = rnd.random() * 0.1
+        next_spike = 8.0
+        while t < dur:
+            x = -2.0 + 3.0 * min(t / 4.0, 1.0)
+            li, lo = levels(x)
+            v = (li if bid == IN else lo) + rnd.gauss(0, 1.5) - (10 if rnd.random() < 0.2 else 0)
+            if bid == OUT and t >= next_spike:
+                v += spike_db
+                next_spike += spike_every + rnd.uniform(-1, 1)
+            obs.append((5000.0 + t, bid, float(round(v)), None))
+            t += rnd.expovariate(8.0)
+    return sorted(obs)
+
+
+log = spiky_log()
+grid = dict(estimators=("p75", "max"), windows=(1.0,), confirm_secs=(0.0, 0.3, 0.6, 1.0))
+c_no = calibrate_session(sess, BASE, **grid)
+c_log = calibrate_session(sess, BASE, logs=[log], **grid)
+mx0 = replace(BASE.with_offset_inside(-3.0), estimator="max", smoothing_sec=1.0, min_confirm_sec=0.0, hysteresis_dbm=5.0)
+check(len(flaps(replay(log, mx0).events)) > 0, "這份記錄用 max / 不看時間會來回跳（檢查真的有作用）",
+      replay(log, mx0).events[:6])
+check(c_log.params is not None and c_log.check.passed, "加上記錄之後仍然挑得出參數、錄音 8 趟全對",
+      (c_log.verdict, c_log.error))
+check(len(flaps(replay(log, c_log.params).events)) == 0, "挑出的參數重播這份記錄沒有來回跳",
+      (c_log.params, replay(log, c_log.params).events[:6]))
+check(c_log.log_events is not None and all(len(flaps(e)) == 0 for e in c_log.log_events),
+      "結果裡記下建議參數重播每份記錄的事件")
+blocked = [c for c in c_log.candidates if c.flap_blocked > 0]
+check(any(c.estimator == "max" and c.confirm_sec < 1.0 for c in blocked),
+      "max 加上短確認時間的組合有遲滯值因為來回跳被排除", [(c.estimator, c.confirm_sec, c.flap_blocked) for c in blocked])
+mx1 = replace(mx0, min_confirm_sec=1.2)
+check(len(flaps(replay(log, mx1).events)) == 0, "同樣是 max，確認時間比窗口長就不會被單一強封包騙",
+      replay(log, mx1).events[:6])
+check(_log_flaps([evaluate(log, c_log.params)], c_log.params) == 0, "_log_flaps 跟 flaps 算的一致")
+check(c_no.params is not None, "沒有記錄時照舊挑得出參數（向下相容）")
+mon = monitor_events(sess.obs, c_log.params)
+in_passes = [e for t, e in mon if sess.passes[0].t0 <= t <= sess.passes[-1].t1 + c_log.params.smoothing_sec
+             + c_log.params.min_confirm_sec + 1.0]
+check(in_passes == ["entering", "exiting"] * 4, "加了確認時間的參數交給執行期 GateMonitor，8 趟仍然進出交替", in_passes)
 
 print("\n" + "=" * 60)
 if FAILURES:

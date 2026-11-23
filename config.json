@@ -38,29 +38,42 @@
     "flush_every_n_rows": 20
   },
   "odometry": {
-    "optical_flow_px_to_mm": 1.0,
-    "_optical_flow_comment": "CALIBRATE_ME：PMW3901 每 count 位移對應實際地面移動的公釐數，跟安裝高度、感測器解析度(CPI)有關，需要用已知距離的拖曳測試實測校正。",
+    "optical_flow_px_to_mm": 0.74674,
+    "_optical_flow_comment": "2026-11-16 20:26 tools/calibrate_optical_flow.py：各趟直推 實際距離/累積位移長度 的平均（mm/count）。感測器高度或位置有改要重新校正。",
     "optical_flow_sample_rate_hz": 20,
     "yaw_source": "bno080",
     "vision_yaw_fusion_weight": 0.0,
-    "_vision_yaw_fusion_weight_comment": "Phase 3 視覺融合權重（0=完全信任IMU，1=完全信任視覺），Phase 1+2 階段先保持 0，尚未啟用視覺校正。"
+    "_vision_yaw_fusion_weight_comment": "Phase 3 視覺融合權重（0=完全信任IMU，1=完全信任視覺），Phase 1+2 階段先保持 0，尚未啟用視覺校正。",
+    "flow_rotation_deg": 94.2,
+    "flow_mirror": true,
+    "yaw_sign": 1,
+    "flow_calibration_source": "data/flow_calibration/20261116-201342",
+    "_flow_rotation_deg_comment": "PMW3901 安裝角：直推時感測器（去鏡像後）量到的方向角。core/odometry_engine.sensor_to_cart 用它把感測器軸轉成車身前/左。",
+    "_flow_mirror_comment": "PMW3901 的軸是否左右顛倒（側推方向在直推方向 −90°）。",
+    "_yaw_sign_comment": "BNO080 yaw 的正負號：原地左轉（逆時針）時 yaw 增加為 +1。yaw 是相對航向（開機為 0）。",
+    "_flow_calibration_source_comment": "最後一次寫回光流參數的校正錄音，用 tools/calibrate_optical_flow.py --from-data 可以重算。"
   },
   "weight": {
-    "hx711_offset": 0,
-    "_hx711_offset_comment": "CALIBRATE_ME：空秤時 hx711_raw 的讀數（零點偏移）。開機讀取數次原始值取平均得出。",
-    "hx711_scale": 1.0,
-    "_hx711_scale_comment": "CALIBRATE_ME：(加已知砝碼後讀數 - offset) / 已知砝碼重量(g)，用來把 ADC 差值換算成公克。",
+    "hx711_offset": -331970.43,
+    "_hx711_offset_comment": "2026-11-16 20:00 tools/calibrate_weight.py 多點最小平方的截距（空秤讀數）。只影響顯示的絕對重量，比對看的是重量變化。",
+    "hx711_scale": 397.392473,
+    "_hx711_scale_comment": "2026-11-16 20:00 tools/calibrate_weight.py 多點最小平方的斜率（count/g）。改了這個值，資料庫裡的商品標準重量要重秤。",
     "weight_match_timeout_sec": 5.0,
     "_weight_match_timeout_comment": "掃碼後等待重量變化比對的逾時秒數，超過視為 WEIGHT_MISMATCH_ERROR（core/cart_state_machine.py 的 ALERT_WEIGHT_MATCH_TIMEOUT）。",
-    "unscanned_change_threshold_g": 20.0,
-    "_unscanned_change_threshold_comment": "CALIBRATE_ME：購物中（STATE_SHOPPING）沒有待比對商品時，重量變化超過這個門檻(g)才視為『拿取/放入了東西但還沒掃碼』，進入 STATE_AWAITING_ITEM_SCAN；門檻內視為秤重雜訊或碰撞，忽略。應略大於秤重雜訊範圍，並小於最輕商品的重量。",
+    "unscanned_change_threshold_g": 10,
+    "_unscanned_change_threshold_comment": "2026-11-16 20:00 tools/calibrate_weight.py：推車震動 1.5·T_min = 2、靜止雜訊 6σ_s = 3、人為下限 T_floor = 10，取最大的（人為下限 T_floor）。推車震動是丟進 CartStateMachine 重播找的最小不誤報門檻。比這個輕的商品不掃碼放進去偵測不到。",
     "unscanned_change_timeout_sec": 8.0,
-    "_unscanned_change_timeout_comment": "進入 STATE_AWAITING_ITEM_SCAN 後，等待使用者補掃條碼的逾時秒數，超過視為『只做一半』（拿取/放入後忘記掃碼），升級為 WEIGHT_MISMATCH_ERROR（ALERT_UNSCANNED_WEIGHT_TIMEOUT）。"
+    "_unscanned_change_timeout_comment": "進入 STATE_AWAITING_ITEM_SCAN 後，等待使用者補掃條碼的逾時秒數，超過視為『只做一半』（拿取/放入後忘記掃碼），升級為 WEIGHT_MISMATCH_ERROR（ALERT_UNSCANNED_WEIGHT_TIMEOUT）。",
+    "weight_calibration_source": "data/weight_calibration/20261116-193855",
+    "_weight_calibration_source_comment": "最後一次寫回秤重參數的校正錄音，用 tools/calibrate_weight.py --from-data 加這個路徑可以重算。",
+    "settle_window_sec": 0.3,
+    "settle_band_g": 3.0,
+    "_settle_comment": "2026-11-16 20:00 tools/calibrate_weight.py：秤重比對、未掃碼偵測只用「穩定值」——最近 settle_window_sec 秒的讀數 最大−最小 ≤ settle_band_g 時取中位數（core/cart_state_machine.py 開頭有定義）。band = max(2, 6σ_s)；window 是放入錄音重播時每一趟都正常加入、之後不誤報的最小值。0 = 不等（舊版行為）。"
   },
   "landmarks": {
-    "rssi_smoothing_sec": 1.5,
+    "rssi_smoothing_sec": 1.0,
     "_rssi_smoothing_sec_comment": "RSSI 平滑窗口長度（秒）。刻意用『時間』而不是『筆數』：實測兩顆 Beacon 的廣播間隔差了 3 倍，固定筆數會讓慢的那顆涵蓋 3 倍的時間、系統性落後，而落後最嚴重的時候正好是推車穿越門口、訊號快速變化的那幾秒。窗口長度直接等於判定延遲：p75 這類取上包絡線的估計量在訊號下降時會黏在窗口內最強（最舊）的那筆，所以延遲約等於一整個窗口長度，換算成距離就是『推車速度 × 窗口秒數』（1 m/s 配 0.4 秒 = 晚 40 cm）。所以 smoothing_sec ≈ 可接受的判定延遲距離 ÷ 推車速度。縮短窗口的代價是樣本變少、雜訊壓不住，所以廣播間隔一定要先調到 20~30 ms 才撐得住 0.4 秒的窗口——這兩件事綁在一起。 2026-10-21 實測（GATE-INSIDE / Arduino R4，距離 100 cm，tools/measure_beacon_shield）：實際收到約 6.4 包/秒（廣播約 100 ms 一包，Pi 只收到約 2/3），0.4 秒窗口平均只有 2.6 包，配 rssi_min_samples=3 時只有 43~60% 的時間能判定；而且同一個位置的 RSSI 分成相差約 10 dB 的幾群，低的那群一次會連續出現約 0.3 秒（很可能是 BLE 三個廣播頻道之一剛好處在多路徑衰減），0.4 秒窗口可能整個落在低的那段、濾波值跟著掉 10 dB。改成 1.0 秒之後：可判定時間 99~100%，p75 濾波後的抖動 1.1~1.6 dB，開口側與遮擋側之間最差情況仍隔 7.5 dB。代價是判定晚約 1 秒（推車 1 m/s 約晚 1 m）。",
-    "rssi_estimator": "p75",
+    "rssi_estimator": "max",
     "_rssi_estimator_comment": "把窗口內的樣本壓成一個代表值的方式。可選 p75（預設）/p90/median/max/mean。2026-09-15 實測發現這裡的雜訊是單邊的——訊號很少變強、但常常因為多路徑破壞性干涉突然變弱 6 dB，所以上包絡線才接近真正的直達路徑。實測殘餘抖動（window=5）：median 2.29 dB（最差，樣本雙峰時會在兩群之間跳）、mean 0.89、p75 0.53、p90 0.46。換算成『需要多大的 ΔRSSI 才可靠』：median 要 7.1 dB、p75 只要 1.6 dB。選 p75 而非 p90/max 是因為它仍用到 1/4 的樣本，單筆異常高讀數不會主導結果。",
     "rssi_min_samples": 3,
     "_rssi_min_samples_comment": "時間窗內任一顆 Beacon 的樣本數少於這個值就不做門口判定——樣本太少的平滑值不可信，這在『剛進入偵測範圍』跟『某一顆快要收不到』時都會發生。",
@@ -68,21 +81,21 @@
     "_peak_min_rise_dbm_comment": "一般地標點的峰值偵測（RssiPeakDetector）：上升幅度至少要超過這個值(dBm)才算數，避免雜訊誤判成峰值。",
     "peak_min_rssi_dbm": -70.0,
     "_peak_min_rssi_dbm_comment": "峰值本身的絕對訊號強度門檻(dBm)：只有相對上升幅度不夠——車子只是在 Beacon 附近晃過、沒有真的靠近，也會有『先升後降』的曲線，只看相對上升幅度會被誤判成經過。這個值要等實測 Beacon 在多遠距離大概是多少 dBm 才能校準，先給 -70 這個常見『數公尺內』的量級當預設，之後要調。設成 null 可以關閉這層檢查（不建議）。",
-    "gate_hysteresis_dbm": 6.0,
+    "gate_hysteresis_dbm": 4.0,
     "_gate_hysteresis_dbm_comment": "CALIBRATE_ME：門口雙 Beacon 差分判定的遲滯門檻(dBm)，避免兩顆訊號接近時反覆誤判方向。要蓋得過『平滑後的殘餘雜訊』但不能超過『門檻線附近局部梯度的一半』。2026-09-15 實測：車子完全靜止時單筆 RSSI 峰對峰抖動就有 7 dB；用 p75 估計量 + 0.8 秒窗口之後殘餘約 0.5 dB，所以 4.0 已經很寬鬆。正式值用 tools/calibrate_gate_beacons.py --survey 量出局部梯度後再定。",
-    "gate_min_crossing_rssi_dbm": -66.0,
+    "gate_min_crossing_rssi_dbm": -68.1,
     "_gate_min_crossing_rssi_dbm_comment": "CALIBRATE_ME：門口穿越判定的絕對訊號強度門檻(dBm)。只有『目前佔優勢的那顆 Beacon 訊號本身也夠強』才採信，避免『在店裡別處剛好比較靠近某一顆』被誤判成在門口。2026-09-15 實測：距離 Beacon 1.7 公尺時只有約 -70 dBm，所以原本的 -65 等於要求貼著 Beacon 才算數，實務上過不了。這個值必須用 tools/calibrate_gate_beacons.py 在真正的門檻線上量過才有意義——先放 -60 當佔位值，代表『沒校正過就不要相信這個門檻』。",
     "gate_min_confirm_samples": 3,
     "_gate_min_confirm_samples_comment": "門口穿越判定要求新的優勢方連續出現這麼多筆平滑後樣本才算數，用來過濾單一雜訊樣本造成的瞬間翻轉。1 代表不啟用（跟一般地標點一樣寬鬆），門口這裡預設調高到 3。",
     "gate_exit_yaw_deg": null,
-    "_gate_exit_yaw_deg_comment": "CALIBRATE_ME：車子『正朝門外方向穿越』時，yaw_deg 理論上該是多少度，跟門的實際安裝方向與 core/position_types.py 的座標系有關，要現場實測填入。**null 代表還沒量**，此時 core/gate_monitor.py 的航向交叉驗證會自動不啟用——這是刻意的：拿一個沒校正過的角度去擋，只會把真的穿越也一起擋掉。量到之後填數字進來就會自動生效。",
+    "_gate_exit_yaw_deg_comment": "維持 null（不啟用）。2026-11-16 確認：下位機送的 BNO080 yaw 是相對航向（Game Rotation Vector，開機當下為 0），同一個門口的「出場方向」每次開機對應的 yaw 都不一樣，沒辦法填一個固定角度。要用航向驗證的話，得改成相對判斷（例如出場時的 yaw 要跟上一次進場時差約 180°），目前還沒做。",
     "gate_heading_tolerance_deg": 45.0,
     "_gate_heading_tolerance_deg_comment": "is_heading_consistent() 容許的航向角誤差(度)，車子不會完全垂直對準門口走，先給 45 度寬容範圍。",
     "points": [
       {
         "beacon_id": "GATE-INSIDE",
         "address": "AC:A7:04:33:C7:69",
-        "rssi_offset_db": 1.2,
+        "rssi_offset_db": 1.9,
         "x_mm": 0.0,
         "y_mm": 0.0,
         "label": "管制區門口（門內側）"
@@ -103,7 +116,7 @@
     },
     "_address_comment": "每個 Beacon 的 BLE MAC 位址。填了就用位址比對（最可靠）；留空則改用『廣播名稱等於 beacon_id』比對（自己刷 ESP32 當 Beacon 時把廣播名稱設成 GATE-INSIDE / GATE-OUTSIDE 即可，不用填這欄）。用 `python3 -m drivers.ble_beacon_scanner --list` 查實際位址。",
     "_points_comment": "CALIBRATE_ME：每個 Beacon 的絕對座標是實測值，這裡是佔位資料，等 Beacon 實際安裝位置定案、實測後才能填準確值——跟 weight/odometry 那幾個 CALIBRATE_ME 是同一種性質。座標系跟 core/position_types.py 一致（公釐），這裡先假設門內 Beacon 座標是程式原點 (0,0)、門外 Beacon 在車頭正前方軸的 -1500mm，實際要看安裝位置調整。之後 Phase 7 要擴充走道地標點，就是往這個 points 陣列繼續加。",
-    "gate_calibration_source": "data/gate_calibration/20261028-203856",
+    "gate_calibration_source": "data/gate_calibration/20261116-200255",
     "_gate_calibration_source_comment": "最後一次寫回門口參數的校正錄音（tools/calibrate_gate_beacons.py）。用 --from-data 加這個路徑可以重算、核對。"
   },
   "state_machine": {
@@ -128,7 +141,20 @@
     "format": "RGB888",
     "framerate": 30,
     "calibration_file": "vision/camera_calibration.npz",
-    "_calibration_comment": "棋盤格內參校正結果（camera_matrix, dist_coeffs），由校正腳本產生後填入此路徑。"
+    "_calibration_comment": "棋盤格內參校正結果（camera_matrix, dist_coeffs），由校正腳本產生後填入此路徑。是在 resolution（1280x720）下量的：改 resolution 就要重新校正，drivers/front_camera.py 發現實際影格尺寸不同會直接報錯。"
+  },
+  "store": {
+    "_comment": "店面平面圖（core/store_layout.py，2026-11-23 構想圖）。沒寫的欄位用 core/store_layout.DEFAULT_LAYOUT。",
+    "unit_m": null,
+    "_unit_m_comment": "CALIBRATE_ME 平面圖一格幾公尺，要現場量：長廊寬 ÷ 2，或門到定位點標記中心的距離 ÷ 4.25，兩個應該接近。沒有預設值，沒填 app 啟動時報錯結束（不拿沒量過的數字畫推車位置）。"
+  },
+  "vision": {
+    "_comment": "前方相機的定位點標記與貨架消失點（core/store_vision.py；ui/app_gui.py 的 _VisionConsumer）。沒寫的欄位用 ui/app_gui.py 的 _VISION_DEFAULTS。",
+    "anchor_marker_id": 0,
+    "anchor_marker_size_m": 0.15,
+    "_anchor_marker_comment": "地上定位點的 ArUco 標記（DICT_4X4_50）編號、黑框實際邊長（m）。印出來要量：邊長跟這裡不同，算出來的距離會等比例錯。",
+    "camera_height_m": 0.5,
+    "_camera_height_comment": "前方相機鏡頭離地高度（m），目前是約略值，現場量了再改。由標記算出來的相機高度跟這個差超過 height_tol_m（預設 0.15）就當誤判不採用。"
   },
   "display": {
     "resolution": [

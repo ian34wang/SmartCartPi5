@@ -9,17 +9,32 @@
 如果環境裡沒有 playwright，跳過這支即可——tests/test_app_gui_bridge.py
 （純 Python、不需要瀏覽器）才是必跑的那支。
 """
-import asyncio, sys
+import asyncio, json, sys
 from pathlib import Path
 from playwright.async_api import async_playwright
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core import store_layout  # noqa: E402
 
 HTML = (Path(__file__).resolve().parent.parent / "ui" / "templates" / "index.html").as_uri()
 OUT = Path(__file__).resolve().parent
 SCREENS = ["main", "login", "loading_profile", "allergens", "diet", "religion", "budget",
            "shopping", "navigation", "promotions", "profile", "weight_alert", "checkout", "exit_confirm"]
 
+_LAY = store_layout.load()
+
+
+def _nav(code):
+    """跟 ui/app_gui.Bridge._catalog_payload 一樣的找貨欄位。"""
+    return json.dumps({"shelf": code, "shelf_text": store_layout.describe(_LAY, code),
+                       "instruction": store_layout.instruction(_LAY, code),
+                       "route": [list(q) for q in store_layout.route(_LAY, code)],
+                       "spot": list(store_layout.slot_point(_LAY, code))}, ensure_ascii=False)
+
+
 # 假的 pywebview api：記錄前端呼叫了什麼，並回一個合理的 payload 讓 render() 跑得動
-STUB = """
+STUB = ("var STORE = " + json.dumps(store_layout.to_client(_LAY), ensure_ascii=False) + ";\n"
+        + "var NAV_M3 = " + _nav("M3") + ";\nvar NAV_L2 = " + _nav("L2") + ";\n") + """
 window.__calls = [];
 function payload(over) {
   return Object.assign({
@@ -31,7 +46,18 @@ function payload(over) {
     sm_state: "shopping", exit_countdown: null,
     has_weight_reading: true, last_scan: null, gate_events: 0, awaiting_gate_entry: false,
     notice: null, staff_pending: null, assist_open: null, is_guest: false,
-    saved_profile: {exists: false}, recent_transactions: []
+    saved_profile: {exists: false}, recent_transactions: [],
+    cart_list_total: 25, budget_remaining: 975, pending_item: null,
+    catalog: [
+      Object.assign({barcode:"4710018001234", name:"統一陽光豆漿 300ml", price:25, list_price:25, discount_pct:0, in_cart:true, health:""}, NAV_M3),
+      Object.assign({barcode:"PEANUT", name:"花生醬", price:80, list_price:80, discount_pct:0, in_cart:false, health:"含花生（過敏原：花生）"}, NAV_L2),
+      {barcode:"NOSHELF", name:"沒位置的", price:10, list_price:10, discount_pct:0, shelf:"", shelf_text:"", instruction:"", route:[], spot:null, in_cart:false, health:""}
+    ],
+    promotions: [
+      {kind:"discount", barcode:"SALAD", title:"特價 即期沙拉", body:"原價 $60 → $30", health:"", can_nav:false},
+      {kind:"pick", barcode:"PEANUT", title:"適合你：花生醬", body:"$80", health:"", can_nav:true}
+    ],
+    store: STORE, cart_pos: {status: "none"}
   }, over || {});
 }
 window.pywebview = { api: new Proxy({}, { get: function (t, name) {
@@ -187,6 +213,74 @@ async def main():
             print("  預算畫面預先選好已儲存的預算  OK")
         else:
             failures.append(f"預算預選錯誤：{sel}")
+
+        # ------------------------------------------------------------------
+        # 2026-11-23：找貨（店面平面圖）、優惠、比對中商品的價格與健康護照
+        await page.evaluate("window.pywebview.api.get_state().then(window.APP.render)")
+        await page.wait_for_timeout(150)
+        await page.click("#screen-shopping .navitem[data-tab='navigation']")
+        await page.wait_for_timeout(150)
+        shelves = await page.evaluate("document.querySelectorAll('#f-nav-map svg rect').length")
+        chips = await page.evaluate("document.querySelectorAll('#f-nav-list .nav-chip').length")
+        if shelves == 4 and chips == 2:      # 3 座貨架 + 定位點的菱形
+            print("  找貨：平面圖畫出 3 座貨架與定位點、只列有貨架位置的商品  OK")
+        else:
+            failures.append(f"找貨畫面不對：rect={shelves} chips={chips}")
+        await page.click("#f-nav-list .nav-chip:nth-child(2)")
+        await page.wait_for_timeout(150)
+        route = await page.evaluate("(document.querySelector('#f-nav-map polyline')||{getAttribute:()=>''}).getAttribute('points')")
+        info = await page.text_content("#f-nav-info")
+        if route and len(route.split()) == 5 and "左架・右上" in info and "繞到貨架後側" in info and "健康護照" in info:
+            print("  找貨：點商品 → 畫出路線（繞到左架後側）、說明文字、健康護照  OK")
+        else:
+            failures.append(f"找貨目標不對：{route!r} {info!r}")
+        await page.evaluate("window.APP.setPos({x: 0, y: 4.25, status: 'anchored'})")
+        dot = await page.evaluate("""() => { const d = document.getElementById('f-cart-dot');
+            return [d.getAttribute('visibility'), d.getAttribute('cx'), d.getAttribute('cy')]; }""")
+        anchor = await page.evaluate("""() => { const t = Array.from(document.querySelectorAll('#f-nav-map text'))
+            .find(e => e.textContent === '定位點'); return t ? [+t.getAttribute('x'), +t.getAttribute('y')] : null; }""")
+        pos_txt = await page.text_content("#f-nav-pos")
+        if dot[0] == "visible" and anchor and abs(float(dot[1]) + 16 - anchor[0]) < 1 and "已在定位點對齊" in pos_txt:
+            print("  找貨：APP.setPos 把推車點移到定位點  OK")
+        else:
+            failures.append(f"推車點不對：{dot} {anchor} {pos_txt!r}")
+        await page.click("#screen-navigation .nav-anchor-btn")
+        await page.wait_for_timeout(100)
+        called = await page.evaluate("window.__calls.map(c => c.name)")
+        if "anchor_here" in called:
+            print("  找貨：「我在定位點」呼叫 anchor_here  OK")
+        else:
+            failures.append("「我在定位點」沒有呼叫 anchor_here")
+        await page.screenshot(path=str(OUT / "shot_navigation.png"))
+        await page.click("#screen-navigation .navitem[data-tab='promotions']")
+        await page.wait_for_timeout(150)
+        n_cards = await page.evaluate("document.querySelectorAll('#f-promo-cards .card').length")
+        n_cta = await page.evaluate("document.querySelectorAll('#f-promo-cards .card-cta').length")
+        if n_cards == 2 and n_cta == 1:
+            print("  優惠：卡片由 payload 產生，可導航的才有按鈕  OK")
+        else:
+            failures.append(f"優惠卡片不對：{n_cards} 張、{n_cta} 個按鈕")
+        await page.screenshot(path=str(OUT / "shot_promotions.png"))
+        await page.click("#f-promo-cards .card-cta")
+        await page.wait_for_timeout(150)
+        active = await page.evaluate("document.querySelector('.screen.active').id")
+        if active == "screen-navigation":
+            print("  優惠：導航去貨架 → 切到找貨  OK")
+        else:
+            failures.append(f"導航按鈕沒切到找貨：{active}")
+        await page.evaluate("""() => window.pywebview.api.get_state().then(p => { p.screen = 'shopping';
+            p.pending_item_barcode = 'PEANUT'; p.pending_item_mode = 'add';
+            p.pending_item = {barcode:'PEANUT', name:'花生醬', price:40, list_price:80, total_after:1065,
+                              remaining_after:-65, health:'含花生（過敏原：花生）'};
+            p.budget = 1000; p.cart_total = 1025; window.APP.showTab('shopping'); window.APP.render(p); })""")
+        await page.wait_for_timeout(200)
+        box = await page.text_content("#f-pending-box-wrap")
+        pct = await page.text_content("#f-progress-pct")
+        if "花生醬" in box and "超出預算" in box and "健康護照" in box and "超出預算" in pct:
+            print("  購物：比對中顯示名稱、價格、預算與健康護照；進度條顯示超出  OK")
+        else:
+            failures.append(f"比對中區塊不對：{box!r} / {pct!r}")
+        await page.screenshot(path=str(OUT / "shot_shopping_pending.png"))
 
         await browser.close()
 

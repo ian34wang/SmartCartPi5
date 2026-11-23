@@ -1,64 +1,86 @@
 """
 tools/calibrate_weight.py
 
-HX711 重量校正互動工具。
+HX711 秤重校正。錄音與互動在這裡，計算在 core/weight_calibration.py（說明、符號、
+判讀標準都寫在那邊）。
 
-背景：
-    weight.hx711_offset 和 weight.hx711_scale 是 config.json 裡標記
-    CALIBRATE_ME 的兩個佔位值，需要在購物車重量感測結構（秤台、HX711
-    模組）實際固定好之後，用「空秤」與「已知砝碼」各量一次才能算出來：
+一次錄完五件事，全部存成原始讀數，事後可以用 --from-data 重算：
 
-        offset = 空秤時 hx711_raw 的平均值
-        scale  = (已知砝碼時 hx711_raw 的平均值 - offset) / 已知砝碼重量(g)
+    1. 空秤靜止                          → 零點、靜止雜訊
+    2. 放上已知重量的砝碼（可以放好幾次） → hx711_offset、hx711_scale（最小平方）、線性
+    3. 全部拿掉、空秤靜止                 → 零點漂移（潛變、機構沒回位）
+    4. 籃子空的、照平常的方式推車          → 推車震動 → 未掃碼門檻 unscanned_change_threshold_g
+    5. 掃碼後把砝碼像平常放商品一樣放進去  → 用執行期的狀態機重播，定「等讀數穩定」的參數
 
-    之後量到任何 hx711_raw，換算公克數就是 (hx711_raw - offset) / scale。
+參數不是用公式推的：第 4、5 步的讀數直接丟進 core/cart_state_machine.CartStateMachine
+（跟 ui/app_gui.py 同一份程式）重播，看實際會不會誤報、會不會判錯。
 
-目前狀態：
-    硬體（HX711、UART）本身是接好、可以跑的，只是購物車的秤重機構
-    （秤台安裝方式、承重結構）還在調整中——現在跑出來的 offset/scale
-    會是「這個當下結構」下的正確值，但機構之後再調整，offset/scale 很
-    可能就要重新校正一次，不是一勞永逸的最終值。所以現在可以照下面
-    用法實際跑跑看（建議先用 --dry-run 只看數字、不寫回 config.json），
-    等機構真正定案後，再正式跑一次把結果寫回 config.json。
+錄音存在 data/weight_calibration/<時間>/（samples.csv + samples.meta.json + result.json）。
+
+會寫回 config.json 的 weight 區塊：hx711_offset、hx711_scale、unscanned_change_threshold_g、
+settle_window_sec、settle_band_g，以及 weight_calibration_source（用了哪一份錄音）。
+
+**校正完要重新秤商品**：資料庫裡每個商品的 standard_weight_g 是用當時的 scale 量的，
+scale 一改，那些數字就跟新的換算對不上——用 `python3 -m tools.product_admin edit <條碼>`
+一個一個重秤。
 
 用法：
-    python3 -m tools.calibrate_weight --port /dev/ttyAMA0
-    python3 -m tools.calibrate_weight --dry-run          # 只算數值，不寫回 config.json
-    python3 -m tools.calibrate_weight --samples 50 --timeout 10
+    python3 -m tools.calibrate_weight --dry-run              # 錄音、計算，不寫回
+    python3 -m tools.calibrate_weight                        # 同上，最後問要不要寫回
+    python3 -m tools.calibrate_weight --static-sec 10 --push-sec 30 --drops 5
+    python3 -m tools.calibrate_weight --from-data data/weight_calibration/20261116-150000
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import logging
 import queue
 import sys
 import time
 from pathlib import Path
 from typing import List, Optional
 
-from drivers.uart_receiver import UartPacket, UartReceiver
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-logger = logging.getLogger(__name__)
+from core.cart_state_machine import load_state_machine_config  # noqa: E402
+from core.uart_recording import (  # noqa: E402
+    UartTap,
+    countdown,
+    load,
+    new_session_dir,
+    save_result,
+    segment_stats_line,
+    update_config,
+    wait_for_stream,
+)
+from core.weight_calibration import (  # noqa: E402
+    PRODUCT_TOLERANCE_RATIO,
+    T_FLOOR,
+    WeightCalibration,
+    calibrate,
+)
+from database.db_manager import DBManager  # noqa: E402
+from drivers.uart_receiver import UartPacket, UartReceiver  # noqa: E402
 
-_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+_REPO = Path(__file__).resolve().parent.parent
+_CONFIG_PATH = _REPO / "config.json"
+_ROOT = _REPO / "data" / "weight_calibration"
+
+
+def _rel(p: Path) -> str:
+    try:
+        return str(Path(p).resolve().relative_to(_REPO))
+    except ValueError:
+        return str(p)
 
 
 # ----------------------------------------------------------------------
-# 純邏輯部分（可離線用假資料測試，不需要真的 UART/硬體）
+# 給 tools/product_admin.py、tools/verify_weight.py 用（現場秤商品、驗證）
 # ----------------------------------------------------------------------
-def collect_hx711_samples(
-    out_queue: "queue.Queue[UartPacket]",
-    num_samples: int,
-    timeout_sec: float,
-    poll_interval_sec: float = 0.05,
-) -> List[int]:
-    """從 queue 收集 num_samples 筆 hx711_raw 原始值。
-
-    在 timeout_sec 內收滿 num_samples 筆就提早結束；超過 timeout 只回傳
-    當下收到的（可能不足 num_samples 筆，由呼叫端決定夠不夠用）。
-    """
+def collect_hx711_samples(out_queue: "queue.Queue[UartPacket]", num_samples: int, timeout_sec: float,
+                          poll_interval_sec: float = 0.05) -> List[int]:
+    """從 queue 收 num_samples 筆 hx711_raw；逾時就回傳目前收到的。"""
     samples: List[int] = []
     deadline = time.time() + timeout_sec
     while len(samples) < num_samples and time.time() < deadline:
@@ -70,163 +92,249 @@ def collect_hx711_samples(
     return samples
 
 
-def compute_offset(zero_samples: List[int]) -> float:
-    if not zero_samples:
-        raise ValueError("沒有收到任何空秤樣本，無法計算 offset")
-    return sum(zero_samples) / len(zero_samples)
-
-
-def compute_scale(loaded_samples: List[int], offset: float, known_weight_g: float) -> float:
-    if not loaded_samples:
-        raise ValueError("沒有收到任何加砝碼樣本，無法計算 scale")
-    if known_weight_g <= 0:
-        raise ValueError("已知砝碼重量必須大於 0")
-    loaded_mean = sum(loaded_samples) / len(loaded_samples)
-    diff = loaded_mean - offset
-    if diff == 0:
-        raise ValueError("加砝碼前後 hx711_raw 平均值沒有變化，無法計算 scale（檢查砝碼是否真的放上去、HX711 接線是否正常）")
-    return diff / known_weight_g
-
-
 # ----------------------------------------------------------------------
-# config.json 讀寫（保留其他欄位與註解，只更新 weight 區塊）
-# ----------------------------------------------------------------------
-def load_config() -> dict:
-    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def write_weight_calibration(offset: float, scale: float) -> None:
-    config = load_config()
-    weight_cfg = config.setdefault("weight", {})
-    weight_cfg["hx711_offset"] = offset
-    weight_cfg["hx711_scale"] = scale
-    weight_cfg["_hx711_offset_comment"] = (
-        f"已於 {time.strftime('%Y-%m-%d %H:%M:%S')} 用 tools/calibrate_weight.py 實測校正（空秤平均值）。"
-    )
-    weight_cfg["_hx711_scale_comment"] = (
-        f"已於 {time.strftime('%Y-%m-%d %H:%M:%S')} 用 tools/calibrate_weight.py 實測校正"
-        "（(加砝碼平均值 - offset) / 已知砝碼重量(g)）。"
-    )
-    with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    logger.info("已寫回 config.json：hx711_offset=%s, hx711_scale=%s", offset, scale)
-
-
-# ----------------------------------------------------------------------
-# 互動流程
-# ----------------------------------------------------------------------
-def run_calibration(
-    port: str,
-    baudrate: int,
-    num_samples: int,
-    timeout_sec: float,
-    dry_run: bool,
-) -> Optional[tuple]:
-    receiver = UartReceiver(port=port, baudrate=baudrate)
-    receiver.start()
-    try:
-        # 等第一筆封包，確認 UART 真的有資料進來，避免使用者空等 timeout。
-        print("等待 UART 連線與資料流...")
-        deadline = time.time() + 5.0
-        got_first = False
-        while time.time() < deadline:
-            if not receiver.out_queue.empty():
-                got_first = True
-                break
-            time.sleep(0.1)
-        if not got_first:
-            print("5 秒內沒有收到任何封包，請確認接線與 config.json 的 serial.port。")
-            return None
-
-        input("\n[步驟 1/2] 請確保秤台上『空秤』（沒有放任何東西），完成後按 Enter 開始量測...")
-        _drain(receiver.out_queue)
-        zero_samples = collect_hx711_samples(receiver.out_queue, num_samples, timeout_sec)
-        print(f"  收到 {len(zero_samples)} 筆樣本。")
-        offset = compute_offset(zero_samples)
-        print(f"  offset = {offset:.2f}")
-
-        known_weight_g = _prompt_float("\n請輸入已知砝碼的重量（公克）：")
-        input(f"[步驟 2/2] 請把 {known_weight_g:g} 公克的砝碼放上秤台，完成後按 Enter 開始量測...")
-        _drain(receiver.out_queue)
-        loaded_samples = collect_hx711_samples(receiver.out_queue, num_samples, timeout_sec)
-        print(f"  收到 {len(loaded_samples)} 筆樣本。")
-        scale = compute_scale(loaded_samples, offset, known_weight_g)
-        print(f"  scale = {scale:.6f}")
-
-        print(f"\n計算結果：hx711_offset = {offset:.2f}, hx711_scale = {scale:.6f}")
-
-        if dry_run:
-            print("（--dry-run 模式，不寫回 config.json）")
-            return (offset, scale)
-
-        answer = input("是否要把這組結果寫回 config.json？[y/N] ").strip().lower()
-        if answer == "y":
-            write_weight_calibration(offset, scale)
-            print("已寫回 config.json。")
-        else:
-            print("已取消，config.json 未變更。")
-        return (offset, scale)
-    finally:
-        receiver.stop()
-
-
-def _drain(q: "queue.Queue[UartPacket]") -> None:
-    """清空 queue 裡的舊資料，避免上一個步驟殘留的樣本混進下一輪平均。"""
-    while True:
-        try:
-            q.get_nowait()
-        except queue.Empty:
-            break
-
-
-def _prompt_float(prompt: str) -> float:
+def _ask_mass(prompt: str, allow_empty: bool) -> Optional[float]:
     while True:
         raw = input(prompt).strip()
+        if not raw and allow_empty:
+            return None
         try:
-            value = float(raw)
-            if value > 0:
-                return value
-            print("請輸入大於 0 的數字。")
+            v = float(raw)
+            if v > 0:
+                return v
         except ValueError:
-            print("請輸入有效的數字。")
+            pass
+        print("    請輸入大於 0 的公克數。")
+
+
+def _static(tap: UartTap, label: str, seconds: float, text: str, **info) -> None:
+    tap.begin(label)
+    countdown(seconds, tap, text)
+    seg = tap.end(**info)
+    n, rate = segment_stats_line(tap.recording().get(seg.label))
+    print(f"    收到 {n} 筆（{rate:.1f} 筆/秒）")
+
+
+def record(receiver, out_dir: Path, static_sec: float, push_sec: float, drops: int) -> Optional[UartTap]:
+    tap = UartTap(receiver, out_dir / "samples.csv", kind="weight_calibration",
+                  extra_meta={"static_sec": static_sec, "push_sec": push_sec})
+    tap.start()
+    print("\n" + "=" * 80)
+    print("秤重校正：空秤 → 砝碼（可放好幾次）→ 拿掉 → 推車 → 放入測試。每一步都會先說要做什麼。")
+    print("=" * 80)
+    try:
+        input("\n[1] 籃子／秤台完全淨空、推車停好不要碰，按 Enter：")
+        _static(tap, "zero_start", static_sec, "空秤靜止中，不要碰車")
+
+        print("\n[2] 放砝碼。建議至少兩種不同重量，涵蓋平常一籃商品的範圍（例如 500 g、1000 g、2000 g）。")
+        print("    每次輸入「現在秤台上砝碼的總重」，可以一直往上加；直接按 Enter 結束這一步。")
+        i = 0
+        while True:
+            i += 1
+            m = _ask_mass(f"    第 {i} 次：秤台上砝碼總重（g）：", allow_empty=i > 1)
+            if m is None:
+                break
+            input(f"    放好 {m:g} g（放在籃子中間），手拿開，按 Enter：")
+            _static(tap, f"load_{i}", static_sec, f"{m:g} g 靜止中", mass_g=m)
+
+        input("\n[3] 把砝碼全部拿掉，手拿開，按 Enter：")
+        _static(tap, "zero_end", static_sec, "空秤靜止中")
+
+        if push_sec > 0:
+            print(f"\n[4] 推車震動：籃子保持空的，按 Enter 後用平常的速度推車 {push_sec:.0f} 秒")
+            input("    （直線、轉彎、過地板接縫、停下再起步都做一點），按 Enter 開始：")
+            _static(tap, "push_empty", push_sec, "推車中")
+
+        if drops > 0:
+            print(f"\n[5] 放入測試 {drops} 趟：模擬「掃完碼、把商品放進籃子」。")
+            m = _ask_mass("    放入測試用哪個砝碼（g，建議 200~500 g）：", allow_empty=False)
+            for k in range(1, drops + 1):
+                input(f"    第 {k}/{drops} 趟：籃子淨空，砝碼拿在手上、籃子上方，按 Enter，看到「放！」再放：")
+                tap.begin(f"drop_{k}")
+                time.sleep(1.0)
+                print("    放！（像平常放商品一樣放進去，手拿開不要再碰）")
+                time.sleep(6.0)
+                tap.end(mass_g=m)
+                if k < drops:
+                    input("    拿出砝碼，按 Enter 繼續下一趟：")
+            print("    放入測試完成，可以把砝碼拿出來了。")
+    except KeyboardInterrupt:
+        tap.stop()
+        print("\n中斷。已錄到的部分在", _rel(out_dir))
+        return None
+    tap.stop()
+    return tap
 
 
 # ----------------------------------------------------------------------
-def _main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+def print_report(cal: WeightCalibration, cfg_weight: dict) -> None:
+    if cal.error:
+        print(f"\n[無法校正] {cal.error}")
+        return
+    a, b = cal.offset, cal.scale
+    print("\n" + "=" * 80)
+    print("靜止點（丟掉每段前 1 秒，取中位數）與最小平方直線  r = a + b·m")
+    print(f"{'段落':<12}{'砝碼 m (g)':>12}{'中位數 r':>14}{'σ_r':>9}{'換算 w (g)':>13}{'殘差 (g)':>10}")
+    print("-" * 80)
+    for p in cal.points:
+        w = (p.level_raw - a) / b
+        print(f"{p.label:<12}{p.mass_g:>12g}{p.level_raw:>14.1f}{p.sigma_raw:>9.1f}{w:>13.1f}{p.residual_g:>+10.2f}")
+    print(f"\n  a（hx711_offset）= {a:.2f}　　b（hx711_scale）= {b:.6f} count/g")
+    print(f"  靜止雜訊 σ_s = {cal.sigma_static_g:.2f} g")
+    if cal.zero_drift_g is not None:
+        print(f"  零點漂移（拿掉後 − 開始）= {cal.zero_drift_g:+.2f} g")
 
-    default_port = "/dev/ttyAMA0"
-    default_baud = 115200
+    cur_t = cfg_weight.get("unscanned_change_threshold_g")
+    if cal.push:
+        print(f"\n推車震動（空籃，{cal.push.n} 筆）：最大偏離 {cal.push.max_abs_g:.1f} g、"
+              f"99% 在 {cal.push.p99_abs_g:.1f} g 內、σ {cal.push.std_g:.1f} g")
+        if cal.t_min is not None:
+            print(f"  用狀態機重播：T ≥ {cal.t_min} g 時推車不會誤報「未掃碼的重量變化」")
+    if cal.t_rec is not None:
+        print(f"  建議 T = {cal.t_rec} g（原本 {cur_t}）：{cal.t_reason}")
+    if cal.settle_table and len(cal.settle_table) > 1:
+        print(f"\n等讀數穩定（範圍 B_s = {cal.settle_band_g:g} g）：每個等待時間 W_s 都重新定 T、重播全部放入")
+        print(f"  {'W_s (秒)':<10}{'T (g)':>7}{'放入正常':>10}{'平均加入時間':>14}")
+        for r in cal.settle_table:
+            lat = "—" if r["latency"] is None else f"{r['latency']:.1f} 秒"
+            mark = "  ← 選這個" if r["window"] == cal.settle_window_sec else ""
+            name = "0（不等）" if r["window"] == 0 else f"{r['window']:g}"
+            print(f"  {name:<10}{str(r['t_rec']):>7}{f'{r['ok']}/{r['n']}':>10}{lat:>14}{mark}")
+    if cal.drops:
+        w_txt = "" if cal.settle_window_sec is None else f"，W_s = {cal.settle_window_sec:g} 秒"
+        print(f"\n放入測試（用狀態機重播：掃碼 → 放入，容差 {PRODUCT_TOLERANCE_RATIO:.0%}，T = {cal.t_rec} g{w_txt}）")
+        for d in cal.drops:
+            ok = d.outcome == "正常加入" and not d.extra_alerts
+            when = "" if d.commit_after_sec is None else f"，掃碼後 {d.commit_after_sec:.1f} 秒加入"
+            extra = f"，之後又誤報未掃碼 {d.extra_alerts} 次" if d.extra_alerts else ""
+            print(f"  {'✓' if ok else '✗'} {d.label}：{d.outcome}{when}{extra}；衝擊超出穩定值 {d.overshoot_g:.1f} g")
+            print(f"      {d.detail}")
+    if cal.light_products:
+        print(f"\n  比 T 還輕的商品（不掃碼直接放進去偵測不到）：{'、'.join(cal.light_products)}")
+
+    print("\n判讀：")
+    mark = {"可以": "✓ 可以", "勉強": "○ 勉強", "不夠": "✗ 不夠"}.get(cal.verdict, cal.verdict)
+    print(f"  {mark}")
+    for s in cal.issues:
+        print(f"  - {s}")
+
+    def tag(new, old):
+        return "（不變）" if old == new else f"（原本 {old}）"
+
+    print("\n建議參數：")
+    print(f"  weight.hx711_offset                 = {a:.2f}{tag(round(a, 2), cfg_weight.get('hx711_offset'))}")
+    print(f"  weight.hx711_scale                  = {b:.6f}{tag(round(b, 6), cfg_weight.get('hx711_scale'))}")
+    if cal.t_rec is not None:
+        print(f"  weight.unscanned_change_threshold_g = {cal.t_rec}{tag(cal.t_rec, cur_t)}")
+    if cal.settle_window_sec is not None:
+        print(f"  weight.settle_window_sec            = {cal.settle_window_sec:g}"
+              f"{tag(cal.settle_window_sec, cfg_weight.get('settle_window_sec'))}")
+        print(f"  weight.settle_band_g                = {cal.settle_band_g:g}"
+              f"{tag(cal.settle_band_g, cfg_weight.get('settle_band_g'))}")
+
+
+def result_dict(cal: WeightCalibration) -> dict:
+    return {"verdict": cal.verdict, "error": cal.error, "offset": cal.offset, "scale": cal.scale,
+            "sigma_static_g": cal.sigma_static_g, "zero_drift_g": cal.zero_drift_g,
+            "points": [p.__dict__ for p in cal.points], "push": cal.push and cal.push.__dict__,
+            "t_min": cal.t_min, "t_rec": cal.t_rec, "drops": [d.__dict__ for d in cal.drops],
+            "settle_window_sec": cal.settle_window_sec, "settle_band_g": cal.settle_band_g,
+            "settle_table": [{k: v for k, v in r.items() if k != "drops"} for r in cal.settle_table],
+            "light_products": cal.light_products, "issues": cal.issues}
+
+
+def write_back(cal: WeightCalibration, source: str) -> None:
+    stamp = time.strftime("%Y-%m-%d %H:%M")
+    values = {"hx711_offset": round(cal.offset, 2), "hx711_scale": round(cal.scale, 6),
+              "weight_calibration_source": source}
+    comments = {
+        "_hx711_offset_comment": f"{stamp} tools/calibrate_weight.py 多點最小平方的截距（空秤讀數）。只影響顯示的絕對重量，比對看的是重量變化。",
+        "_hx711_scale_comment": f"{stamp} tools/calibrate_weight.py 多點最小平方的斜率（count/g）。改了這個值，資料庫裡的商品標準重量要重秤。",
+        "_weight_calibration_source_comment": "最後一次寫回秤重參數的校正錄音，用 tools/calibrate_weight.py --from-data 加這個路徑可以重算。",
+    }
+    if cal.t_rec is not None:
+        values["unscanned_change_threshold_g"] = cal.t_rec
+        comments["_unscanned_change_threshold_comment"] = (
+            f"{stamp} tools/calibrate_weight.py：{cal.t_reason}。推車震動是丟進 CartStateMachine 重播找的最小不誤報門檻。"
+            "比這個輕的商品不掃碼放進去偵測不到。")
+    if cal.settle_window_sec is not None:
+        values["settle_window_sec"] = cal.settle_window_sec
+        values["settle_band_g"] = cal.settle_band_g
+        comments["_settle_comment"] = (
+            f"{stamp} tools/calibrate_weight.py：秤重比對、未掃碼偵測只用「穩定值」——最近 settle_window_sec 秒的讀數"
+            " 最大−最小 ≤ settle_band_g 時取中位數（core/cart_state_machine.py 開頭有定義）。band = max(2, 6σ_s)；"
+            "window 是放入錄音重播時每一趟都正常加入、之後不誤報的最小值。0 = 不等（舊版行為）。")
+    update_config(_CONFIG_PATH, "weight", values, comments)
+    print(f"\n已寫回 {_CONFIG_PATH}")
+
+
+def _products() -> dict:
     try:
-        cfg = load_config()
-        default_port = cfg.get("serial", {}).get("port", default_port)
-        default_baud = cfg.get("serial", {}).get("baudrate", default_baud)
-    except (OSError, json.JSONDecodeError):
-        pass
+        db = DBManager()
+        if not db.db_path.exists():
+            return {}
+        return {p.name: p.standard_weight_g for p in db.list_products()}
+    except Exception:  # noqa: BLE001 — 只是用來提醒，讀不到不影響校正
+        return {}
 
-    parser = argparse.ArgumentParser(description="HX711 重量校正互動工具")
-    parser.add_argument("--port", default=default_port, help=f"UART 裝置節點（預設讀 config.json，目前為 {default_port}）")
-    parser.add_argument("--baud", type=int, default=default_baud, help="鮑率")
-    parser.add_argument("--samples", type=int, default=30, help="每個階段要收集的樣本數（預設 30）")
-    parser.add_argument("--timeout", type=float, default=10.0, help="每個階段收集樣本的逾時秒數（預設 10）")
-    parser.add_argument("--dry-run", action="store_true", help="只計算結果並印出，不寫回 config.json")
-    args = parser.parse_args()
 
-    try:
-        result = run_calibration(
-            port=args.port,
-            baudrate=args.baud,
-            num_samples=args.samples,
-            timeout_sec=args.timeout,
-            dry_run=args.dry_run,
-        )
-    except KeyboardInterrupt:
-        print("\n已中斷。")
+def finish(cal: WeightCalibration, out_dir: Path, dry_run: bool) -> int:
+    cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    print_report(cal, cfg.get("weight", {}))
+    save_result(out_dir, result_dict(cal))
+    print(f"\n錄音與結果：{_rel(out_dir)}/")
+    if cal.offset is None:
         return 1
+    if dry_run:
+        print("--dry-run：沒有寫回 config.json。")
+        return 0
+    if input("\n要寫回 config.json 嗎？(y 確認，其他任何輸入都不寫)：").strip().lower() != "y":
+        print("沒有寫回。")
+        return 0
+    write_back(cal, _rel(out_dir))
+    print("接下來：python3 -m tools.verify_weight 用砝碼抽驗，再用 product_admin edit 重秤每個商品。")
+    return 0
 
-    return 0 if result is not None else 1
+
+def _main() -> int:
+    cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    ap = argparse.ArgumentParser(description="HX711 秤重校正（多點、雜訊、推車震動、放入測試）")
+    ap.add_argument("--dry-run", action="store_true", help="錄音、計算，不寫回 config.json")
+    ap.add_argument("--from-data", default=None, help="用存下來的錄音重算（目錄或 samples.csv）")
+    ap.add_argument("--static-sec", type=float, default=8.0, help="每個靜止步驟幾秒（預設 8）")
+    ap.add_argument("--push-sec", type=float, default=20.0, help="推車震動錄幾秒（預設 20）")
+    ap.add_argument("--drops", type=int, default=3, help="放入測試幾趟（預設 3，0 = 不做）")
+    ap.add_argument("--quick", action="store_true",
+                    help="只做空秤、砝碼、拿掉三步（秤台沒動過、只是重新校正 scale 時用；門檻沿用原本的）")
+    ap.add_argument("--t-floor", type=int, default=T_FLOOR, help=f"未掃碼門檻的人為下限（g，預設 {T_FLOOR}）")
+    ap.add_argument("--port", default=cfg.get("serial", {}).get("port", "/dev/ttyAMA0"))
+    ap.add_argument("--baud", type=int, default=cfg.get("serial", {}).get("baudrate", 115200))
+    args = ap.parse_args()
+
+    sm_cfg = load_state_machine_config()
+    if args.from_data:
+        path = Path(args.from_data)
+        rec = load(path)
+        out_dir = path if path.is_dir() else path.parent
+        print(f"讀入 {_rel(out_dir)}：{sum(len(v) for v in rec.samples.values())} 筆、{len(rec.segments)} 段")
+        return finish(calibrate(rec, sm_cfg, _products(), args.t_floor), out_dir, args.dry_run)
+
+    receiver = UartReceiver(port=args.port, baudrate=args.baud)
+    receiver.start()
+    try:
+        print(f"等待 UART 資料流（{args.port}）...", flush=True)
+        if not wait_for_stream(receiver):
+            print(f"[錯誤] 5 秒內沒有收到任何 UART 封包：確認下位機有在送、接線、config.json 的 serial.port（{args.port}）。")
+            return 1
+        out_dir = new_session_dir(_ROOT)
+        push_sec, drops = (0.0, 0) if args.quick else (args.push_sec, args.drops)
+        tap = record(receiver, out_dir, args.static_sec, push_sec, drops)
+    finally:
+        receiver.stop()
+    if tap is None:
+        return 1
+    print("\n計算中（推車與放入的讀數會丟進狀態機重播很多次）...", flush=True)
+    return finish(calibrate(tap.recording(), sm_cfg, _products(), args.t_floor), out_dir, args.dry_run)
 
 
 if __name__ == "__main__":

@@ -12,8 +12,15 @@ tools/calibrate_gate_beacons.py
     --monitor    ：即時看原始值、濾波值與判定（同時記錄到 data/gate_logs/）。
     --from-data  ：用存下來的錄音重算，不用硬體。
 
-會調的參數：landmarks 區塊的 rssi_estimator、rssi_smoothing_sec、gate_min_confirm_samples、
-gate_hysteresis_dbm、gate_min_crossing_rssi_dbm，以及門內那顆的 rssi_offset_db。
+會調的參數：landmarks 區塊的 rssi_estimator、rssi_smoothing_sec、gate_min_confirm_sec、
+gate_hysteresis_dbm、gate_min_crossing_rssi_dbm，以及門內那顆的 rssi_offset_db
+（gate_min_confirm_samples 不調，沿用現在的值）。
+
+執行期記錄：--from-data 重算時，會自動把「校正錄音之後」錄的執行期記錄
+（data/gate_logs/，app、--monitor、run_real_hardware_flow 每次啟動都會產生）一起重播，
+排除會「來回跳」（相反的事件間隔不到 3 秒）的參數。所以最好的流程是：先校正寫回、
+實際推車用一陣子（特別是在門口附近晃、停、轉彎），再用同一份校正錄音 --from-data
+重算一次。
 
 錄的時候：
     - Pi 要跟實際使用時一樣（最好就裝在推車上），推車用平常的速度推。
@@ -27,6 +34,8 @@ gate_hysteresis_dbm、gate_min_crossing_rssi_dbm，以及門內那顆的 rssi_of
     python3 -m tools.calibrate_gate_beacons                     # 同上，最後問要不要寫回
     python3 -m tools.calibrate_gate_beacons --trips 6           # 來回幾次（預設 4，也就是 8 趟）
     python3 -m tools.calibrate_gate_beacons --from-data data/gate_calibration/20261029-150000
+    python3 -m tools.calibrate_gate_beacons --from-data <目錄> --no-logs        # 不用執行期記錄
+    python3 -m tools.calibrate_gate_beacons --from-data <目錄> --logs-since 20261116-000000
     python3 -m tools.calibrate_gate_beacons --survey            # 5 個位置的靜止剖面
     python3 -m tools.calibrate_gate_beacons --monitor
 """
@@ -57,8 +66,8 @@ from core.gate_calibration import (  # noqa: E402
     segment_stats,
     survey_notes,
 )
-from core.gate_model import GateParams, Observation  # noqa: E402
-from core.gate_recorder import GateRecorder, load  # noqa: E402
+from core.gate_model import FLAP_SEC, GateParams, Observation, flaps  # noqa: E402
+from core.gate_recorder import RUNTIME_LOG_ROOT, GateRecorder, load  # noqa: E402
 from core.landmark_correction import load_landmark_config  # noqa: E402
 from drivers.ble_beacon_scanner import (  # noqa: E402
     BleBeaconScanner,
@@ -223,16 +232,21 @@ def print_calibration(cal: Calibration, base: GateParams) -> None:
     print("\n" + "=" * 84)
     print("每一組候選設定：遲滯從 2 到 12 dB 都試，整段錄音重播，"
           f"每一趟都判對、停在門口不亂跳、偏移量 ±{DRIFT_DB:g} dB 也成立的才算可行")
-    print(_pad("估計量", 8) + _pad("窗口", 8) + _pad("確認筆數", 10) + _pad("可行遲滯範圍", 22) + "不含漂移時")
-    print("-" * 84)
+    has_logs = any(c.log_flaps is not None for c in cal.candidates)
+    print(_pad("估計量", 8) + _pad("窗口", 8) + _pad("確認時間", 10) + _pad("可行遲滯範圍", 22)
+          + (_pad("記錄來回跳", 12) if has_logs else "") + "不含漂移時")
+    print("-" * 96)
     ranked = sorted(cal.candidates, key=lambda c: (-c.width, -c.best_partial[0]))
-    for c in ranked[:10]:
+    for c in ranked[:12]:
         rng = "—" if c.interval is None else f"{c.interval[0]:.2f} ~ {c.interval[1]:.2f}（寬 {c.width:.2f}）"
         best = f"最多判對 {c.best_partial[0]}/{cal.n_passes} 趟" + (f"，{c.best_partial[2]}" if c.best_partial[2] else "")
-        cur = "  ← 現在" if (c.estimator, c.window, c.confirm) == \
-            (base.estimator, base.smoothing_sec, base.min_confirm_samples) else ""
-        print(_pad(c.estimator, 8) + _pad(f"{c.window:g} 秒", 8) + _pad(str(c.confirm), 10) + _pad(rng, 22)
-              + best + cur)
+        if c.flap_blocked:
+            best += f"；{c.flap_blocked} 個遲滯值因記錄會來回跳被排除"
+        cur = "  ← 現在" if (c.estimator, c.window, c.confirm_sec) == \
+            (base.estimator, base.smoothing_sec, base.min_confirm_sec) else ""
+        flap = (_pad("—" if c.log_flaps is None else f"{c.log_flaps} 次", 12) if has_logs else "")
+        print(_pad(c.estimator, 8) + _pad(f"{c.window:g} 秒", 8) + _pad(f"{c.confirm_sec:g} 秒", 10)
+              + _pad(rng, 22) + flap + best + cur)
 
     print("\n判讀：")
     if cal.verdict == "不夠":
@@ -241,6 +255,8 @@ def print_calibration(cal: Calibration, base: GateParams) -> None:
         print("    改善方向：(1) 先跑 --survey 看剖面：門外、門內哪一側的平台不夠寬")
         print("              (2) 兩顆的廣播間隔改 50 ms，同一個窗口裡樣本變多")
         print("              (3) 加強遮罩的前後差、線材不要繞到另一側、確認 Pi 擺法跟實際一樣")
+        print("              (4) 執行期記錄會來回跳的話：Pi 的位置被車架或籃子擋住一側，先改擺法")
+        _print_logs(cal, base)
         return
     p = cal.params
     c = cal.chosen
@@ -260,6 +276,8 @@ def print_calibration(cal: Calibration, base: GateParams) -> None:
         where = "門檻線" if m.label == "hold" else "店內深處"
         print(f"  {'✓' if n <= 1 else '⚠'} 停在{where} {m.t1 - m.t0:.0f} 秒：{n} 次事件（最多容許 1 次）")
 
+    _print_logs(cal, base)
+
     def tag(new, old):
         return "（不變）" if new == old else f"（原本 {old}）"
 
@@ -267,12 +285,33 @@ def print_calibration(cal: Calibration, base: GateParams) -> None:
     print(f"  landmarks.rssi_estimator                       = {p.estimator}{tag(p.estimator, base.estimator)}")
     print(f"  landmarks.rssi_smoothing_sec                   = {p.smoothing_sec:.1f}"
           f"{tag(p.smoothing_sec, base.smoothing_sec)}")
-    print(f"  landmarks.gate_min_confirm_samples             = {p.min_confirm_samples}"
-          f"{tag(p.min_confirm_samples, base.min_confirm_samples)}")
+    print(f"  landmarks.gate_min_confirm_sec                 = {p.min_confirm_sec:g}"
+          f"{tag(p.min_confirm_sec, base.min_confirm_sec)}")
+    print(f"  landmarks.gate_min_confirm_samples             = {p.min_confirm_samples}（不變，不調）")
     print(f"  landmarks.points[{p.inside_id}].rssi_offset_db  = {p.offset_inside:+.1f}")
     print(f"  landmarks.points[{p.outside_id}].rssi_offset_db = 0.0（固定當基準）")
     print(f"  landmarks.gate_hysteresis_dbm                  = {p.hysteresis_dbm:.2f}")
     print(f"  landmarks.gate_min_crossing_rssi_dbm           = {p.min_crossing_rssi_dbm:.1f}")
+
+
+def _fmt_events(events, t0: float) -> str:
+    return "、".join(f"{t - t0:.1f}s {'進' if e == 'entering' else '出'}" for t, e in events) or "（沒有事件）"
+
+
+def _print_logs(cal: Calibration, base: GateParams) -> None:
+    """執行期記錄重播的結果：現在的設定 vs 建議的設定，各來回跳幾次。"""
+    logs = getattr(cal, "_logs", None)
+    if not logs:
+        return
+    print(f"\n執行期記錄重播（{len(logs)} 份，相反的事件間隔不到 {FLAP_SEC:g} 秒算來回跳）：")
+    for i, (name, obs) in enumerate(logs):
+        t0 = obs[0][0] if obs else 0.0
+        b = cal.base_log_events[i] if cal.base_log_events else []
+        print(f"  {name}（{(obs[-1][0] - t0) / 60:.1f} 分鐘）")
+        print(f"    現在的設定：來回跳 {len(flaps(b))} 次　{_fmt_events(b, t0)}")
+        if cal.log_events:
+            n = cal.log_events[i]
+            print(f"    建議的設定：來回跳 {len(flaps(n))} 次　{_fmt_events(n, t0)}")
 
 
 def _passes(cal: Calibration):
@@ -316,6 +355,11 @@ def write_back(p: GateParams, source: str) -> None:
     lm["rssi_estimator"] = p.estimator
     lm["rssi_smoothing_sec"] = p.smoothing_sec
     lm["gate_min_confirm_samples"] = p.min_confirm_samples
+    lm["gate_min_confirm_sec"] = p.min_confirm_sec
+    lm["_gate_min_confirm_sec_comment"] = (
+        "門口判定的確認持續時間（秒）：新的一側除了連續 gate_min_confirm_samples 筆，還要從第一筆算起持續這麼久"
+        "才算數（core/landmark_correction.GateCrossingDetector 第 4 點）。光數筆數不夠：每秒約 13 筆，3 筆只有 0.2 秒，"
+        "而平滑值可能被單一一筆強封包撐住一整個窗口。由 tools/calibrate_gate_beacons.py 挑，0 = 不看時間（舊版行為）。")
     lm["gate_hysteresis_dbm"] = round(p.hysteresis_dbm, 2)
     lm["gate_min_crossing_rssi_dbm"] = round(p.min_crossing_rssi_dbm, 1)
     lm["gate_calibration_source"] = source
@@ -333,7 +377,8 @@ def save_result(out_dir: Path, cal: Calibration) -> None:
         "error": cal.error,
         "params": None if cal.params is None else cal.params.to_dict(),
         "candidates": [
-            {"estimator": c.estimator, "window": c.window, "confirm": c.confirm, "offset": c.offset,
+            {"estimator": c.estimator, "window": c.window, "confirm_sec": c.confirm_sec, "log_flaps": c.log_flaps,
+             "flap_blocked": c.flap_blocked, "offset": c.offset,
              "min_crossing": c.min_crossing, "interval": c.interval, "best_partial": c.best_partial, "info": c.info}
             for c in cal.candidates
         ],
@@ -344,12 +389,33 @@ def save_result(out_dir: Path, cal: Calibration) -> None:
     (out_dir / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def run_calibration(session: Session, base: GateParams) -> Calibration:
+def runtime_logs(since_epoch: float) -> List[tuple]:
+    """data/gate_logs/ 裡、第一筆觀測在 since_epoch 之後的執行期記錄。回傳 [(名稱, 觀測)]。"""
+    out = []
+    for path in sorted(RUNTIME_LOG_ROOT.glob("*/*.csv")):
+        try:
+            segs, _, meta = load(path)
+        except Exception:  # noqa: BLE001 — 壞掉的記錄檔跳過就好
+            continue
+        obs = segs.get("run", [])
+        if len(obs) < 20 or obs[0][0] < since_epoch:
+            continue
+        out.append((_rel(path), obs))
+    return out
+
+
+def run_calibration(session: Session, base: GateParams, logs: Optional[List[tuple]] = None) -> Calibration:
+    logs = logs or []
+    if logs:
+        mins = sum((o[-1][0] - o[0][0]) for _, o in logs) / 60
+        print(f"  一起重播 {len(logs)} 份執行期記錄（共 {mins:.1f} 分鐘），排除會來回跳的參數")
+
     def progress(done, total):
         print(f"\r  計算中 {done}/{total}（每一組設定都把整段錄音重播很多次）...", end="", flush=True)
-    cal = calibrate_session(session, base, progress=progress)
+    cal = calibrate_session(session, base, logs=[o for _, o in logs], progress=progress)
     print()
     cal._session = session  # noqa: SLF001 — 輸出逐趟結果用
+    cal._logs = logs        # noqa: SLF001
     return cal
 
 
@@ -449,7 +515,12 @@ def _start_scanner(base: GateParams, adapter: Optional[str]):
     return scanner
 
 
-def _from_data(path: Path, base: GateParams, dry_run: bool) -> int:
+def _parse_since(text: str) -> float:
+    return datetime.strptime(text, "%Y%m%d-%H%M%S").timestamp()
+
+
+def _from_data(path: Path, base: GateParams, dry_run: bool, use_logs: bool = True,
+               logs_since: Optional[str] = None) -> int:
     csv_path = path / "observations.csv" if path.is_dir() else path
     if not csv_path.exists():
         print(f"[錯誤] 找不到 {csv_path}")
@@ -462,7 +533,13 @@ def _from_data(path: Path, base: GateParams, dry_run: bool) -> int:
         return 0
     session = Session.from_recording(segs, meta.get("marks"))
     print(f"讀入 {_rel(csv_path)}：{len(session.obs)} 筆、{len(session.passes)} 趟")
-    cal = run_calibration(session, base)
+    logs = []
+    if use_logs:
+        since = _parse_since(logs_since) if logs_since else session.obs[0][0]
+        logs = runtime_logs(since)
+        if not logs:
+            print("  （沒有校正錄音之後的執行期記錄；實際推車用一陣子再重算，可以多排除會來回跳的參數）")
+    cal = run_calibration(session, base, logs)
     save_result(csv_path.parent, cal)
     return finish(cal, base, dry_run, _rel(csv_path.parent))
 
@@ -476,6 +553,9 @@ def _main() -> int:
     ap.add_argument("--from-data", default=None, help="用存下來的錄音重算（目錄或 observations.csv）")
     ap.add_argument("--monitor", action="store_true", help="即時監看原始值、濾波值與判定")
     ap.add_argument("--adapter", default=None, help="藍牙介面名稱，預設用系統預設")
+    ap.add_argument("--no-logs", action="store_true", help="--from-data 時不用執行期記錄檢查來回跳")
+    ap.add_argument("--logs-since", default=None,
+                    help="--from-data 時用這個時間之後的執行期記錄（YYYYmmdd-HHMMSS，預設 = 校正錄音開始時間）")
     args = ap.parse_args()
 
     cfg = load_landmark_config()
@@ -484,7 +564,7 @@ def _main() -> int:
         print("[錯誤] config.json 的 landmarks.gate_beacon_pair 沒有設定 inside_id / outside_id")
         return 1
     if args.from_data:
-        return _from_data(Path(args.from_data), base, args.dry_run)
+        return _from_data(Path(args.from_data), base, args.dry_run, not args.no_logs, args.logs_since)
 
     scanner = _start_scanner(base, args.adapter)
     if scanner is None:
