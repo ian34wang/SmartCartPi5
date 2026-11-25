@@ -34,7 +34,7 @@ def _nav(code):
 
 # 假的 pywebview api：記錄前端呼叫了什麼，並回一個合理的 payload 讓 render() 跑得動
 STUB = ("var STORE = " + json.dumps(store_layout.to_client(_LAY), ensure_ascii=False) + ";\n"
-        + "var NAV_M3 = " + _nav("M3") + ";\nvar NAV_L2 = " + _nav("L2") + ";\n") + """
+        + "var NAV_L4 = " + _nav("L4") + ";\nvar NAV_R2 = " + _nav("R2") + ";\n") + """
 window.__calls = [];
 function payload(over) {
   return Object.assign({
@@ -49,8 +49,8 @@ function payload(over) {
     saved_profile: {exists: false}, recent_transactions: [],
     cart_list_total: 25, budget_remaining: 975, pending_item: null,
     catalog: [
-      Object.assign({barcode:"4710018001234", name:"統一陽光豆漿 300ml", price:25, list_price:25, discount_pct:0, in_cart:true, health:""}, NAV_M3),
-      Object.assign({barcode:"PEANUT", name:"花生醬", price:80, list_price:80, discount_pct:0, in_cart:false, health:"含花生（過敏原：花生）"}, NAV_L2),
+      Object.assign({barcode:"4710018001234", name:"統一陽光豆漿 300ml", price:25, list_price:25, discount_pct:0, in_cart:true, health:""}, NAV_L4),
+      Object.assign({barcode:"PEANUT", name:"花生醬", price:80, list_price:80, discount_pct:0, in_cart:false, health:"含花生（過敏原：花生）"}, NAV_R2),
       {barcode:"NOSHELF", name:"沒位置的", price:10, list_price:10, discount_pct:0, shelf:"", shelf_text:"", instruction:"", route:[], spot:null, in_cart:false, health:""}
     ],
     promotions: [
@@ -222,19 +222,19 @@ async def main():
         await page.wait_for_timeout(150)
         shelves = await page.evaluate("document.querySelectorAll('#f-nav-map svg rect').length")
         chips = await page.evaluate("document.querySelectorAll('#f-nav-list .nav-chip').length")
-        if shelves == 4 and chips == 2:      # 3 座貨架 + 定位點的菱形
-            print("  找貨：平面圖畫出 3 座貨架與定位點、只列有貨架位置的商品  OK")
+        if shelves == 3 and chips == 2:      # 2 座貨架 + 定位點的菱形
+            print("  找貨：平面圖畫出 2 座貨架與定位點、只列有貨架位置的商品  OK")
         else:
             failures.append(f"找貨畫面不對：rect={shelves} chips={chips}")
         await page.click("#f-nav-list .nav-chip:nth-child(2)")
         await page.wait_for_timeout(150)
         route = await page.evaluate("(document.querySelector('#f-nav-map polyline')||{getAttribute:()=>''}).getAttribute('points')")
         info = await page.text_content("#f-nav-info")
-        if route and len(route.split()) == 5 and "左架・右上" in info and "繞到貨架後側" in info and "健康護照" in info:
-            print("  找貨：點商品 → 畫出路線（繞到左架後側）、說明文字、健康護照  OK")
+        if route and len(route.split()) == 5 and "右架・右側・後段" in info and "在貨架右側" in info and "健康護照" in info:
+            print("  找貨：點商品 → 畫出路線（右架右側）、說明文字、健康護照  OK")
         else:
             failures.append(f"找貨目標不對：{route!r} {info!r}")
-        await page.evaluate("window.APP.setPos({x: 0, y: 4.25, status: 'anchored'})")
+        await page.evaluate("window.APP.setPos({x: 0, y: 2.2, status: 'anchored'})")
         dot = await page.evaluate("""() => { const d = document.getElementById('f-cart-dot');
             return [d.getAttribute('visibility'), d.getAttribute('cx'), d.getAttribute('cy')]; }""")
         anchor = await page.evaluate("""() => { const t = Array.from(document.querySelectorAll('#f-nav-map text'))

@@ -135,7 +135,7 @@ def _main() -> int:
         return _fail(f"找不到 {_TEMPLATE_PATH}。用 `python3 tools/build_app_ui.py` 產生。")
 
     try:
-        store_layout.unit_m(store_layout.load(full_cfg.get("store")))
+        store_layout.validate(store_layout.load(full_cfg.get("store")))
     except ValueError as exc:
         return _fail(f"店面平面圖設定不完整：{exc}")
 
@@ -260,7 +260,8 @@ def _main() -> int:
         from core.store.vision import AnchorDetector
         from drivers.front_camera import FrontCamera
 
-        camera = FrontCamera(full_cfg.get("camera", {}), proc_width=int(vision_cfg["proc_width"]))
+        camera = FrontCamera(full_cfg.get("camera", {}), proc_width=int(vision_cfg["proc_width"]),
+                             undistort_alpha=float(vision_cfg["undistort_alpha"]))
         anchor_detector = AnchorDetector(vision_cfg["anchor_marker_id"], vision_cfg["anchor_marker_size_m"], camera.K)
         print(f"[4/4] 前方相機已開（處理 {camera.size[0]}x{camera.size[1]}，"
               f"定位點標記 #{vision_cfg['anchor_marker_id']}、邊長 {vision_cfg['anchor_marker_size_m']} m）")

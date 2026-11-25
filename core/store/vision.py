@@ -20,7 +20,7 @@ core/store/vision.py
        r = f × n                    車身右方
        forward = g·f，lateral = g·r  標記在推車前方幾公尺、右方幾公尺
    不需要知道相機的俯角：地面方向直接由標記本身量出來。
-   ui/bridge.py：forward、lateral 換成格數，推車位置 = 定位點 − (lateral, forward)（航向固定朝店內，
+   ui/bridge.py：推車位置 = 定位點 − (lateral, forward)（航向固定朝店內，
    右方 = +x、前方 = +y）。水平距離 √(forward² + lateral²) ≤ vision.anchor_trigger_m 才採用（越近越準）。
 
 2. 消失點航向（vanishing_point + vp_offset_deg + heading_from_vp）
@@ -184,11 +184,14 @@ class AnchorDetector:
             self._detect = lambda img: cv2.aruco.detectMarkers(img, dictionary, parameters=params)
 
     def detect(self, gray: np.ndarray) -> Optional[AnchorSighting]:
+        """last_corners：這次找到的標記四個角（像素，4×2），沒找到是 None（預覽畫框用）。"""
+        self.last_corners: Optional[np.ndarray] = None
         corners, ids, _ = self._detect(gray)
         if ids is None:
             return None
         for c, i in zip(corners, ids.flatten()):
             if int(i) == self.marker_id:
+                self.last_corners = c.reshape(4, 2)
                 ok, rvec, tvec = cv2.solvePnP(self._obj, c.reshape(4, 2).astype(np.float64), self.K, None,
                                               flags=cv2.SOLVEPNP_IPPE_SQUARE)
                 return floor_pose(rvec, tvec) if ok else None

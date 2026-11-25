@@ -1,0 +1,19 @@
+{
+  "board_size": [
+    9,
+    6
+  ],
+  "square_size_mm": 25.8,
+  "resolution": [
+    1280,
+    720
+  ],
+  "camera_num": 0,
+  "hflip": true,
+  "vflip": true,
+  "sensor_size": [
+    2304,
+    1296
+  ],
+  "created_at": "2026-11-26T06:21:39"
+}

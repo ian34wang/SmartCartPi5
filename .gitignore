@@ -3,7 +3,8 @@ __pycache__/
 venv/
 database/inventory.db
 logs/
-vision/camera_calibration.npz
+vision/*.npz
+data/camera_check/
 color_test.png
 # 執行期的門口記錄檔（每次啟動一份、每小時 2~3 MB），要分析時直接在 Pi 上看
 data/gate_logs/

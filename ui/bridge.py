@@ -384,7 +384,7 @@ class Bridge:
         return out
 
     def _where(self, p) -> str:
-        """優惠卡片上的「位置 中架・左下」；沒設或代碼不在平面圖上就空字串。"""
+        """優惠卡片上的「位置 左架・左側・前段」；沒設或代碼不在平面圖上就空字串。"""
         return store_layout.describe(self._layout, p.shelf) if store_layout.is_valid(self._layout, p.shelf) else ""
 
     def _cart_pos_payload(self) -> Optional[dict]:
@@ -1008,8 +1008,8 @@ class Bridge:
         推車位置 = 定位點 − (右方, 前方)（航向固定朝店內，右方 = +x、前方 = +y），正式對齊。"""
         if self.sm.get_session().state in _OUT_OF_ZONE_STATES:
             return
-        a, u = self._layout["anchor"], store_layout.unit_m(self._layout)
-        at = (float(a["x"]) - sighting.lateral_m / u, float(a["y"]) - sighting.forward_m / u)
+        a = self._layout["anchor"]
+        at = (float(a["x"]) - sighting.lateral_m, float(a["y"]) - sighting.forward_m)
         with self._lock:
             if self._pose is None:
                 return

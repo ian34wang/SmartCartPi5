@@ -51,8 +51,8 @@ def logic_config():
     return cfg
 
 
-# 測試用平面圖：一格 0.5 m（正式值是 config.json 的 store.unit_m，現場量）
-TEST_STORE = {"unit_m": 0.5}
+# 測試用平面圖：core/store/layout.DEFAULT_LAYOUT（2026-11-26 實際場地，單位 m），不套 config.json
+TEST_STORE: dict = {}
 
 
 def new_bridge():
@@ -466,7 +466,7 @@ check({c.tag for c in hp.conflicts(["豬肉", "酒精", "牛肉"], religion=["�
 check(not hp.conflicts(["花生"], allergens=["都沒有"]), "「都沒有」不會衝突")
 from database.db_manager import Product  # noqa: E402
 b21 = new_bridge()
-b21.db.upsert_product(Product("PEANUT", "花生醬", 80.0, 340.0, 20.0, tags=["花生", "大豆"], shelf="M3"))
+b21.db.upsert_product(Product("PEANUT", "花生醬", 80.0, 340.0, 20.0, tags=["花生", "大豆"], shelf="L4"))
 b21.continue_as_guest()
 b21.loading_profile_choice("B")
 b21.wizard_toggle_allergen("花生")
@@ -522,7 +522,7 @@ check("超過本次預算" in (p["notice"] or ""), "改預算後重新判斷", p
 print("\n[24] 優惠頁：特價、搭配、依偏好與預算推薦，全部從資料庫算")
 b24 = new_bridge()
 db24 = b24.db
-db24.upsert_product(Product("MILK", "鮮奶", 90.0, 950.0, 50.0, shelf="M4", pairs_with=["CEREAL"]))
+db24.upsert_product(Product("MILK", "鮮奶", 90.0, 950.0, 50.0, shelf="L2", pairs_with=["CEREAL"]))
 db24.upsert_product(Product("CEREAL", "穀片", 120.0, 300.0, 30.0, shelf="R3"))
 db24.upsert_product(Product("SALAD", "即期沙拉", 60.0, 250.0, 25.0, discount_pct=50, shelf="L3"))
 db24.upsert_product(Product("NUTS", "綜合堅果", 150.0, 200.0, 20.0, tags=["堅果類"], shelf="R1"))
@@ -599,9 +599,9 @@ dbo.init_db(seed=False)
 po = dbo.get_product("/3R8T2CX")
 check(po is not None and po.tags == [] and po.shelf == "" and po.discount_pct == 0, "舊資料庫補上欄位、原資料還在", po)
 import tools.product_admin as pa  # noqa: E402
-meta = pa.parse_meta({"tags": "花生;大豆", "shelf": "m3", "discount_pct": "30"}, "/3R8T2CX", po)
-check(meta == {"tags": ["花生", "大豆"], "shelf": "M3", "discount_pct": 30.0, "pairs_with": []}, "解析標籤、貨架、折扣", meta)
-for bad in ({"tags": "鹽"}, {"shelf": "B2"}, {"shelf": "M5"}, {"discount_pct": "120"}):
+meta = pa.parse_meta({"tags": "花生;大豆", "shelf": "l4", "discount_pct": "30"}, "/3R8T2CX", po)
+check(meta == {"tags": ["花生", "大豆"], "shelf": "L4", "discount_pct": 30.0, "pairs_with": []}, "解析標籤、貨架、折扣", meta)
+for bad in ({"tags": "鹽"}, {"shelf": "B2"}, {"shelf": "M3"}, {"shelf": "L5"}, {"discount_pct": "120"}):
     try:
         pa.parse_meta(bad, "X", None)
         check(False, f"錯誤的值要擋下來：{bad}")
@@ -616,51 +616,53 @@ db2 = DBManager(tempfile.mktemp(suffix=".db"))
 db2.init_db(seed=False)
 ok, errs = pa.import_csv(db2, csvp)
 p2 = db2.get_product("/3R8T2CX")
-check(ok == 1 and not errs and p2.tags == ["花生", "大豆"] and p2.shelf == "M3" and p2.discount_pct == 30,
+check(ok == 1 and not errs and p2.tags == ["花生", "大豆"] and p2.shelf == "L4" and p2.discount_pct == 30,
       "CSV 匯出再匯入，標籤等都在", (ok, errs, p2))
 
 print("\n[28] 店面平面圖：貨架代碼、路線、推車位置在定位點對齊")
 import math as _m  # noqa: E402
 from core.store import layout as sl  # noqa: E402
 lay = sl.load(TEST_STORE)
-check(sl.codes(lay)[:4] == ["L1", "L2", "L3", "L4"] and len(sl.codes(lay)) == 12, "三座貨架各 4 個角", sl.codes(lay))
-check(sl.describe(lay, "m3") == "中架・左下", "代碼 → 中文位置", sl.describe(lay, "m3"))
-r = sl.route(lay, "L2")
-check(r[0] == (0.0, 0.0) and r[1] == (0, 4.25) and r[-1] == (-2, 7.5), "路線：門 → 定位點 → … → 貨架後側", r)
+sl.validate(lay)
+check(True, "實際場地平面圖通過檢查")
+check(sl.codes(lay) == ["L1", "L2", "L3", "L4", "R1", "R2", "R3", "R4"], "兩座貨架各 4 個位置", sl.codes(lay))
+check(sl.describe(lay, "l3") == "左架・左側・前段", "代碼 → 中文位置", sl.describe(lay, "l3"))
+check(sl.slot_point(lay, "L1") == (-1.43, 3.98) and sl.slot_point(lay, "R4") == (1.47, 3.37),
+      "停車點：貨架那一面往外 0.3 m、沿長邊 3/4 與 1/4", (sl.slot_point(lay, "L1"), sl.slot_point(lay, "R4")))
+r = sl.route(lay, "L1")
+check(r == [(0.0, 0.0), (0.0, 2.2), (0.0, 2.765), (-1.43, 2.765), (-1.43, 3.98)],
+      "路線：門 → 定位點 → 直走出長廊 → 貨架前走道 → 左側", r)
 check(all(lay["hall"][0] <= x <= lay["hall"][1] and y <= lay["hall"][3] for x, y in r), "路線不出店外", r)
-check("往右走到右架" in sl.instruction(lay, "R4") and "前側" in sl.instruction(lay, "R4"), "說明文字",
-      sl.instruction(lay, "R4"))
-custom = sl.load({"slots": {"F": "前面", "B": "後面上"}, "_comment": "x"})
+ins = sl.instruction(lay, "R4")
+check("往右走到右架" in ins and "右側" in ins and "靠門" in ins, "說明文字", ins)
+custom = sl.load({"slots": {"F": {"name": "前面", "face": "前"}, "B": {"name": "後面", "face": "後"}}, "_comment": "x"})
+sl.validate(custom)
 check(sl.codes(custom)[:2] == ["LF", "LB"] and "_comment" not in custom, "config 可以改分法", sl.codes(custom))
-
-
-for bad in (None, 0, -1, "abc"):
+rb = sl.route(custom, "LB")
+check(rb[-1] == (-0.81, 4.585) and rb[-2][1] == 4.585 and rb[-3] == (-1.43, 2.765), "後面：從近的那一側繞過去", rb)
+for bad, why in (({"anchor": {"name": "x", "x": 0, "y": 3.0}}, "長廊"),
+                 ({"slot_margin_m": 1.2}, "大廳外"),
+                 ({"corridor": [-0.3, 0.3, 0, 2.0]}, "大廳前緣"),
+                 ({"slots": {"1": "左上"}}, "slots.1"),
+                 ({"shelves": [{"id": "X", "name": "外架", "rect": [3, 4, 3, 4]}]}, "超出大廳")):
     try:
-        sl.unit_m(sl.load({"unit_m": bad}))
-        check(False, f"unit_m = {bad!r} 要報錯")
-    except ValueError:
-        pass
-try:
-    fr0 = sl.StoreFrame(sl.load())
-    fr0.anchor(0.0, 0.0, 90.0)
-    fr0.feed(100.0, 0.0)
-    check(False, "沒填 unit_m 時換算推車位置要報錯（不能用沒量過的預設值）")
-except ValueError as exc:
-    check("store.unit_m" in str(exc), "沒填 unit_m：報錯並指出 config.json 的 store.unit_m", str(exc))
-check(sl.unit_m(sl.load({"unit_m": 0.6})) == 0.6, "unit_m 照 config 的值")
+        sl.validate(sl.load(bad))
+        check(False, f"不合理的平面圖要擋下來：{bad}")
+    except ValueError as exc:
+        check(why in str(exc), f"不合理的平面圖要擋下來（{why}）", str(exc))
 
 fr = sl.StoreFrame(lay)
 fr.enter(1000.0, 1000.0, 30.0)                      # 進場：里程計航向 30° = 店內方向
 check(fr.status == fr.ROUGH, "進場：暫時對齊")
 fx_, fy_ = fr.feed(1000.0 + 500 * _m.cos(_m.radians(40)), 1000.0 + 500 * _m.sin(_m.radians(40)))
-check(fx_ == 0.0 and 1.9 < fy_ < 2.0, "長廊鎖住方向：還沒到定位點前 x 固定在中線", (fx_, fy_))
+check(fx_ == 0.0 and 1.25 < fy_ < 1.35, "長廊鎖住方向：還沒到定位點前 x 固定在中線", (fx_, fy_))
 fr.anchor(3000.0, 2000.0, 30.0)
-check(fr.status == fr.ANCHORED and fr.feed(3000.0, 2000.0) == (0.0, 4.25), "看到定位點：對齊到定位點", fr.last)
+check(fr.status == fr.ANCHORED and fr.feed(3000.0, 2000.0) == (0.0, 2.2), "看到定位點：對齊到定位點", fr.last)
 check(abs(fr.heading(30.0) - 90.0) < 1e-9, "航向固定成正向（朝店內 = 90°）", fr.heading(30.0))
 px, py = fr.to_store(3000.0 + 1000 * _m.cos(_m.radians(30)), 2000.0 + 1000 * _m.sin(_m.radians(30)))
-check(abs(px) < 1e-6 and abs(py - 6.25) < 1e-6, "沿航向直走 1 m = 往店內 2 格", (px, py))
+check(abs(px) < 1e-6 and abs(py - 3.2) < 1e-6, "沿航向直走 1 m = 往店內 1 m", (px, py))
 px, py = fr.to_store(3000.0 + 1000 * _m.cos(_m.radians(120)), 2000.0 + 1000 * _m.sin(_m.radians(120)))
-check(abs(px + 2) < 1e-6 and abs(py - 4.25) < 1e-6, "左轉 90° 走 1 m → 往左 2 格", (px, py))
+check(abs(px + 1) < 1e-6 and abs(py - 2.2) < 1e-6, "左轉 90° 走 1 m → 往左 1 m", (px, py))
 # IMU 漂了 5°：車子其實還是朝店內（90°），IMU 卻說 35°（估計 95°）。消失點量到 90°。
 before = fr.to_store(3000.0, 2000.0)
 e = fr.correct_heading(3000.0, 2000.0, 35.0, 90.0, weight=1.0)
@@ -760,7 +762,7 @@ b28 = new_bridge()
 b28.db.upsert_product(Product("TEA", "綠茶", 20.0, 600.0, 30.0, shelf="R2"))
 b28.db.upsert_product(Product("OLD", "舊代碼", 20.0, 600.0, 30.0, shelf="B2"))   # 舊九宮格代碼直接寫進 DB
 cat = {c["barcode"]: c for c in b28.get_state()["catalog"]}
-check(cat["TEA"]["shelf_text"] == "右架・右上" and cat["TEA"]["route"][-1] == [3, 7.5] and cat["TEA"]["instruction"],
+check(cat["TEA"]["shelf_text"] == "右架・右側・後段" and cat["TEA"]["route"][-1] == [1.47, 3.98] and cat["TEA"]["instruction"],
       "找貨頁拿到中文位置、路線、說明", cat["TEA"])
 check(cat["OLD"]["shelf"] == "" and cat["OLD"]["route"] == [], "不在平面圖上的代碼不顯示（不亂畫）", cat["OLD"])
 st = b28.get_state()
@@ -777,18 +779,18 @@ check(b28.get_state()["cart_pos"]["status"] == "rough", "進場後：約略位�
 b28.on_pose(5000.0, 6650.0, 90.0, 4.0)
 b28.on_anchor_seen(sv.AnchorSighting(forward_m=1.0, lateral_m=0.0, height_m=0.5))
 p = b28.get_state()
-check(p["cart_pos"] == {"x": 0.0, "y": 2.25, "status": "anchored"} and "定位點" in (p["notice"] or ""),
-      "看到前方 1 m 的地上標記 → 推車在定位點後 2 格，對齊並提示", (p["cart_pos"], p["notice"]))
+check(p["cart_pos"] == {"x": 0.0, "y": 1.2, "status": "anchored"} and "定位點" in (p["notice"] or ""),
+      "看到前方 1 m 的地上標記 → 推車在定位點後 1 m，對齊並提示", (p["cart_pos"], p["notice"]))
 b28.on_pose(5000.0, 7150.0, 90.0, 4.5)              # 往前推 0.5 m，標記剩前方 0.5 m、偏右 0.1 m
 b28.on_anchor_seen(sv.AnchorSighting(forward_m=0.5, lateral_m=0.1, height_m=0.5))
-check(b28.get_state()["cart_pos"] == {"x": -0.2, "y": 3.25, "status": "anchored"},
+check(b28.get_state()["cart_pos"] == {"x": -0.1, "y": 1.7, "status": "anchored"},
       "越近越準：每次看到都重新對齊（標記偏右 = 推車偏左）", b28.get_state()["cart_pos"])
 b28.on_pose(5000.0, 7650.0, 90.0, 5.0)
-check(b28.get_state()["cart_pos"] == {"x": -0.2, "y": 4.25, "status": "anchored"}, "再往前 0.5 m 正好到定位點",
+check(b28.get_state()["cart_pos"] == {"x": -0.1, "y": 2.2, "status": "anchored"}, "再往前 0.5 m 正好到定位點",
       b28.get_state()["cart_pos"])
 check(b28.get_state()["notice"] is None, "已經對齊了，再看到不重複提示")
 b28.on_pose(5000.0 - 1000.0, 7650.0, 90.0, 6.0)
-check(b28.get_state()["cart_pos"] == {"x": -2.2, "y": 4.25, "status": "anchored"}, "往左 1 m = 往左 2 格（unit_m 0.5）",
+check(b28.get_state()["cart_pos"] == {"x": -1.1, "y": 2.2, "status": "anchored"}, "往左 1 m（平面圖單位就是公尺）",
       b28.get_state()["cart_pos"])
 b28.on_pose(4000.0, 7650.0, 93.0, 6.1)              # IMU 漂了 3°
 b28.on_vp_heading(0.0)                              # 消失點在正中間：其實正對座標軸

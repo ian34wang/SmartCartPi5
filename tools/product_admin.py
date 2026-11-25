@@ -39,9 +39,9 @@ CSV 格式（匯入/匯出都用這個欄位順序，第一行是標題列）：
 
     後四欄可以沒有（舊格式的 CSV 照樣能匯入，已經設好的標籤等不會被清掉）：
     - tags：成分標籤，用分號隔開，例如「花生;大豆」（可用的標籤見 core/shopping/health_passport.TAG_OPTIONS）
-    - shelf：貨架位置，貨架代號 + 角落編號，例如 M3 = 中架左下角。預設平面圖（core/store/layout.py，
-      可用 config.json 的 store 區塊改）：L 左架、M 中架、R 右架；1 左上、2 右上、3 左下、4 右下
-      （「上」靠後牆、「下」靠定位點）→ L1~L4、M1~M4、R1~R4
+    - shelf：貨架位置，貨架代號 + 位置編號，例如 L3 = 左架左側靠門那段。預設平面圖（core/store/layout.py，
+      可用 config.json 的 store 區塊改）：L 左架、R 右架；1 左側後段、2 右側後段、3 左側前段、4 右側前段
+      （「前」靠門、「後」靠後牆）→ L1~L4、R1~R4
     - discount_pct：折扣百分比，50 = 5 折，0 或空白 = 沒有
     - pairs_with：搭配推薦的條碼，用分號隔開
 
@@ -141,8 +141,8 @@ def load_store_layout() -> dict:
 
 def _shelf_help(lay: dict) -> str:
     names = "、".join(f"{s['id']} {s['name']}" for s in lay["shelves"])
-    slots = "、".join(f"{k} {v}" for k, v in lay["slots"].items())
-    return f"貨架代號 + 角落編號（{names}；{slots}），例如 {store_layout.codes(lay)[0]}"
+    slots = "、".join(f"{k} {v['name']}" for k, v in lay["slots"].items())
+    return f"貨架代號 + 位置編號（{names}；{slots}），例如 {store_layout.codes(lay)[0]}"
 
 
 def parse_meta(row: dict, barcode: str, existing: Optional[Product], lay: Optional[dict] = None) -> dict:

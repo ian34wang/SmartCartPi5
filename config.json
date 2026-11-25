@@ -101,20 +101,30 @@
     "format": "RGB888",
     "framerate": 30,
     "calibration_file": "vision/camera_calibration.npz",
-    "_calibration_comment": "棋盤格內參（camera_matrix, dist_coeffs），python3 -m drivers.camera_stream --calibrate 產生。在 resolution（1280x720）下量的：改 resolution 就要重新校正，drivers/front_camera.py 發現實際影格尺寸不同會直接報錯。相機走 picamera2（libcamera），不用 cv2.VideoCapture。"
+    "_calibration_comment": "棋盤格內參（camera_matrix, dist_coeffs），python3 -m drivers.camera_stream --calibrate 產生。在 resolution（1280x720）下量的：改 resolution 就要重新校正，drivers/front_camera.py 發現實際影格尺寸不同會直接報錯。相機走 picamera2（libcamera），不用 cv2.VideoCapture。",
+    "index": 0,
+    "hflip": true,
+    "vflip": true,
+    "_index_comment": "前方相機是哪一台（libcamera 編號，python3 -m drivers.camera_stream --list 看；--snapshot 每台拍一張比對）：0 = Camera Module 3 Wide（CSI），1 = Logitech C270（USB，拍購物車內、監視備檔，app 目前沒用到）。hflip／vflip：相機 11-26 裝成轉 180°，兩個都 true（在 ISP 裡翻回來）。翻轉改了內參要跟著換：同一台相機 --flip-calibration 換算，換了相機 --calibrate 重拍；校正檔記著量的時候的翻轉，對不上 app 會報錯。"
   },
   "store": {
-    "_comment": "店面平面圖（core/store/layout.py，2026-11-23 構想圖）。沒寫的欄位用 core/store/layout.DEFAULT_LAYOUT。",
-    "unit_m": null,
-    "_unit_m_comment": "CALIBRATE_ME 平面圖一格幾公尺，要現場量：長廊寬 ÷ 2，或門到定位點標記中心的距離 ÷ 4.25，兩個應該接近。沒有預設值，沒填 app 啟動時報錯結束（不拿沒量過的數字畫推車位置）。"
+    "_comment": "店面平面圖：程式內建的是 2026-11-26 架好的實際場地（core/store/layout.DEFAULT_LAYOUT，單位 m，原點在門正中間，y 往店裡；CAD 圖 docs/store_field.DWG、docs/store_field.png）。場地改了才需要在這裡覆蓋 hall、corridor、anchor、shelves、slots 等欄位；app 啟動時檢查，不合理就報錯結束。",
+    "anchor": {
+      "name": "定位點",
+      "x": 0.0,
+      "y": 2.09
+    },
+    "_anchor_comment": "定位點標記中心的實際位置（m）：2026-11-26 貼在長廊中線、離長廊入口（閘門線）2.09 m（程式內建的建議值是 2.20）。標記移動了就重量、改這裡；推車對齊後的位置全部以這一點為準。"
   },
   "vision": {
     "_comment": "前方相機的定位點標記與貨架消失點（core/store/vision.py；ui/workers.py 的 VisionConsumer）。沒寫的欄位用 core/config.py 的 VISION_DEFAULTS。",
     "anchor_marker_id": 0,
     "anchor_marker_size_m": 0.15,
-    "_anchor_marker_comment": "地上定位點的 ArUco 標記（DICT_4X4_50）編號、黑框實際邊長（m）。印出來要量：邊長跟這裡不同，算出來的距離會等比例錯。",
-    "camera_height_m": 0.5,
-    "_camera_height_comment": "前方相機鏡頭離地高度（m），目前是約略值，現場量了再改。由標記算出來的相機高度跟這個差超過 height_tol_m（預設 0.15）就當誤判不採用。"
+    "_anchor_marker_comment": "地上定位點的 ArUco 標記（DICT_4X4_50）編號、黑框實際邊長（m，不含白邊）。2026-11-26 量 0.15 m。邊長量錯，算出來的距離會等比例錯。",
+    "camera_height_m": 0.52,
+    "_camera_height_comment": "前方相機鏡頭中心離地高度（m），2026-11-26 量 0.52 m。由標記算出來的相機高度跟這個差超過 height_tol_m（預設 0.15）就當誤判不採用。",
+    "proc_width": 1280,
+    "_proc_width_comment": "影像縮到這個寬度再找標記與消失點。11-26 改完整視野（廣角）後同一個標記在畫面上變小，從預設 640 提高到 1280（不縮），1.5 m 外的標記才找得到；太慢再降。"
   },
   "barcode_scanner": {
     "device_name_hint": "USBKey",

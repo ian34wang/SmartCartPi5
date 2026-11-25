@@ -32,6 +32,7 @@ VISION_DEFAULTS: Dict[str, float] = {
     "vp_max_angle_deg": 28.0,       # 消失點在光軸左右幾度內才採用
     "fps": 5.0,                     # 每秒處理幾張
     "proc_width": 640,              # 縮到這個寬度再處理
+    "undistort_alpha": 0.0,         # 去畸變保留多少視野：0 = 不留黑邊（角落裁掉一些），1 = 全部留（中央變小）
 }
 
 

@@ -20,9 +20,9 @@
 | 門口 BLE 進出場判定 | 完成，11-16 校正 | ✅ 實機（建議用新版校正重算一次，見待辦 1） |
 | 秤重、光流、航向校正 | 完成，11-16 校正 | ✅ 實機 |
 | 健康護照、錢包管家、優惠（規則式） | 完成 | ⚠️ 只有自動化測試；展示商品的標籤、貨架還沒建檔 |
-| 找貨頁（平面圖、路線、推車位置） | 完成 | ⚠️ 只有自動化測試；`store.unit_m` 沒填之前 app 不會啟動 |
+| 找貨頁（平面圖、路線、推車位置） | 完成，11-26 換成實際場地（CAD 圖） | ⚠️ 只有自動化測試 |
 | 里程計準度（光流 + IMU） | 完成，軌跡工具已有 | ⚠️ 只用校正時同一份錄音重播過，沒有獨立驗證 |
-| 相機定位點、消失點修航向 | 完成 | ⚠️ 只在合成影像上測過 |
+| 相機定位點、消失點修航向 | 完成，11-26 重新校正內參（完整視野） | ✅ 靜態實測（標記 0.6~1.5 m 全部偵測、相機高 0.49~0.52 m）；⚠️ 還沒在 app 裡推著走過 |
 | LLM 推薦、異常偵測、依推車位置重新規劃路線 | — | 未開始 |
 
 **接下來要做的**（照順序）：
@@ -33,8 +33,8 @@
 2. **里程計軌跡驗證**（不用等場地）：`python3 -m tools.track_odometry --grid-m 0.3`，推直線、L 形、繞一圈，跟捲尺量的終點比
    （見〈定位：里程計〉）。11-16 三趟直推的終點都偏右 3~7%，這次要量終點的左右偏差。
 3. **展示商品建檔**：`python3 -m tools.product_admin meta <條碼>` 設貨架（`L1`~`R4`）、成分標籤、折扣、搭配。
-4. **場地鋪完後**：量一格多長填 `store.unit_m`、量相機高度、印定位點標記貼地上，`python3 -m tools.verify_store_vision` 跟捲尺比對
-   （見〈店面平面圖與推車位置〉）。
+4. **相機動態驗證**：靜態比對 11-26 做完（見〈現場驗證〉）。下一步開 app 從門口推進長廊，看找貨頁的推車點在定位點對齊、
+   推到貨架停車點時落在對的位置（〈現場驗證〉第 5 步）。
 5. **整趟實機彩排**：進門 → 找貨 → 掃碼 → 結帳 → 出場。
 
 ---
@@ -52,7 +52,8 @@
 | Raspberry Pi 5 | — | 全部的軟體 |
 | USB 條碼掃描器 | Pi USB（evdev） | 商品條碼、會員卡、店員工作證 |
 | 門口 BLE Beacon ×2 | Pi 內建藍牙 | 門內 GATE-INSIDE（Arduino UNO R4 WiFi）、門外 GATE-OUTSIDE（ESP32） |
-| 官方廣角相機 | Pi CSI | 前方相機：地上定位點標記、貨架消失點 |
+| Camera Module 3 Wide（imx708_wide） | Pi CSI（相機 0） | 前方相機：地上定位點標記、貨架消失點；裝成轉 180°，軟體翻回來 |
+| Logitech C270 | USB（相機 1） | 拍購物車內，監視備檔用；app 目前沒用到，之後若加神經網路視覺辨識從這裡接 |
 | 7 吋觸控螢幕 | Pi DSI | 720×1280 直立 |
 
 MCU 腳位已經用滿，所以門口偵測不經過 MCU，直接用 Pi 的藍牙掃 Beacon，車上不用多裝東西。
@@ -123,6 +124,7 @@ SmartCartPi5/
 ├── design-cart-ui/*.dc.html    畫面設計稿（index.html 的來源）
 ├── tools/                      終端機工具（校正、驗證、後台、分析）
 ├── tests/                      自動化測試（都不需要硬體）；run_all.py 一次跑完
+├── docs/store_field.DWG/.png   場地 CAD 圖（平面圖的來源）
 ├── vision/camera_calibration.npz   相機內參（不進版控）
 └── data/                       校正錄音、執行期記錄、軌跡圖
 ```
@@ -193,6 +195,9 @@ python3 -m ui.app_gui --fullscreen
 | `sudo venv/bin/python3 -m drivers.barcode_scanner --list` | 列出輸入裝置，找掃描器名稱 |
 | `sudo venv/bin/python3 -m drivers.barcode_scanner --device-hint USBKey [--debug]` | 刷條碼看解析結果（`--debug` 印原始鍵碼） |
 | `python3 -m drivers.ble_beacon_scanner [--list]` | 列出附近 BLE 裝置／印門口兩顆的原始 RSSI |
+| `python3 -m drivers.camera_stream --list` | 列出接著的相機（編號、型號） |
+| `python3 -m drivers.camera_stream --snapshot` | 每台相機各拍一張原始影像，確認哪台是前方、有沒有裝反 |
+| `python3 -m drivers.camera_stream --flip-calibration` | 同一台相機改了翻轉：內參直接換算，不用重拍 |
 | `python3 -m drivers.camera_stream --preview` | 相機擷取 |
 | `python3 -m drivers.camera_stream --color-test` | 拍一張存 PNG，確認色彩通道 |
 
@@ -205,7 +210,8 @@ python3 -m ui.app_gui --fullscreen
 | `python3 -m tools.calibrate_gate_beacons --monitor` | 即時看原始值、濾波值、判定 |
 | `python3 -m tools.calibrate_gate_beacons --survey` | 門口 5 個位置的靜止剖面（改佈署前後比較，不挑參數） |
 | `python3 -m tools.calibrate_optical_flow` | 光流 px→mm、安裝角、鏡像、yaw 正負號 |
-| `python3 -m drivers.camera_stream --calibrate --num-images 15 --square-size-mm 24` | 相機內參（已完成，error 0.2026） |
+| `python3 -m drivers.camera_stream --calibrate --square-size-mm 25.8` | 前方相機內參（預設拍 25 張；換相機、改翻轉或改感測器模式要重做） |
+| `python3 -m drivers.camera_stream --calibrate --from-data data/camera_calibration/<時間>` | 用存下來的棋盤格照片重算 |
 | `python3 -m tools.make_anchor_marker` | 產生地上定位點的 ArUco 標記圖 |
 
 **驗證**（只讀 `config.json`，不寫）
@@ -398,7 +404,7 @@ python3 tools/build_app_ui.py     # design-cart-ui/*.dc.html → ui/templates/in
 
 ### 找貨
 
-點商品名稱 → 平面圖畫出從門口過去的路線、標出那個角落，文字指引例如「進門沿長廊直走到定位點 → 往左走到左架 → 繞到貨架後側右邊那角」。
+點商品名稱 → 平面圖畫出從門口過去的路線、標出那個角落，文字指引例如「進門沿長廊直走過定位點 → 往左走到左架 → 在貨架左側、靠門那段」。
 觸控螢幕沒有鍵盤，所以不做打字搜尋。推車位置見〈店面平面圖與推車位置〉。
 
 ### 優惠
@@ -536,54 +542,72 @@ $$\mathbf{e} = (f_N - f^*,\ l_N - l^*),\qquad \frac{\lVert \mathbf{e} \rVert}{L}
 
 ## 店面平面圖與推車位置（`core/store/layout.py`、`core/store/vision.py`）
 
+場地 11-26 架好，CAD 圖在 `docs/store_field.DWG`（截圖 `docs/store_field.png`，單位 mm），程式裡的平面圖
+（`core/store/layout.DEFAULT_LAYOUT`）就是照這張圖換算的，**單位是公尺**，原點在門（長廊入口）正中間，$y$ 往店裡、$x$ 往右：
 
 ```
-            ┌────────────────────────────────┐  y = 8（後牆）
-            │   ┌──┐     ┌──────┐     ┌──┐   │
-            │   │左│     │  中  │     │右│   │  y = 5 ~ 7
-            │   └──┘     └──────┘     └──┘   │
-            │             ◇ 定位點           │  y = 4.25
-            └──────────┐          ┌──────────┘  y = 4
-                       │  長廊    │              x = −1 ~ +1（相機 OpenCV 校正用）
-                       └── 門 ────┘              y = 0
-              x = −4                      x = +4
+            ┌──────────────────────────────────────┐  y = 5.195（後牆）
+            │      ┌────┐            ┌────┐        │  y = 4.285
+            │      │左架│            │右架│        │
+            │      └────┘            └────┘        │  y = 3.065
+            └────────────────┐    ┌────────────────┘  y = 2.45（大廳前緣 = 長廊末端）
+                             │ ◇  │                   y = 2.20 定位點標記
+                             │長廊│
+                             └─門─┘                   y = 0
+          x = −2.06        x = ±0.31                  x = +2.09
 ```
 
-座標單位是「格」，原點在門的正中間，$y$ 往店裡、$x$ 往右；一格 $u$ 公尺（`store.unit_m`，**要現場量**）。
+| 區域 | $x$（m） | $y$（m） | CAD 圖上的尺寸 |
+|---|---|---|---|
+| 大廳 | −2.06 ~ +2.09 | 2.45 ~ 5.195 | 4150 × 2745 |
+| 長廊 | −0.31 ~ +0.31 | 0 ~ 2.45 | 620 × 2450；左緣離左牆 1750、右緣離右牆 1780 |
+| 左架 `L` | −1.13 ~ −0.49 | 3.065 ~ 4.285 | 640 × 1220；離左牆 930 |
+| 右架 `R` | +0.53 ~ +1.17 | 3.065 ~ 4.285 | 640 × 1220；兩架間 1020、離右牆 920 |
+| 定位點 | 0 | 2.09 | 不在 CAD 圖上：11-26 實際貼的位置（`config.json` 的 `store.anchor`；程式內建建議值 2.20） |
 
-**貨架位置代碼**：`L` 左架（$x\in[-3,-2]$）、`M` 中架（$[-1,1]$）、`R` 右架（$[2,3]$），三座都是 $y\in[5,7]$；
-角落 `1` 左上、`2` 右上、`3` 左下、`4` 右下（「上」靠後牆、「下」靠定位點）→ `L1`~`R4` 共 12 個位置。
-推車停的點在角落往外 0.5 格。分法不對的話改 `config.json`，程式不用動，例如每座貨架只分前後兩面：
+兩座貨架前緣離大廳前緣 0.615 m、後緣離後牆 0.910 m。長廊比大廳中心偏左 15 mm，平面圖照實寫。
+
+**貨架位置代碼**：貨架代號 + 位置編號。位置是貨架的某一面（`face`：左／右／前／後，「前」靠門）上的某一段
+（`at`：沿那一面從前或左算起的比例），推車停在那一面往外 `slot_margin_m`（0.3 m）的地方。兩座貨架都是長邊朝左右，預設：
+
+| 編號 | 位置 | 停車點（左架 / 右架） |
+|---|---|---|
+| 1 | 左側・後段 | (−1.43, 3.98) / (+0.23, 3.98) |
+| 2 | 右側・後段 | (−0.19, 3.98) / (+1.47, 3.98) |
+| 3 | 左側・前段 | (−1.43, 3.37) / (+0.23, 3.37) |
+| 4 | 右側・前段 | (−0.19, 3.37) / (+1.47, 3.37) |
+
+路線：門 → 定位點 → 直走出長廊到貨架前的走道（$y = 2.765$）→ 橫移到那一側 → 停車點（後面的話從近的那側繞過去）。
+商品實際擺法不是這樣分的話改 `config.json`，程式不用動，例如每座貨架只分前後兩面：
 
 ```json
-"store": { "unit_m": 0.6, "slots": { "1": "後面", "2": "前面" } }
+"store": { "slots": { "F": {"name": "前面", "face": "前"}, "B": {"name": "後面", "face": "後"} } }
 ```
 
-（`slots` 的名稱含「左／右」決定靠哪一邊、含「上／下」決定在貨架後側／前側；`hall`、`corridor`、`anchor`、
-`shelves` 也都可以覆蓋，格式見 `core/store/layout.DEFAULT_LAYOUT`。）
+`hall`、`corridor`、`anchor`、`entry_y`、`slot_margin_m`、`shelves` 也都可以覆蓋。app 啟動時 `validate()` 檢查：長廊接在大廳前緣、
+定位點在長廊裡、貨架在大廳裡、每個停車點都在大廳裡，不合理就報錯結束。
 
 **長廊與定位點**：長廊用來**鎖住移動方向**——推車在長廊裡只能朝店內直走，所以航向就是平面圖的 $+y$、
-橫向位置就是長廊中線。長廊末端的**定位點**地上平貼一張 ArUco 標記（`python3 -m tools.make_anchor_marker` 產生，
+橫向位置就是長廊中線。長廊靠末端的**定位點**地上平貼一張 ArUco 標記（`python3 -m tools.make_anchor_marker` 產生，
 印的時候保持正方形）。前方相機（約 50 cm 高、往斜前方打，OpenCV）看到它，就算出標記在推車前方、右方各幾公尺，
 反推推車在平面圖上的位置，「大圖座標」（平面圖）與「內部定位座標」（里程計，原點是開機那一刻）在這裡接起來。
 
-**座標換算**：里程計位置 $(X, Y)$（mm）→ 平面圖 $(x, y)$（格）：
+**座標換算**：里程計位置 $(X, Y)$（mm）→ 平面圖 $(x, y)$（m）：
 
-$$\begin{bmatrix} x \\ y \end{bmatrix} = \frac{1}{1000\,u}\begin{bmatrix} \cos\alpha & -\sin\alpha \\ \sin\alpha & \cos\alpha \end{bmatrix}\begin{bmatrix} X - X_0 \\ Y - Y_0 \end{bmatrix} + \begin{bmatrix} x_0 \\ y_0 \end{bmatrix}$$
+$$\begin{bmatrix} x \\ y \end{bmatrix} = \frac{1}{1000}\begin{bmatrix} \cos\alpha & -\sin\alpha \\ \sin\alpha & \cos\alpha \end{bmatrix}\begin{bmatrix} X - X_0 \\ Y - Y_0 \end{bmatrix} + \begin{bmatrix} x_0 \\ y_0 \end{bmatrix}$$
 
 - $(X_0, Y_0)$：對齊那一刻的里程計位置；$(x_0, y_0)$：那一刻推車在平面圖上的位置
-- $u$：一格幾公尺（`store.unit_m`）
 - $\alpha$：里程計航向 → 平面圖航向的差，平面圖航向 $\theta = \psi + \alpha$，$\psi$ 是里程計（IMU）航向
 
 | 時間點 | 做什麼 | 地圖上 |
 |---|---|---|
 | BLE 判定進場 | 推車在長廊、朝店內：$\alpha = 90^\circ - \psi$，$(x_0, y_0) = (0,\ \text{entry\_y})$；之後 $x$ 鎖在長廊中線 | 空心點（約略） |
-| 相機看到地上的定位點標記 | 航向固定成正向 $\alpha = 90^\circ - \psi$；$(x_0, y_0) = (x_a - \ell_r/u,\ y_a - \ell_f/u)$ | 實心點 |
+| 相機看到地上的定位點標記 | 航向固定成正向 $\alpha = 90^\circ - \psi$；$(x_0, y_0) = (x_a - \ell_r,\ y_a - \ell_f)$ | 實心點 |
 | 之後一直 | 貨架邊緣的消失點修航向（下面） | |
 
-$(x_a, y_a) = (0, 4.25)$ 是定位點（標記）在平面圖上的位置，$\ell_f, \ell_r$ 是標記在推車前方、右方幾公尺。
+$(x_a, y_a) = (0, 2.20)$ 是定位點（標記）在平面圖上的位置，$\ell_f, \ell_r$ 是標記在推車前方、右方幾公尺。
 標記在視野裡的每一張影像都重新對齊一次，推車越靠近越準。`entry_y` 是 BLE 判定出進場時推車大約在長廊哪裡
-（判定比實際穿越晚 1~2 秒，預設 1 格）。登入時推車已經在店裡也一樣：推到定位點前面讓相機看到標記；
+（判定比實際穿越晚 1~2 秒，預設 0.8 m）。登入時推車已經在店裡也一樣：推回長廊讓相機看到標記；
 標記被擋住的話，找貨頁有「**我在定位點**」按鈕（推車正好停在標記上時按）。走出門口、登出時位置作廢。
 
 **標記 → 推車位置**（`core/store/vision.py`）：標記四個角 → `cv2.solvePnP`（`IPPE_SQUARE`）→ 標記在相機座標
@@ -615,13 +639,11 @@ $f_x, f_y$ 焦距、$c_x, c_y$ 光心（像素），$\phi \in \{0^\circ, 90^\cir
 **設定**（`config.json`，沒寫的用預設值）：
 
 ```json
-"store":  { "unit_m": null },
 "vision": { "anchor_marker_id": 0, "anchor_marker_size_m": 0.15, "anchor_trigger_m": 1.5,
             "camera_height_m": 0.5, "height_tol_m": 0.15, "vp_yaw_weight": 0.2, "fps": 5, "proc_width": 640 }
 ```
 
-`store.unit_m` **沒有預設值**：沒填或不是正數，app 啟動時就報錯結束（不拿沒量過的數字畫推車位置）。
-`vision` 沒寫的欄位用 `ui/app_gui.py` 的 `_VISION_DEFAULTS`；`config.json` 目前寫了標記編號、邊長與相機高度。
+`vision` 沒寫的欄位用 `core/config.py` 的 `VISION_DEFAULTS`；`config.json` 目前寫了標記編號、邊長與相機高度。
 
 前方相機是 app 的第 4 個必要硬體（`drivers/front_camera.py`），開不起來 app 就不啟動：
 
@@ -629,39 +651,37 @@ $f_x, f_y$ 焦距、$c_x, c_y$ 光心（像素），$\phi \in \{0^\circ, 90^\cir
   全專案只有這裡開相機（一顆 CSI 相機同時只能被一個 `Picamera2` 打開）。
 - `CameraStream` 用 `calibration_file=None` 開，拿原始影格；`front_camera.py` 轉灰階、縮到 640 寬，再用預先算好的
   對照表去畸變。**只去一次**，所以 `solvePnP` 的畸變係數傳 0、內參用縮小後的 $K'$。
-- 影格超過 1 秒沒更新就丟例外（相機斷線），由 `_VisionConsumer` 記錄。
+- 影格超過 1 秒沒更新就丟例外（相機斷線），由 `ui/workers.py` 的 `VisionConsumer` 記錄。
 
 內參換算：校正解析度 $(W_c, H_c)$ = `camera.resolution` = 1280×720，處理解析度 $(W_p, H_p)$ = 640×360，
 $s_x = W_p / W_c$、$s_y = H_p / H_c$：
 
 $$f_x' = s_x f_x,\qquad c_x' = s_x c_x,\qquad f_y' = s_y f_y,\qquad c_y' = s_y c_y$$
 
-$f_x, f_y$ 是焦距、$(c_x, c_y)$ 是主點（像素）；畸變係數對正規化座標定義，不隨解析度變。校正檔只存
-`camera_matrix`、`dist_coeffs`，沒存影像尺寸；`--calibrate` 預設就是 1280×720，$c_x = 637.8 \approx W_c/2 = 640$ 也對得上。
-$c_y = 406.6$ 比 $H_c/2 = 360$ 偏 47 px，現場驗證時如果相機高度 $h$ 一直系統性偏高或偏低，先懷疑這個，重新校正。
-實際影格尺寸跟 `camera.resolution` 不同時 `FrontCamera` 直接報錯（改解析度就要重新校正）。
+$f_x, f_y$ 是焦距、$(c_x, c_y)$ 是主點（像素）；畸變係數對正規化座標定義，不隨解析度變。
+校正檔（`vision/camera_calibration.npz`）存 `camera_matrix`、`dist_coeffs`（有理模型 8 個係數），以及量的時候的
+影像尺寸 `size`、翻轉 `hflip`/`vflip`、感測器模式 `sensor_size`；`FrontCamera` 開相機時逐一核對，對不上直接報錯：
+實際影格尺寸跟 `camera.resolution` 不同、翻轉跟 config 不同、或感測器模式（視野）不同，都代表內參不能用。
 
-**誤差**：長廊 2 格寬，定位點橫向最多差 1 格；位移量隨里程計累積（直線實測 ±2%），航向由消失點拉回。
+**誤差**：長廊 0.62 m 寬，對齊時推車中心橫向最多偏約 ±0.1 m（車寬佔掉大半）；位移量隨里程計累積（直線實測 ±2%），航向由消失點拉回。
 
 ### 現場驗證
 
 標記與消失點目前只在合成影像上測過，下面是實機要做的，照順序：
 
-**1. 量一格多長** $u$（m），填 `store.unit_m`：
+**1. 貼定位點標記**：`python3 -m tools.make_anchor_marker`，印的時候保持正方形（縮放 100%、取消「符合框架」），推車會壓過去建議護貝。
+量黑色方框邊長 $s$（m，不含白邊），填 `vision.anchor_marker_size_m`（目前 0.15）。
+平貼在**長廊中線**、標記中心離門（閘門線）$d_a$ = 2.20 m 的地上，方向不拘。
 
-$$u = \frac{W_c}{2} \approx \frac{d_a}{4.25}$$
+**為什麼放在長廊裡**：相機在 `anchor_trigger_m`（1.5 m）以內才採用標記，放在 2.20 m 代表推車在 $y$ = 0.7 ~ 2.2 m 之間會看到它——
+這一段推車一定在長廊、車頭朝店內，「對齊時航向 = $+y$」的假設才成立。貼的位置跟 2.20 m 差超過 1~2 cm 的話，
+量實際的 $d_a$ 改 `config.json`：`"store": {"anchor": {"name": "定位點", "x": 0.0, "y": <d_a>}}`；之後所有推車位置都以這一點為準，**這是整張圖最要量準的一個數**。
 
-- $W_c$：長廊實際寬度（m），平面圖上是 2 格（$x = -1 \sim +1$）
-- $d_a$：門口（閘門線中點）到定位點標記中心的距離（m），平面圖上是 4.25 格
-
-兩個算出來差很多，代表構想圖的比例跟現場不合，要改 `store.corridor`／`store.anchor`，不是只改 $u$。
-
-**2. 印定位點標記**：`python3 -m tools.make_anchor_marker`，印的時候保持正方形。量黑色方框邊長 $s$（m，不含白邊），
-填 `vision.anchor_marker_size_m`（目前 0.15）。平貼在長廊中線、離門 $d_a$ 的地上，方向不拘。
+**2. 對 CAD 圖**：捲尺抽量幾個尺寸（長廊寬 0.62 m、兩架之間 1.02 m、貨架前緣到大廳前緣 0.615 m），差超過約 3 cm 就照實際改 `config.json` 的 `store` 區塊。
 
 **3. 量相機高** $H$（m）：鏡頭中心離地，填 `vision.camera_height_m`（目前是約略值 0.5）。
 
-**4. 靜態比對**：`python3 -m tools.verify_store_vision`。車頭朝店內，停在標記前方約 0.6、1.0、1.4 m，各跑一輪；
+**4. 靜態比對**：`python3 -m tools.verify_store_vision`（在 Pi 桌面上跑會開即時預覽視窗：標記外框綠色 = app 會採用、橘色 = 看到但不採用，對準後在視窗按空白鍵收一輪）。車頭朝店內，停在標記前方約 0.6、1.0、1.4 m，各跑一輪；
 捲尺量「相機正下方的地面點 → 標記中心」沿車頭方向的距離 $\ell_f$，程式會問。
 
 | 看什麼 | 合理範圍 | 不合理時先查 |
@@ -676,11 +696,23 @@ $$u = \frac{W_c}{2} \approx \frac{d_a}{4.25}$$
 $\hat{\ell}_f$ 是程式量的中位數，$\delta$ 是消失點方向跟光軸的水平夾角（右為正），$\beta$ 是相機俯角。
 標註影像在 `data/vision_check/<時間>/round<k>.png`，可以放報告。
 
+**11-26 靜態比對結果**（`data/vision_check/20261126-062944/`，內參 `data/camera_calibration/20261126-062138`，重投影誤差 0.11 px）：
+
+| 輪 | 程式量的前方距離 $\hat{\ell}_f$ | 相機高 $h$（量的 0.52 m） | 偵測／採用 | 消失點 $\delta$ |
+|---|---|---|---|---|
+| 1 | 1.47 m | 0.49 m | 15/15 | −6.0°（車頭稍微偏右） |
+| 2 | 1.04 m | 0.51 m | 15/15 | −1.4° |
+| 3 | 0.61 m | 0.52 m | 15/15 | −1.7° |
+
+每一輪 15 張都找到標記、全部採用；相機高越遠誤差越大（1.47 m 時差 3 cm），仍在容許的 ±0.15 m 內。
+內參的棋盤格照片都是平放在地上拍的（角點只在畫面下方 40%），用這 25 張各自反推相機高是 0.516 ~ 0.530 m，地面這個用途是準的；
+1 m 以外的標記落在畫面中段、靠模型外推，上表 1.47 m 那輪 $h$ 偏低 3 cm 就是這個來源。要更準：補拍棋盤格拿在手上、在畫面上半部的照片一起算。
+
 **5. 動態**：開 app、登入，從門口推進長廊：
 
 1. 找貨頁出現空心點，沿長廊中線往前。
 2. 離標記約 1.5 m 以內，終端機出現「看到定位點標記（前方 … m、右方 … m、相機高 … m），地圖對齊完成」，點變實心。
-3. 推到某個貨架角落的停車點（例如 `M3` 中架左下），看地圖上的點有沒有落在那附近；再往左右各推一段，看方向對不對。
+3. 推到某個貨架的停車點（例如 `L3` 左架左側前段：左架左邊 0.3 m、離貨架前緣 0.3 m），看地圖上的點有沒有落在那附近；再往左右各推一段，看方向對不對。
 
 **6. 商品資料**：`python3 -m tools.product_admin meta <條碼>` 設貨架（`L1`~`R4`）、成分標籤、折扣、搭配（見〈資料庫與後台〉）。
 
@@ -873,7 +905,7 @@ python3 -m tools.analyze_gate_log <檔案> --set hysteresis_dbm=6 --set smoothin
 | 2 | `python3 -m tools.product_admin edit <條碼>` | 每個商品的標準重量與容差 | scale 改了就要重秤 |
 | 3 | `python3 -m tools.calibrate_gate_beacons` | 門口參數（見〈門口進出場判定〉） | Pi 裝在推車上的最終位置 |
 | 4 | `python3 -m tools.calibrate_optical_flow` | `odometry.*`（見〈定位：里程計〉） | 地上一條量好長度的直線（≥ 3 m） |
-| — | `python3 -m drivers.camera_stream --calibrate` | 相機內參 | 已完成（reprojection error 0.2026），鏡頭沒換不用重做 |
+| — | `python3 -m drivers.camera_stream --calibrate --square-size-mm <格子邊長>` | 相機內參 | 11-26 改成完整視野的感測器模式，**要重做**（舊的 error 0.2026 是裁切模式量的）；之後換相機、改翻轉也要重做 |
 
 ### 秤重（`tools/calibrate_weight.py`，計算在 `core/shopping/weight_calibration.py`）
 
@@ -937,9 +969,9 @@ $$T = \max\left(\lceil 1.5\,T_{\min}\rceil,\ \lceil 6\,\sigma_s \rceil,\ T_{\tex
 | `state_machine` | `login_barcode_prefix`、`staff_barcode_prefix` | 會員碼、工作證前綴 | `MEMBER-`、`STAFF-` |
 | | `zone_entry_timeout_sec`、`shopping_idle_timeout_sec`、`exit_timeout_after_checkout_sec` | 提醒用逾時 | 120、600、180 秒 |
 | `camera` | `resolution`、`format`、`framerate`、`calibration_file` | 相機（內參在這個解析度下量的） | 1280×720、RGB888、30 |
-| `store` | `unit_m` | 平面圖一格幾公尺（**必填，沒預設值**） | 未填（場地鋪完後量） |
-| | `slots`、`shelves`、`anchor`… | 覆蓋預設平面圖（見 `core/store/layout.py`） | 用預設 |
-| `vision` | `anchor_marker_id`、`anchor_marker_size_m`、`camera_height_m` | 定位點標記、相機高度；其他見 `core/config.py` 的 `VISION_DEFAULTS` | 0、0.15 m、0.5 m |
+| | `index`、`hflip`、`vflip` | 前方相機是第幾台、要不要翻轉（改了內參要跟著換） | 0（Camera Module 3）、true、true |
+| `store` | `hall`、`corridor`、`anchor`、`shelves`、`slots`… | 覆蓋程式內建的平面圖（m） | 不覆蓋，用 11-26 實際場地 |
+| `vision` | `anchor_marker_id`、`anchor_marker_size_m`、`camera_height_m`、`proc_width` | 定位點標記、相機高度、處理寬度；其他（`undistort_alpha` 等）見 `core/config.py` 的 `VISION_DEFAULTS` | 0、0.15 m、0.52 m、1280 |
 | `barcode_scanner` | `device_name_hint`、`key_timeout_sec` | 掃描器名稱關鍵字、一次掃碼的按鍵間隔上限 | `USBKey`、0.1 秒 |
 
 ---
@@ -999,6 +1031,35 @@ app 本身不需要 sudo，只要使用者在 `input` 群組裡。
    實際影格尺寸跟 `camera.resolution` 不同時直接報錯（改解析度就要重新校正）；影格超過 1 秒沒更新就丟例外（相機斷線）。
 4. 校正的預覽視窗要有畫面環境，純文字 SSH 用 `--no-window`。`qt.qpa.plugin ... wayland` 與字型警告無害。
 5. 內參 $c_y$ = 406.6 比影像中心 360 偏 47 px；現場驗證時相機高度如果一直系統性偏高或偏低，先懷疑這個，重新校正。
+6. **接了不只一台相機（11-26 起兩台）**：`Picamera2()` 不給編號就開第 0 台，第 0 台是誰由 libcamera 的列舉順序決定，不一定是前方那台。
+   `config.json` 的 `camera.index` 指定前方相機；`python3 -m drivers.camera_stream --list` 列出編號，`--snapshot` 每台各拍一張原始影像
+   （存 `data/camera_check/<時間>/cam<N>.png`）看哪張是前方視角。
+7. **相機裝反**（11-26 前方相機裝成轉 180°）：`camera.hflip`、`camera.vflip` 在 ISP 裡翻回來（libcamera `Transform`），上下顛倒兩個都 `true`。
+   `--list` 印的 `Rotation=180` 是感測器在模組板上的方向，系統會自己補，跟你怎麼裝無關，要看 `--snapshot` 的照片判斷。
+   翻轉會改變影像座標，令 $W \times H$ 為影像寬高（像素），轉 180° 後像素 $(u, v) \to (W-1-u,\ H-1-v)$，所以
+   $$c_x' = W - 1 - c_x,\qquad c_y' = H - 1 - c_y,\qquad p_1' = -p_1,\qquad p_2' = -p_2$$
+   （$f_x, f_y$ 是焦距、$(c_x, c_y)$ 是主點、$p_1, p_2$ 是切向畸變，徑向畸變 $k_1, k_2, k_3$ 不變；只左右翻是 $c_x$、$p_2$ 變，只上下翻是 $c_y$、$p_1$ 變）。
+   **同一台相機只改翻轉**：`python3 -m drivers.camera_stream --flip-calibration` 直接換算（原檔備份成 `.bak-<時間>.npz`），不用重拍棋盤格；
+   **換了相機**：`--calibrate` 重拍（會套用 config 的同一組翻轉）。校正檔記著量的時候的翻轉，跟 config 對不上 app 啟動就報錯，不會拿錯的內參算位置。
+8. **USB 攝影機（Logitech C270）**：不支援 RGB888，libcamera 給 MJPEG，picamera2 解出來是 R, G, B 順序（直接存檔紅藍對調）。
+   `frame_to_bgr()` 依相機的實際格式統一轉成 OpenCV 的 B, G, R；CSI 相機原樣不動。
+9. **一堆 libcamera 警告**（`No static properties available for 'imx708_wide'`、`No sensor delays found`、`Zero sequence expected for first frame`）：
+   前兩個是 libcamera 的感測器資料庫還沒收錄廣角版 imx708，調校檔照樣找得到；第三個是 USB 攝影機第一張影格的序號，都無害。
+   `drivers/camera_stream.py` 預設只讓 libcamera 印錯誤（`LIBCAMERA_LOG_LEVELS=*:ERROR`），除錯要看全部時執行前 `export LIBCAMERA_LOG_LEVELS=*:INFO`。
+10. **廣角鏡的視野被裁掉（11-26 發現）**：不指定感測器模式時，libcamera 挑「解析度最接近」的，imx708 對 1280×720 挑到
+   1536×864——那是**裁切畫面中間**的模式，視野比 `rpicam-hello` 小很多。現在 `open_camera()` 固定挑**完整視野**的模式
+   （`crop_limits` 涵蓋整個感光區、輸出至少 1280×720 的最小那個，imx708 是 2304×1296 的 2×2 合併），ISP 再縮到 1280×720。
+   視野變了內參就不同：校正檔記下 `sensor_size`，舊檔（沒記）或模式不同 app 啟動就報錯，要重新 `--calibrate`。
+   廣角鏡（水平約 102°）邊緣畸變大，校正改用有理模型（`cv2.CALIB_RATIONAL_MODEL`，$k_1 \sim k_6, p_1, p_2$），預設拍 25 張，
+   **棋盤格要拍到畫面四個角落與邊緣**，不然邊緣的畸變係數估不準。
+   11-26 實拍重投影誤差一直 > 1：角點精修窗口原本固定 11（23×23 px），廣角鏡下一格只有二十幾個像素，窗口蓋到隔壁角點、精修被拉偏
+   （合成影像實測：固定 11 → 1.40 px，改成相鄰角點間距的 0.3 倍 → 0.31 px）。另外改成**棋盤格停住才拍**（連續兩張角點位移 < 0.7 px）、
+   每張照片各算誤差並剔除特別大的、照片存 `data/camera_calibration/<時間>/` 可以 `--from-data` 重算。
+   視野變寬，同一個標記在畫面上變小：`vision.proc_width` 從 640 提高到 1280（不縮）。去畸變的新內參用
+   `cv2.getOptimalNewCameraMatrix`，`vision.undistort_alpha` = 0（預設，不留黑邊、角落裁一點）～ 1（全部留、中央變小）。
+11. **相機俯角不用量**：定位點標記的 `solvePnP` 直接量出地面的法向量（推車位置與相機高度都由它算），消失點也是每張影像
+   自己由 $v$ 座標算俯角 $\beta$，所以相機往下打幾度都可以，不是參數。真正有假設的是：相機**左右沒裝歪**（光軸投影到地面 = 車頭方向）、
+   **沒有側傾**；這兩個裝歪了，`verify_store_vision` 的右方距離 $\ell_r$ 與 $\delta$ 會一直偏同一邊。
 
 ### 觸控畫面花屏（WebKitGTK 的 DMA-BUF）
 
@@ -1045,7 +1106,7 @@ python3 tests/run_all.py
 
 | 測試 | 內容 | 項目 |
 |---|---|---|
-| `test_app_gui_bridge.py` | Bridge 端對端：整趟購物流程、17 種錯誤情境、精靈、偏好、交易、店員、健康護照、錢包、優惠、平面圖、機器視覺（合成影像）、推送、JsApi、多執行緒 | 200 |
+| `test_app_gui_bridge.py` | Bridge 端對端：整趟購物流程、17 種錯誤情境、精靈、偏好、交易、店員、健康護照、錢包、優惠、平面圖、機器視覺（合成影像）、推送、JsApi、多執行緒 | 207 |
 | `test_gate_model.py` | 門口判定：即時 = 重播 = 記錄檔重播 | 23 |
 | `test_gate_monitor.py` | 門口判定的方向、門檻、確認、航向 | 34 |
 | `test_calibrate_gate_beacons.py` | 門口校正的計算與錄音流程 | 37 |
@@ -1095,6 +1156,7 @@ python3 tests/run_all.py
 | 10-29 | 觸控畫面花屏查到是 WebKitGTK 的 DMA-BUF，固定繪圖設定 |
 | 11-16 | 全部硬體裝上推車並重新校正（秤重、門口、光流）；加入「等讀數穩定才比」；BLE 版完整購物流程實機跑通 |
 | 11-23 | 健康護照、錢包管家、找貨（平面圖 + 推車位置）、優惠改成資料驅動；地上定位點與貨架消失點；行駛軌跡工具；專案整理（見下） |
+| 11-26 | 前方相機改裝成轉 180°（軟體翻回、內參換算）、加一台 USB 攝影機 C270；場地架好：平面圖照 CAD 圖改成實際尺寸（單位公尺、兩座貨架），拿掉「一格幾公尺」`store.unit_m`，啟動時改成檢查平面圖是否合理 |
 
 ### 11-23 專案整理
 

@@ -815,13 +815,13 @@ TEMPLATE = r"""<!doctype html>
     }).join("");
   }
 
-  // 找貨：店面平面圖（payload.store，core/store/layout.py）。座標單位是「格」，原點在門的正中間，
+  // 找貨：店面平面圖（payload.store，core/store/layout.py）。座標單位是公尺，原點在門的正中間，
   // y 往店裡；畫面上門在下面。路線、說明文字、停車點都是 Python 算好的（catalog[].route/instruction/spot）。
   var navTarget = null;
-  var MAP_S = 56, MAP_PAD = 0.6;
+  var MAP_S = 110, MAP_PAD = 0.3;   // 每公尺幾個 SVG 單位、地圖四周留白（m）
   function mapBox(st) {
     return { x0: Math.min(st.hall[0], st.corridor[0]) - MAP_PAD, x1: Math.max(st.hall[1], st.corridor[1]) + MAP_PAD,
-             y0: Math.min(st.hall[2], st.corridor[2]) - MAP_PAD - 0.4, y1: Math.max(st.hall[3], st.corridor[3]) + MAP_PAD };
+             y0: Math.min(st.hall[2], st.corridor[2]) - MAP_PAD - 0.2, y1: Math.max(st.hall[3], st.corridor[3]) + MAP_PAD };
   }
   function mapPt(b, x, y) { return [((x - b.x0) * MAP_S).toFixed(1), ((b.y1 - y) * MAP_S).toFixed(1)]; }
   function posText(cp) {
@@ -852,7 +852,7 @@ TEMPLATE = r"""<!doctype html>
       P(h[1], h[2]), P(h[1], h[3]), P(h[0], h[3])].join(" ") + '" fill="#fff" stroke="#1a1a1a" stroke-width="3"/>');
     var d0 = mapPt(b, c[0], c[2]), d1 = mapPt(b, c[1], c[2]);
     out.push('<line x1="' + d0[0] + '" y1="' + d0[1] + '" x2="' + d1[0] + '" y2="' + d1[1] + '" stroke="#1a1a1a" stroke-width="9"/>');
-    var dl = mapPt(b, (c[0] + c[1]) / 2, c[2] - 0.45);
+    var dl = mapPt(b, (c[0] + c[1]) / 2, c[2] - 0.22);
     out.push('<text x="' + dl[0] + '" y="' + dl[1] + '" font-size="19" text-anchor="middle" fill="#1a1a1a">門（閘門）</text>');
     var cl = mapPt(b, (c[0] + c[1]) / 2, (c[2] + c[3]) / 2);
     out.push('<text x="' + cl[0] + '" y="' + cl[1] + '" font-size="18" text-anchor="middle" fill="#777">長廊</text>');
