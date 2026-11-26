@@ -645,6 +645,9 @@ TEMPLATE = r"""<!doctype html>
      ------------------------------------------------------------------ */
   html, body { width:100%; height:100%; max-width:720px; }
   .screen { width:100% !important; height:100% !important; }
+  /* 定位實測模式（app_gui --nav-only）：只留找貨頁，沒有「關閉導航」 */
+  body.nav-only #screen-navigation .close-btn,
+  body.nav-only #screen-navigation .bottomnav { display: none !important; }
 </style>
 </head>
 <body>
@@ -826,10 +829,18 @@ TEMPLATE = r"""<!doctype html>
   function mapPt(b, x, y) { return [((x - b.x0) * MAP_S).toFixed(1), ((b.y1 - y) * MAP_S).toFixed(1)]; }
   function posText(cp) {
     var st = (cp && cp.status) || "none";
+    if (st === "anchored" && cp.x !== undefined) {
+      var t = "● 推車 (" + cp.x.toFixed(2) + ", " + cp.y.toFixed(2) + ") m";
+      if (cp.heading !== undefined && cp.heading !== null) t += "　航向 " + cp.heading + "°";
+      if (cp.marker) t += "　｜標記 #" + cp.marker.id + "（" + cp.marker.age_s.toFixed(0) + " 秒前）";
+      return t;
+    }
     if (st === "anchored") return "● 推車位置：已在定位點對齊";
     if (st === "rough") return "◌ 推車位置：約略（推到定位點，相機看到標記就會對齊）";
     return "推車位置：還沒對齊（推到定位點讓相機看到標記，或按右邊按鈕）";
   }
+  // 推車圖示：圓點 + 朝向箭頭。heading 是平面圖上的角度（+x 為 0°、逆時針為正，朝店內 = 90°）；
+  // SVG 的 y 軸朝下、旋轉以順時針為正，所以畫面上要轉 −heading。
   function setPos(cp) {
     if (lastState) lastState.cart_pos = cp;
     var label = document.getElementById("f-nav-pos");
@@ -838,10 +849,19 @@ TEMPLATE = r"""<!doctype html>
     var st = lastState && lastState.store;
     if (!dot || !st) return;
     if (!cp || cp.x === undefined) { dot.setAttribute("visibility", "hidden"); return; }
-    var q = mapPt(mapBox(st), cp.x, cp.y);
-    dot.setAttribute("cx", q[0]); dot.setAttribute("cy", q[1]);
-    dot.setAttribute("fill", cp.status === "anchored" ? "#1a1a1a" : "#fff");
+    var b = mapBox(st), q = mapPt(b, cp.x, cp.y);
+    var hasH = cp.heading !== undefined && cp.heading !== null;
+    dot.setAttribute("transform", "translate(" + q[0] + "," + q[1] + ")" + (hasH ? " rotate(" + (-cp.heading) + ")" : ""));
+    dot.setAttribute("data-heading", hasH ? String(cp.heading) : "");
+    var body = document.getElementById("f-cart-body"), arrow = document.getElementById("f-cart-arrow");
+    if (body) body.setAttribute("fill", cp.status === "anchored" ? "#1a1a1a" : "#fff");
+    if (arrow) arrow.setAttribute("visibility", hasH ? "visible" : "hidden");
     dot.setAttribute("visibility", "visible");
+    // 有導航目標：路線改成從推車目前位置出發（後端 A* 每次推送都重算）
+    var line = document.getElementById("f-route");
+    if (line && navTarget && cp.route && cp.route.length > 1) {
+      line.setAttribute("points", cp.route.map(function (r) { return mapPt(b, r[0], r[1]).join(","); }).join(" "));
+    }
   }
   function mapSvg(st, located, target) {
     var b = mapBox(st), W = (b.x1 - b.x0) * MAP_S, H = (b.y1 - b.y0) * MAP_S;
@@ -864,7 +884,7 @@ TEMPLATE = r"""<!doctype html>
       out.push('<text x="' + mid[0] + '" y="' + mid[1] + '" font-size="20" font-weight="700" text-anchor="middle" dominant-baseline="middle">' + esc(sh.name) + '</text>');
     });
     if (target && target.route && target.route.length > 1) {
-      out.push('<polyline points="' + target.route.map(function (q) { return P(q[0], q[1]); }).join(" ") +
+      out.push('<polyline id="f-route" points="' + target.route.map(function (q) { return P(q[0], q[1]); }).join(" ") +
         '" fill="none" stroke="#1a1a1a" stroke-width="3" stroke-dasharray="9 7"/>');
     }
     var counts = {};
@@ -878,14 +898,23 @@ TEMPLATE = r"""<!doctype html>
         (isT ? "#fff" : "#1a1a1a") + '">' + (isT ? "★" : counts[p.shelf]) + '</text>');
       counts[p.shelf] = -1;
     });
+    // 其他定位標記：小菱形 + 編號
+    (st.markers || []).forEach(function (mk) {
+      var mq = mapPt(b, mk.x, mk.y);
+      out.push('<rect x="' + (mq[0] - 7) + '" y="' + (mq[1] - 7) + '" width="14" height="14" fill="#fff" stroke="#1a1a1a" stroke-width="2.5" transform="rotate(45 ' + mq[0] + ' ' + mq[1] + ')"/>');
+      out.push('<text class="f-marker-label" x="' + (+mq[0] + 13) + '" y="' + (+mq[1] + 6) + '" font-size="16" font-weight="700" fill="#1a1a1a">#' + mk.id + '</text>');
+    });
     var an = st.anchor, aq = mapPt(b, an.x, an.y);
     out.push('<rect x="' + (aq[0] - 9) + '" y="' + (aq[1] - 9) + '" width="18" height="18" fill="#fff" stroke="#1a1a1a" stroke-width="3" transform="rotate(45 ' + aq[0] + ' ' + aq[1] + ')"/>');
-    out.push('<text x="' + (+aq[0] + 16) + '" y="' + (+aq[1] + 6) + '" font-size="17" fill="#1a1a1a">' + esc(an.name) + '</text>');
-    out.push('<circle id="f-cart-dot" r="11" stroke="#1a1a1a" stroke-width="3" fill="#1a1a1a" visibility="hidden"/>');
+    out.push('<text class="f-marker-label" x="' + (+aq[0] + 16) + '" y="' + (+aq[1] + 6) + '" font-size="17" font-weight="700" fill="#1a1a1a">#' + (an.id === undefined ? 0 : an.id) + ' ' + esc(an.name) + '</text>');
+    out.push('<g id="f-cart-dot" visibility="hidden">' +
+      '<polygon id="f-cart-arrow" points="48,0 14,-10 21,0 14,10" fill="#1a1a1a" stroke="#fff" stroke-width="2"/>' +
+      '<circle id="f-cart-body" r="12" stroke="#1a1a1a" stroke-width="3" fill="#1a1a1a"/></g>');
     out.push('</svg>');
     return out.join("");
   }
   function renderNav(payload) {
+    if (payload.nav_target !== undefined) navTarget = payload.nav_target;   // 後端是準（登出、重置會清掉）
     var info = document.getElementById("f-nav-info");
     var list = document.getElementById("f-nav-list");
     var map = document.getElementById("f-nav-map");
@@ -900,6 +929,7 @@ TEMPLATE = r"""<!doctype html>
         '<div class="nav-line">商品位置 → ' + esc(target.shelf_text) + "（" + esc(target.shelf) + "）" +
         (target.in_cart ? "（已在購物車）" : "") + '</div>' +
         '<div class="nav-instruction">' + esc(target.instruction) + '</div>' +
+        '<div class="muted">到停車點附近會自動結束；再點一次商品名稱可取消導航</div>' +
         (target.health ? '<div class="health-warn">⚠ 健康護照：' + esc(target.health) + '</div>' : "");
     } else {
       info.innerHTML = '<div class="muted">' + (located.length ? "點下面的商品名稱，地圖會畫出從門口過去的路線" :
@@ -914,9 +944,11 @@ TEMPLATE = r"""<!doctype html>
     setPos(payload.cart_pos);
   }
   function navTo(barcode) {
-    navTarget = barcode;
-    if (lastState) renderNav(lastState);
+    if (barcode && barcode === navTarget) barcode = "";   // 再點一次同一個商品 = 取消導航
+    navTarget = barcode || null;
+    if (lastState) { lastState.nav_target = navTarget; renderNav(lastState); }
     showTab("navigation");
+    callApi("set_nav_target", barcode);   // 後端記住目標（空字串 = 取消），推車位置推送時附上從目前位置過去的路線
   }
 
   function renderPromos(payload) {
@@ -960,7 +992,12 @@ TEMPLATE = r"""<!doctype html>
     var loginErrEl = document.getElementById("f-login-error");
     if (loginErrEl) loginErrEl.textContent = payload.screen === "login" ? (payload.last_error || "") : "";
 
-    if (SHOPPING_FAMILY.indexOf(payload.screen) !== -1 || SHOPPING_FAMILY.indexOf(currentTab) !== -1 && payload.screen === "shopping") {
+    if (payload.nav_only && payload.screen === "shopping") {
+      // 定位實測模式（app_gui --nav-only）：只有找貨頁，沒有關閉導航、沒有其他分頁
+      document.body.classList.add("nav-only");
+      currentTab = "navigation";
+      showScreen("navigation");
+    } else if (SHOPPING_FAMILY.indexOf(payload.screen) !== -1 || SHOPPING_FAMILY.indexOf(currentTab) !== -1 && payload.screen === "shopping") {
       if (SHOPPING_FAMILY.indexOf(currentTab) === -1) currentTab = "shopping";
       showScreen(currentTab);
     } else {

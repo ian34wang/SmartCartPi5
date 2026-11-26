@@ -629,18 +629,53 @@ check(sl.codes(lay) == ["L1", "L2", "L3", "L4", "R1", "R2", "R3", "R4"], "兩座
 check(sl.describe(lay, "l3") == "左架・左側・前段", "代碼 → 中文位置", sl.describe(lay, "l3"))
 check(sl.slot_point(lay, "L1") == (-1.43, 3.98) and sl.slot_point(lay, "R4") == (1.47, 3.37),
       "停車點：貨架那一面往外 0.3 m、沿長邊 3/4 與 1/4", (sl.slot_point(lay, "L1"), sl.slot_point(lay, "R4")))
+from core.store import navigation as nv  # noqa: E402
+
+
+def route_clear(lay_, pts, margin=0.15):
+    """路線每一段每隔 1 cm 取一點：在大廳或長廊裡，離每座貨架至少 margin。"""
+    hall, cor = lay_["hall"], lay_["corridor"]
+    for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+        n = max(1, int(_m.hypot(bx - ax, by - ay) / 0.01))
+        for k in range(n + 1):
+            x, y = ax + (bx - ax) * k / n, ay + (by - ay) * k / n
+            in_hall = hall[0] <= x <= hall[1] and hall[2] <= y <= hall[3]
+            in_cor = cor[0] <= x <= cor[1] and cor[2] - 1e-9 <= y <= cor[3]
+            if not (in_hall or in_cor):
+                return False, (x, y, "出界")
+            for sh in lay_["shelves"]:
+                x0, x1, y0, y1 = sh["rect"]
+                dx, dy = max(x0 - x, 0, x - x1), max(y0 - y, 0, y - y1)
+                if _m.hypot(dx, dy) < margin:
+                    return False, (x, y, sh["name"])
+    return True, None
+
+
+for code in sl.codes(lay):
+    r = sl.route(lay, code)
+    ok_, why = route_clear(lay, r)
+    check(r[0] == (0.0, 0.0) and r[-1] == sl.slot_point(lay, code) and ok_,
+          f"A* 路線 {code}：門口 → 停車點，全程在店裡、離貨架 ≥ 0.15 m", (r, why))
 r = sl.route(lay, "L1")
-check(r == [(0.0, 0.0), (0.0, 2.2), (0.0, 2.765), (-1.43, 2.765), (-1.43, 3.98)],
-      "路線：門 → 定位點 → 直走出長廊 → 貨架前走道 → 左側", r)
-check(all(lay["hall"][0] <= x <= lay["hall"][1] and y <= lay["hall"][3] for x, y in r), "路線不出店外", r)
+straight = _m.dist((0.0, 0.0), sl.slot_point(lay, "L1"))
+check(nv.path_length(r) < straight * 1.35, "路線不繞遠路（不超過直線距離的 1.35 倍）", (nv.path_length(r), straight))
+pl = nv.planner_for(lay)
+r = pl.plan((-0.8, 2.8), (1.47, 3.98))           # 從左架前面到右架右側：要從貨架前面繞，不能穿過貨架
+ok_, why = route_clear(lay, r)
+check(ok_ and r[0] == (-0.8, 2.8) and r[-1] == (1.47, 3.98), "從推車目前位置出發，繞過貨架", (r, why))
+r = pl.plan((-1.13, 3.5), (0.23, 3.98))          # 起點貼在左架邊上（不在可走區）：先找最近的可走格
+ok_, why = route_clear(lay, r[1:])
+check(r[0] == (-1.13, 3.5) and ok_, "起點貼著貨架：從最近的可走格開始", (r, why))
+check(pl.plan((0.0, 0.0), (0.0, 0.0)) != [] and nv.planner_for(lay) is pl, "同一張圖只建一次格點")
 ins = sl.instruction(lay, "R4")
 check("往右走到右架" in ins and "右側" in ins and "靠門" in ins, "說明文字", ins)
 custom = sl.load({"slots": {"F": {"name": "前面", "face": "前"}, "B": {"name": "後面", "face": "後"}}, "_comment": "x"})
 sl.validate(custom)
 check(sl.codes(custom)[:2] == ["LF", "LB"] and "_comment" not in custom, "config 可以改分法", sl.codes(custom))
 rb = sl.route(custom, "LB")
-check(rb[-1] == (-0.81, 4.585) and rb[-2][1] == 4.585 and rb[-3] == (-1.43, 2.765), "後面：從近的那一側繞過去", rb)
-for bad, why in (({"anchor": {"name": "x", "x": 0, "y": 3.0}}, "長廊"),
+ok_, why = route_clear(custom, rb)
+check(rb[-1] == (-0.81, 4.585) and ok_, "貨架後面：繞過貨架到後側", (rb, why))
+for bad, why in (({"anchor": {"name": "x", "x": 0, "y": 6.0}}, "不在店裡"),
                  ({"slot_margin_m": 1.2}, "大廳外"),
                  ({"corridor": [-0.3, 0.3, 0, 2.0]}, "大廳前緣"),
                  ({"slots": {"1": "左上"}}, "slots.1"),
@@ -725,6 +760,18 @@ for beta, fwd, right, rot in ((30, 1.0, 0.1, 0), (35, 0.8, -0.2, 20), (25, 1.4, 
           and abs(sg.height_m - 0.5) < 0.03,
           f"地上標記（俯角 {beta}°、轉 {rot}°）：前方 {fwd} m、右方 {right} m、相機高 0.5 m", sg)
 check(sv.AnchorDetector(1, 0.15, K_).detect(render_scene(30, marker=(1.0, 0.1, 0))) is None, "編號不對的標記不算")
+# 標記的方向：render_scene 的 rot 是標記逆時針轉幾度（上緣往左），所以上緣在車頭右邊 φ = −rot
+det3 = sv.AnchorDetector([0, 1, 2], 0.15, K_)
+for rot in (0, 20, -30, 90, 170):
+    sg = det3.detect(render_scene(30, marker=(1.0, 0.1, rot)))
+    check(sg is not None and sg.marker_id == 0 and abs(sl.wrap_deg(sg.marker_dir_deg + rot)) < 1.5,
+          f"標記上緣方向：轉 {rot}° → φ ≈ {-rot}°", sg)
+sc2 = render_scene(30, marker=(1.3, -0.2, 0), marker_id=2)
+sc1 = render_scene(30, marker=(0.8, 0.2, 45), marker_id=1)
+both = _np.where(sc1 != 150, sc1, sc2)
+found = det3.detect_all(both)
+check([f[0].marker_id for f in found] == [1, 2] and det3.detect(both).marker_id == 1,
+      "同時看到兩張：都認得、detect() 取最近的那張", [(f[0].marker_id, round(f[0].ground_m, 2)) for f in found])
 check(abs(sv.vp_offset_deg(320 + 450 * _m.tan(_m.radians(8)) / _m.cos(_m.radians(30)),
                            180 - 450 * _m.tan(_m.radians(30)), K_) - 8.0) < 1e-9,
       "δ 公式：俯角 30°、水平夾角 8° 的消失點 → δ = 8°")
@@ -758,6 +805,12 @@ check(s_["frames"] == 3 and s_["anchor_frames"] == 2 and s_["vp_frames"] == 2
 check(vsv.summarize([blank])["forward_m"] is None, "都沒看到：中位數是 None（不補值）")
 
 print("\n[30] 推車位置接進 app：進場、定位點、消失點、出場作廢")
+
+
+def _xy(cp):
+    return {k: cp[k] for k in ("x", "y", "status") if k in cp}
+
+
 b28 = new_bridge()
 b28.db.upsert_product(Product("TEA", "綠茶", 20.0, 600.0, 30.0, shelf="R2"))
 b28.db.upsert_product(Product("OLD", "舊代碼", 20.0, 600.0, 30.0, shelf="B2"))   # 舊九宮格代碼直接寫進 DB
@@ -766,7 +819,7 @@ check(cat["TEA"]["shelf_text"] == "右架・右側・後段" and cat["TEA"]["rou
       "找貨頁拿到中文位置、路線、說明", cat["TEA"])
 check(cat["OLD"]["shelf"] == "" and cat["OLD"]["route"] == [], "不在平面圖上的代碼不顯示（不亂畫）", cat["OLD"])
 st = b28.get_state()
-check(set(st["store"]) == {"hall", "corridor", "anchor", "shelves", "slots"}, "payload 帶平面圖", list(st["store"]))
+check(set(st["store"]) == {"hall", "corridor", "anchor", "shelves", "slots", "markers"}, "payload 帶平面圖", list(st["store"]))
 b28.on_pose(0.0, 0.0, 90.0, 0.0)
 check(b28.get_state()["cart_pos"] == {"status": "none"}, "還沒登入：沒有推車位置")
 p = b28.anchor_here()
@@ -779,18 +832,18 @@ check(b28.get_state()["cart_pos"]["status"] == "rough", "進場後：約略位�
 b28.on_pose(5000.0, 6650.0, 90.0, 4.0)
 b28.on_anchor_seen(sv.AnchorSighting(forward_m=1.0, lateral_m=0.0, height_m=0.5))
 p = b28.get_state()
-check(p["cart_pos"] == {"x": 0.0, "y": 1.2, "status": "anchored"} and "定位點" in (p["notice"] or ""),
+check(_xy(p["cart_pos"]) == {"x": 0.0, "y": 1.2, "status": "anchored"} and "定位點" in (p["notice"] or ""),
       "看到前方 1 m 的地上標記 → 推車在定位點後 1 m，對齊並提示", (p["cart_pos"], p["notice"]))
 b28.on_pose(5000.0, 7150.0, 90.0, 4.5)              # 往前推 0.5 m，標記剩前方 0.5 m、偏右 0.1 m
 b28.on_anchor_seen(sv.AnchorSighting(forward_m=0.5, lateral_m=0.1, height_m=0.5))
-check(b28.get_state()["cart_pos"] == {"x": -0.1, "y": 1.7, "status": "anchored"},
+check(_xy(b28.get_state()["cart_pos"]) == {"x": -0.1, "y": 1.7, "status": "anchored"},
       "越近越準：每次看到都重新對齊（標記偏右 = 推車偏左）", b28.get_state()["cart_pos"])
 b28.on_pose(5000.0, 7650.0, 90.0, 5.0)
-check(b28.get_state()["cart_pos"] == {"x": -0.1, "y": 2.2, "status": "anchored"}, "再往前 0.5 m 正好到定位點",
+check(_xy(b28.get_state()["cart_pos"]) == {"x": -0.1, "y": 2.2, "status": "anchored"}, "再往前 0.5 m 正好到定位點",
       b28.get_state()["cart_pos"])
 check(b28.get_state()["notice"] is None, "已經對齊了，再看到不重複提示")
 b28.on_pose(5000.0 - 1000.0, 7650.0, 90.0, 6.0)
-check(b28.get_state()["cart_pos"] == {"x": -1.1, "y": 2.2, "status": "anchored"}, "往左 1 m（平面圖單位就是公尺）",
+check(_xy(b28.get_state()["cart_pos"]) == {"x": -1.1, "y": 2.2, "status": "anchored"}, "往左 1 m（平面圖單位就是公尺）",
       b28.get_state()["cart_pos"])
 b28.on_pose(4000.0, 7650.0, 93.0, 6.1)              # IMU 漂了 3°
 b28.on_vp_heading(0.0)                              # 消失點在正中間：其實正對座標軸
@@ -802,7 +855,114 @@ b28.on_gate_crossing("entering")
 b28.on_pose(4000.0, 6650.0, 90.0, 7.0)
 p = b28.anchor_here()
 check(p["cart_pos"]["status"] == "anchored" and p["cart_pos"]["x"] == 0.0, "按「我在定位點」手動對齊", p["cart_pos"])
+check(p["cart_pos"]["heading"] == 90 and "route" not in p["cart_pos"], "朝向：對齊時朝店內 = 90°；沒有導航目標就沒有路線",
+      p["cart_pos"])
+b28.on_pose(4000.0, 6650.0, 180.0, 7.1)             # 原地左轉 90°（里程計航向 90° → 180°）
+check(b28.get_state()["cart_pos"]["heading"] == 180, "左轉 90° → 平面圖朝向 180°（朝左）", b28.get_state()["cart_pos"])
+b28.on_pose(4000.0, 6650.0, 90.0, 7.2)
+p = b28.set_nav_target("TEA")                        # 綠茶在 R2（右架右側後段）
+cp = p["cart_pos"]
+ok_, why = route_clear(lay, cp["route"][1:])
+check(p["nav_target"] == "TEA" and cp["route"][0] == [cp["x"], cp["y"]] and cp["route"][-1] == [1.47, 3.98] and ok_,
+      "導航目標：路線從推車目前位置出發、到停車點、不穿過貨架", (cp, why))
+b28.on_pose(4000.0, 6650.0 + 800.0, 90.0, 7.3)       # 往前推 0.8 m：路線跟著重算
+cp2 = b28.get_state()["cart_pos"]
+check(cp2["route"][0] == [cp2["x"], cp2["y"]] and cp2["y"] > cp["y"] + 0.7, "推車移動後路線從新的位置重算", cp2)
+p = b28.set_nav_target("OLD")                        # 代碼不在平面圖上
+check(p["last_error"] and "貨架位置" in p["last_error"] and b28.get_state()["nav_target"] == "TEA",
+      "沒有貨架位置的商品不能導航（原本的目標不變）", p["last_error"])
+p = b28.set_nav_target(None)
+check(p["nav_target"] is None and "route" not in p["cart_pos"], "關閉導航", p["cart_pos"])
+# 從任何方向看到標記都定得出推車的位置與航向（不再假設車頭朝店內）
+_m0 = {"id": 0, "x": 0.0, "y": 2.2, "up_deg": 90.0}
+check(all(abs(a_ - b_) < 1e-9 for a_, b_ in zip(sl.pose_from_marker(_m0, 1.0, 0.0, 0.0), (0.0, 1.2, 90.0))),
+      "車頭朝店內、標記在正前方 1 m：推車在標記後 1 m、航向 90°")
+xy_th = sl.pose_from_marker(_m0, 1.0, 0.6, -90.0)    # 推車在大廳 (−1.0, 2.8) 朝右（0°）：標記在前方 1 m、右方 0.6 m
+check(all(abs(a_ - b_) < 1e-9 for a_, b_ in zip(xy_th, (-1.0, 2.8, 0.0))),
+      "推車在大廳朝右看到長廊的標記：算回 (−1.0, 2.8)、航向 0°（不會被拉回長廊）", xy_th)
+xy_th = sl.pose_from_marker(_m0, 1.0, 0.6, -90.0, cam_forward_m=0.35)
+check(all(abs(a_ - b_) < 1e-9 for a_, b_ in zip(xy_th, (-1.35, 2.8, 0.0))), "相機在感測器前方 0.35 m：推車點再往後 0.35 m", xy_th)
+for bad, why in (({"markers": [{"id": 0, "x": 0, "y": 3}]}, "重複"), ({"markers": [{"id": 7, "x": 5, "y": 3}]}, "不在店裡"),
+                 ({"markers": [{"id": 60, "x": 0, "y": 3}]}, "0~49")):
+    try:
+        sl.validate(sl.load(bad))
+        check(False, f"標記設定不合理要擋下來：{bad}")
+    except ValueError as exc:
+        check(why in str(exc), f"標記設定不合理要擋下來（{why}）", str(exc))
+_db31 = DBManager(tempfile.mktemp(suffix=".db"))
+_db31.init_db(seed=True)
+b31 = Bridge(db=_db31, sm=CartStateMachine(db=_db31, cart=CartManager(), config=logic_config()),
+             window_holder={"window": None},
+             store={"markers": [{"id": 3, "name": "右架前", "x": 0.85, "y": 2.75, "up_deg": 0.0}]})
+to_shopping(b31)
+b31.on_pose(0.0, 0.0, 37.0, 1.0)                     # 里程計航向隨便（開機為 0），推車其實在大廳朝右
+b31.on_gate_crossing("entering")
+b31.on_anchor_seen(sv.AnchorSighting(forward_m=1.0, lateral_m=0.6, height_m=0.5, marker_id=0, marker_dir_deg=-90.0))
+cp31 = b31.get_state()["cart_pos"]
+check(_xy(cp31) == {"x": -1.0, "y": 2.8, "status": "anchored"} and cp31["heading"] == 0,
+      "Bridge：在大廳朝右看到主定位點 → 推車 (−1.0, 2.8)、朝向 0°", cp31)
+b31.on_pose(1000.0 * _m.cos(_m.radians(37)), 1000.0 * _m.sin(_m.radians(37)), 37.0, 1.1)   # 沿車頭方向推 1 m
+cp31 = b31.get_state()["cart_pos"]
+check(_xy(cp31) == {"x": 0.0, "y": 2.8, "status": "anchored"}, "之後的位移照新的航向走（往右 1 m）", cp31)
+b31.on_anchor_seen(sv.AnchorSighting(forward_m=0.9, lateral_m=0.05, height_m=0.5, marker_id=3, marker_dir_deg=0.0))
+cp31 = b31.get_state()["cart_pos"]
+check(_xy(cp31) == {"x": -0.05, "y": 2.8, "status": "anchored"} and cp31["heading"] == 0,
+      "看到第二張標記（#3，上緣朝右）：用它重新定位", cp31)
+b31.on_anchor_seen(sv.AnchorSighting(forward_m=0.9, lateral_m=0.0, height_m=0.5, marker_id=9, marker_dir_deg=0.0))
+check(_xy(b31.get_state()["cart_pos"]) == _xy(cp31), "沒寫在 config 的標記編號不理會", b31.get_state()["cart_pos"])
+
+# 定位實測模式（app_gui --nav-only）：不用登入、不用門口，直接在管制區；不做進場的暫時對齊，看到標記才對齊
+_db32 = DBManager(tempfile.mktemp(suffix=".db"))
+_db32.init_db(seed=True)
+b32 = Bridge(db=_db32, sm=CartStateMachine(db=_db32, cart=CartManager(), config=logic_config()),
+             window_holder={"window": None},
+             store={"markers": [{"id": 4, "name": "後走道交叉口", "x": 0.02, "y": 4.74, "up_deg": 90.0}]})
+p32 = b32.start_nav_test()
+check(p32["screen"] == "shopping" and p32["nav_only"] is True and p32["cart_pos"] == {"status": "none"} and not p32["last_error"],
+      "定位實測：直接進購物主畫面（前端切到找貨頁），還沒對齊", p32["cart_pos"])
+b32.on_pose(0.0, 0.0, 10.0, 1.0)
+check(b32.get_state()["cart_pos"] == {"status": "none"}, "定位實測：有里程計但還沒看到標記 → 不顯示位置（不從門口猜）")
+b32.on_anchor_seen(sv.AnchorSighting(forward_m=1.0, lateral_m=0.0, height_m=0.52, marker_id=4, marker_dir_deg=0.0))
+cp32 = b32.get_state()["cart_pos"]
+check(_xy(cp32) == {"x": 0.02, "y": 3.74, "status": "anchored"} and cp32["heading"] == 90 and cp32["marker"]["id"] == 4,
+      "定位實測：看到 #4 → 位置、航向、最近一次用的標記", cp32)
+# 到達判定：推車離停車點 ≤ store.arrive_radius_m（0.3 m）→ 自動結束導航、跳出提示
+_db32.upsert_product(Product("TEA", "綠茶", 20.0, 600.0, 30.0, shelf="R2"))
+b32.set_nav_target("TEA")                            # 綠茶在 R2，停車點 (1.47, 3.98)
+b32.push_pos()
+check(b32.get_state()["nav_target"] == "TEA", "還離停車點很遠：導航繼續")
+b32.on_anchor_seen(sv.AnchorSighting(forward_m=0.76, lateral_m=-1.25, height_m=0.52, marker_id=4, marker_dir_deg=0.0))
+b32.push_pos()                                       # 推車 (1.27, 3.98)：差 0.20 m
+st32 = b32.get_state()
+check(st32["nav_target"] is None and "route" not in st32["cart_pos"], "到停車點 0.3 m 內：導航自動結束、路線清掉", st32["cart_pos"])
+check((st32["notice"] or "").startswith("已到達：綠茶"), "到達提示：商品名稱與位置", st32["notice"])
+check(b32.get_state()["notice"] is None, "到達提示只跳一次")
+_lay_r = sl.load({"arrive_radius_m": 0})
+try:
+    sl.validate(_lay_r)
+    check(False, "arrive_radius_m = 0 要擋下來")
+except ValueError as exc:
+    check("arrive_radius_m" in str(exc), "arrive_radius_m 要是正數", str(exc))
+
+b28.set_nav_target("TEA")
 b28.force_logout()
+check(b28.get_state()["nav_target"] is None, "登出：導航目標清掉")
+b28.set_nav_target(None)
+# 相機在光流感測器前方 0.35 m、右方 0.05 m：看到標記時換算成感測器（推車位置參考點）的位置
+_db30 = DBManager(tempfile.mktemp(suffix=".db"))
+_db30.init_db(seed=True)
+b30 = Bridge(db=_db30, sm=CartStateMachine(db=_db30, cart=CartManager(), config=logic_config()),
+             window_holder={"window": None}, store=TEST_STORE, vision={"camera_forward_m": 0.35, "camera_right_m": 0.05})
+to_shopping(b30)
+b30.on_pose(0.0, 0.0, 90.0, 1.0)
+b30.on_gate_crossing("entering")
+b30.on_anchor_seen(sv.AnchorSighting(forward_m=1.0, lateral_m=0.0, height_m=0.5))
+check(_xy(b30.get_state()["cart_pos"]) == {"x": -0.05, "y": 0.85, "status": "anchored"},
+      "相機在感測器前方 0.35 m：推車位置 = 定位點 − 1.0 m − 0.35 m（右方 0.05 m → x −0.05）",
+      b30.get_state()["cart_pos"])
+b30.on_pose(0.0, 0.0, 180.0, 1.1)                    # 原地左轉 90°：感測器沒動，地圖上的點也不能動
+check(_xy(b30.get_state()["cart_pos"]) == {"x": -0.05, "y": 0.85, "status": "anchored"},
+      "原地轉向時推車點不動（參考點是里程計量的那一點）", b30.get_state()["cart_pos"])
 check(b28.get_state()["cart_pos"] == {"status": "none"}, "強制登出：位置作廢")
 
 print("\n[31] 相機執行緒：一張影像 → 定位點與消失點交給 Bridge")

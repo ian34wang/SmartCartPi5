@@ -32,9 +32,11 @@ slot_margin_m 的地方。預設每座貨架 4 個位置（兩座都是長邊朝
 長廊與定位點：
     長廊   鎖住移動方向：推車在長廊裡只能朝店內直走，所以航向就是平面圖的 +y、橫向位置就是長廊中線。
     定位點 長廊中線、靠末端的地上貼一張 ArUco 標記（core/store/vision.py）。相機看到它就算出標記在推車
-           前方、右方各幾公尺，反推推車在平面圖上的位置，連接「大圖座標」（這張平面圖）與「內部定位座標」
-           （里程計）。標記貼在長廊**裡面**：相機看得到標記時（1.5 m 內）推車一定還在長廊、車頭朝店內，
-           「航向 = +y」這個假設才成立。
+           前方、右方各幾公尺、上緣朝哪，反推推車在平面圖上的位置與航向，連接「大圖座標」（這張平面圖）與
+           「內部定位座標」（里程計）。標記可以貼在店裡任何地方（交叉口最好：推車在那裡轉彎），可以貼很多張
+           （markers），從哪個方向看到都對（pose_from_marker）。
+
+路線：core/store/navigation.py 在格點上用 A* 找推車中心的最短路徑（離牆、貨架至少 nav_clearance_m），再拉直。
 
 推車位置：里程計 (X, Y)（mm，原點與方向是開機時決定的）換成平面圖 (x, y)（m）：
         [x]      1    [ cos α  −sin α ] [X − X₀]   [x₀]
@@ -45,7 +47,7 @@ slot_margin_m 的地方。預設每座貨架 4 個位置（兩座都是長邊朝
 
 三個時間點：
     進場（BLE 判定）   enter()：推車在長廊、車頭朝店內 → α = 90° − ψ，(x₀, y₀) = (0, entry_y)。
-                       之後到定位點之前，x 鎖在長廊中線（長廊只能直走），地圖上是空心點（約略）。
+                       之後看到標記之前，x 鎖在長廊中線、y 最多到長廊末端（長廊只能直走），地圖上是空心點（約略）。
                        entry_y 是 BLE 判定出進場時推車大約在長廊哪裡（判定比穿越晚 1~2 秒，預設 0.8 m）。
     看到定位點標記     anchor()：α = 90° − ψ（航向固定成正向），(x₀, y₀) = 定位點 − 標記相對推車的
                        (右方, 前方)（core/store/vision.py 由影像算出）。實心點。
@@ -70,9 +72,13 @@ from core.angles import wrap_deg
 DEFAULT_LAYOUT: Dict = {
     "hall": [-2.06, 2.09, 2.45, 5.195],     # x0, x1, y0, y1（m）
     "corridor": [-0.31, 0.31, 0.0, 2.45],
-    "anchor": {"name": "定位點", "x": 0.0, "y": 2.20},
+    # 主定位點：長廊裡、編號 0、上緣朝店內（+y）。其他轉角的標記寫在 markers（config.json 的 store.markers）
+    "anchor": {"name": "定位點", "x": 0.0, "y": 2.20, "id": 0, "up_deg": 90.0},
+    "markers": [],
     "entry_y": 0.8,
     "slot_margin_m": 0.3,
+    "arrive_radius_m": 0.3,     # 推車離停車點這麼近就算到達，自動結束導航（ui/bridge.py push_pos）
+    "nav_clearance_m": 0.2,                 # 路徑規劃：推車中心離牆、貨架至少這麼遠（core/store/navigation.py）
     "shelves": [
         {"id": "L", "name": "左架", "rect": [-1.13, -0.49, 3.065, 4.285]},
         {"id": "R", "name": "右架", "rect": [0.53, 1.17, 3.065, 4.285]},
@@ -128,8 +134,29 @@ def validate(lay: Dict) -> None:
     except (KeyError, TypeError, ValueError):
         errs.append(f"anchor 要有 x、y：{a!r}")
     else:
-        if not _inside(ap, cor):
-            errs.append(f"定位點 {ap} 要在長廊裡（相機看到標記時推車還在長廊、朝店內，航向假設才成立）")
+        if not (_inside(ap, cor) or _inside(ap, hall)):
+            errs.append(f"定位點 {ap} 不在店裡")
+    seen = set()
+    for m in lay.get("markers") or []:
+        try:
+            mid, p = int(m["id"]), (float(m["x"]), float(m["y"]))
+            float(m.get("up_deg", 90.0))
+        except (KeyError, TypeError, ValueError):
+            errs.append(f"markers 每一張要有 id、x、y（up_deg 選填，預設 90）：{m!r}")
+            continue
+        if not (_inside(p, hall) or _inside(p, cor)):
+            errs.append(f"標記 {mid} 的位置 {p} 不在店裡")
+        seen.add(mid)
+    try:
+        aid = int((lay.get("anchor") or {}).get("id", 0))
+    except (TypeError, ValueError):
+        aid = None
+        errs.append("anchor.id 要是整數")
+    ids = [aid] + [int(m["id"]) for m in lay.get("markers") or [] if str(m.get("id", "")).lstrip("-").isdigit()]
+    if len(ids) != len(set(ids)):
+        errs.append(f"標記編號重複了：{ids}（每一張要不同編號，tools/make_anchor_marker.py --id 產生）")
+    if any(i is not None and not 0 <= i < 50 for i in ids):
+        errs.append(f"標記編號要在 0~49（DICT_4X4_50）：{ids}")
     try:
         ey = float(lay.get("entry_y"))
     except (TypeError, ValueError):
@@ -140,6 +167,12 @@ def validate(lay: Dict) -> None:
     m = lay.get("slot_margin_m")
     if not isinstance(m, (int, float)) or m <= 0:
         errs.append(f"slot_margin_m 要是正數：{m!r}")
+    r = lay.get("arrive_radius_m", 0.3)
+    if not isinstance(r, (int, float)) or r <= 0:
+        errs.append(f"arrive_radius_m 要是正數：{r!r}")
+    c = lay.get("nav_clearance_m", 0.2)
+    if not isinstance(c, (int, float)) or c < 0 or c * 2 >= cor[1] - cor[0]:
+        errs.append(f"nav_clearance_m 要 ≥ 0 而且小於長廊寬的一半（不然推車過不了長廊）：{c!r}")
     for s in lay.get("shelves") or []:
         if not (s.get("id") and s.get("name") and _rect_ok(s.get("rect"))):
             errs.append(f"貨架格式不對：{s!r}")
@@ -156,6 +189,44 @@ def validate(lay: Dict) -> None:
                 errs.append(f"{c} 的停車點 {p} 在大廳外（slot_margin_m 太大或貨架太靠牆）")
     if errs:
         raise ValueError("；".join(errs))
+
+
+def markers(lay: Dict) -> List[Dict]:
+    """店裡全部的定位標記：主定位點（anchor）加上 markers，每張 {id, name, x, y, up_deg}。
+    up_deg = 標記**上緣**（印出來箭頭那一邊）在平面圖上指的方向（度，+x 為 0、逆時針為正，朝店內 = 90）。"""
+    a = lay["anchor"]
+    out = [{"id": int(a.get("id", 0)), "name": a.get("name", "定位點"), "x": float(a["x"]), "y": float(a["y"]),
+            "up_deg": float(a.get("up_deg", 90.0))}]
+    for m in lay.get("markers") or []:
+        out.append({"id": int(m["id"]), "name": m.get("name") or f"標記 {m['id']}", "x": float(m["x"]),
+                    "y": float(m["y"]), "up_deg": float(m.get("up_deg", 90.0))})
+    return out
+
+
+def marker_by_id(lay: Dict, marker_id: int) -> Optional[Dict]:
+    for m in markers(lay):
+        if m["id"] == int(marker_id):
+            return m
+    return None
+
+
+def pose_from_marker(marker: Dict, forward_m: float, lateral_m: float, marker_dir_deg: float,
+                     cam_forward_m: float = 0.0, cam_right_m: float = 0.0) -> Tuple[float, float, float]:
+    """看到一張標記 → 推車（光流感測器那一點）在平面圖上的位置與航向。
+
+    令標記中心在平面圖上是 M、上緣方向 θ_m（up_deg）；相機量到標記在前方 ℓ_f、右方 ℓ_r，標記上緣在
+    車頭方向右邊 φ 度（core/store/vision.floor_pose）。則
+        θ = θ_m + φ                                  推車航向（度，+x 為 0、逆時針為正）
+        F = (cos θ, sin θ)，  Q = (sin θ, −cos θ)     車頭方向、車身右方（平面圖上的單位向量）
+        C = M − ℓ_f F − ℓ_r Q                        相機正下方那一點
+        S = C − f_c F − r_c Q                        光流感測器（f_c、r_c = 相機在它前方、右方幾公尺）
+    回傳 (S_x, S_y, θ)。
+    """
+    th = wrap_deg(float(marker["up_deg"]) + float(marker_dir_deg))
+    c, s_ = math.cos(math.radians(th)), math.sin(math.radians(th))
+    fwd = float(forward_m) + float(cam_forward_m)
+    right = float(lateral_m) + float(cam_right_m)
+    return (float(marker["x"]) - fwd * c - right * s_, float(marker["y"]) - fwd * s_ + right * c, th)
 
 
 def codes(lay: Dict) -> List[str]:
@@ -199,26 +270,17 @@ def slot_point(lay: Dict, code: str) -> Optional[Tuple[float, float]]:
     return round(x, 3), round(y, 3)
 
 
-def route(lay: Dict, code: str) -> List[Tuple[float, float]]:
-    """門 → 定位點 → 直走出長廊到貨架前的走道 → 沿貨架那一側（後面的話繞過去）→ 停車點。地圖上畫虛線用。"""
-    s, _ = _find(lay, code)
+def route(lay: Dict, code: str, start: Optional[Tuple[float, float]] = None) -> List[Tuple[float, float]]:
+    """從 start（預設門口正中間）到這個位置停車點的路線（m），A* 避開牆與貨架（core/store/navigation.py）。
+    地圖上畫虛線用；推車位置已知時 ui/bridge.py 會從推車目前位置重算。走不到回 []。"""
+    from core.store.navigation import planner_for
+
     p = slot_point(lay, code)
-    if s is None or p is None:
+    if p is None:
         return []
-    a = lay["anchor"]
-    x0, x1, y0, _y1 = (float(v) for v in s["rect"])
-    m = float(lay["slot_margin_m"])
-    front_y = round(y0 - m, 3)
-    ax = float(a["x"])
-    pts = [(0.0, 0.0), (ax, float(a["y"])), (ax, front_y)]   # 沿長廊直走出來，到貨架前的走道
-    if p[1] <= front_y + 1e-9:                 # 前面：直接過去
-        pts.append(p)
-    elif x0 < p[0] < x1:                       # 後面：從比較近的那一側繞過去
-        side_x = round(x0 - m if p[0] <= (x0 + x1) / 2 else x1 + m, 3)
-        pts += [(side_x, front_y), (side_x, p[1]), p]
-    else:                                      # 左右兩側：走到那一側的走道再往裡
-        pts += [(p[0], front_y), p]
-    return pts
+    cor = lay["corridor"]
+    s0 = start if start is not None else ((float(cor[0]) + float(cor[1])) / 2, float(cor[2]))
+    return planner_for(lay).plan(s0, p)
 
 
 def instruction(lay: Dict, code: str) -> str:
@@ -240,7 +302,9 @@ def instruction(lay: Dict, code: str) -> str:
 
 def to_client(lay: Dict) -> Dict:
     """給前端畫地圖用（純資料）。"""
-    return {k: lay[k] for k in ("hall", "corridor", "anchor", "shelves", "slots")}
+    out = {k: lay[k] for k in ("hall", "corridor", "anchor", "shelves", "slots")}
+    out["markers"] = markers(lay)[1:]          # 主定位點以外的標記（地圖上畫小菱形）
+    return out
 
 
 class StoreFrame:
@@ -283,11 +347,12 @@ class StoreFrame:
         self.status = self.ROUGH
 
     def anchor(self, x_mm: float, y_mm: float, yaw_deg: float,
-               at: Optional[Tuple[float, float]] = None) -> None:
-        """at = 推車此刻在平面圖上的位置（m）；不給就是正好在定位點上（「我在定位點」按鈕）。"""
+               at: Optional[Tuple[float, float]] = None, heading: Optional[float] = None) -> None:
+        """at = 推車此刻在平面圖上的位置（m）；不給就是正好在主定位點上（「我在定位點」按鈕）。
+        heading = 推車此刻在平面圖上的航向（度）；不給就當成朝店內（90°，在長廊裡）。"""
         a = self.lay["anchor"]
         self._origin = (x_mm, y_mm)
-        self._alpha = 90.0 - yaw_deg
+        self._alpha = (90.0 if heading is None else float(heading)) - yaw_deg
         self._offset = at if at is not None else (float(a["x"]), float(a["y"]))
         self.status = self.ANCHORED
 
@@ -322,6 +387,6 @@ class StoreFrame:
         cx0, cx1, cy0, _ = self.lay["corridor"]
         if self.status == self.ROUGH:      # 長廊鎖住方向：還沒到定位點前只能在中線上前後
             sx = (cx0 + cx1) / 2
-            return sx, max(cy0 - 0.5, min(float(self.lay["anchor"]["y"]), sy))
+            return sx, max(cy0 - 0.5, min(float(self.lay["corridor"][3]), sy))
         hx0, hx1, _, hy1 = self.lay["hall"]
         return max(hx0, min(hx1, sx)), max(cy0 - 0.5, min(hy1, sy))

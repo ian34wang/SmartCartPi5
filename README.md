@@ -17,13 +17,15 @@
 | 硬體與驅動（UART、條碼、BLE、相機） | 完成 | ✅ 實機 |
 | 購物流程狀態機（登入 → 進場 → 掃碼秤重 → 結帳 → 出場 → 登出） | 完成 | ✅ 實機（11-16 跑通） |
 | 觸控 UI 14 頁、會員偏好、交易紀錄、店員協助 | 完成 | ✅ 實機 |
-| 門口 BLE 進出場判定 | 完成，11-16 校正 | ✅ 實機（建議用新版校正重算一次，見待辦 1） |
-| 秤重、光流、航向校正 | 完成，11-16 校正 | ✅ 實機 |
+| 門口 BLE 進出場判定 | 完成，11-16 校正 | ⚠️ 場地架好後要重錄（`calibrate_gate_beacons`） |
+| 秤重 | 11-26 機構改過後重新校正，展示用放寬門檻 | ⚠️ 雜訊比 11-16 大（σ 3.3 g），2000 g 讀數偏低待查 |
+| 光流、航向校正 | 11-16 校正（感測器沒動） | ✅ 實機 |
 | 健康護照、錢包管家、優惠（規則式） | 完成 | ⚠️ 只有自動化測試；展示商品的標籤、貨架還沒建檔 |
 | 找貨頁（平面圖、路線、推車位置） | 完成，11-26 換成實際場地（CAD 圖） | ⚠️ 只有自動化測試 |
 | 里程計準度（光流 + IMU） | 完成，軌跡工具已有 | ⚠️ 只用校正時同一份錄音重播過，沒有獨立驗證 |
 | 相機定位點、消失點修航向 | 完成，11-26 重新校正內參（完整視野） | ✅ 靜態實測（標記 0.6~1.5 m 全部偵測、相機高 0.49~0.52 m）；⚠️ 還沒在 app 裡推著走過 |
-| LLM 推薦、異常偵測、依推車位置重新規劃路線 | — | 未開始 |
+| 導航路徑規劃（A*）、地圖上的推車朝向 | 11-26 完成 | ⚠️ 只有自動化測試 |
+| LLM 推薦、異常偵測、商家優惠活動 | — | 未開始 |
 
 **接下來要做的**（照順序）：
 
@@ -107,7 +109,8 @@ SmartCartPi5/
 │   │   ├── recorder.py         執行期記錄檔
 │   │   └── calibration.py      門口校正的計算
 │   └── store/                  店面
-│       ├── layout.py           平面圖、貨架代碼、路線、里程計 ↔ 平面圖
+│       ├── layout.py           平面圖、貨架代碼、里程計 ↔ 平面圖
+│       ├── navigation.py       導航路線（格點 A*）
 │       └── vision.py           ArUco 定位點、貨架消失點
 ├── drivers/                    硬體存取（只把資料讀進來）
 │   ├── uart_receiver.py        MCU 封包（也是 UART 硬體測試工具）
@@ -173,7 +176,7 @@ python3 -m ui.app_gui --fullscreen
 
 啟動時依序檢查並印出 `[1/4]`～`[4/4]`（掃描器、UART、Beacon、相機），任何一個接不上就印出怎麼修、結束。
 **開 app 時推車要在門外**（門口判定第一次確認的那一側只當起點；登入時已經在門內的話，登入當下直接算進場）。
-退出：右上角 `✕`、鍵盤 `Esc`、終端機 `Ctrl+C`；卡住就另開終端機 `pkill -f ui.app_gui`。
+退出：右上角 `✕`、視窗本身的 ✕、鍵盤 `Esc`、終端機 `Ctrl+C`（按第二次直接結束）。關窗後會印「視窗已關閉，停止裝置……」→「已結束。」；某個裝置停不下來時，6 秒後印「[警告] 關閉超過 6 秒還沒結束（卡在：停止○○）」並強制結束，括號裡就是卡住的裝置。
 
 ### 指令速查
 
@@ -184,6 +187,7 @@ python3 -m ui.app_gui --fullscreen
 | 指令 | 用途 |
 |---|---|
 | `python3 -m ui.app_gui [--fullscreen]` | 開 app（其他參數：`--db`、`--port`、`--baud`、`--scanner-hint`、`--adapter`、`--beacon-timeout`） |
+| `python3 -m ui.app_gui --nav-only` | **定位實測**：不用登入、掃描器、門口 BLE、秤重，只要 UART 與前方相機，直接開找貨頁看推車位置（座標）、航向、最近用的標記；看到任何一張定位標記才對齊 |
 | `python3 -m tools.product_admin` | 資料庫後台互動選單（指令見〈資料庫與後台〉） |
 | `python3 -m tools.analyze_gate_log [--events]` | 分析最新一份門口記錄 |
 
@@ -261,7 +265,7 @@ SHOPPING ─鎖定結帳─▶ LOCKED_FOR_CHECKOUT ─付款─▶ AWAITING_EXIT
 
 - **加入**：先掃碼、再放進籃子。掃碼當下重量還沒變 → `AWAITING_WEIGHT_INCREASE`，基準 $b$ = 掃碼當下的穩定重量。
 - **移除**：先拿出來、再掃碼。重量先變 → `AWAITING_ITEM_SCAN`，記下變化前的基準 $b$；掃碼時依目前重量比 $b$ 輕或重決定移除或加入，基準用 $b$。
-- `AWAITING_ITEM_SCAN` 期間重量自己回到 $b$ 附近（手滑碰到籃子）→ 自動解除；超過 `unscanned_change_timeout_sec`（8 秒）沒掃碼 → 異常（「只做一半」）。
+- `AWAITING_ITEM_SCAN` 期間重量自己回到 $b$ 附近（手滑碰到籃子）→ 自動解除；超過 `unscanned_change_timeout_sec`（12 秒）沒掃碼 → 異常（「只做一半」）。
 
 ### 秤重比對
 
@@ -281,14 +285,14 @@ SHOPPING ─鎖定結帳─▶ LOCKED_FOR_CHECKOUT ─付款─▶ AWAITING_EXIT
 | $\lvert \delta - e \rvert \le \tau$ | 比對成功，寫入購物清單 |
 | $\operatorname{sign}\delta \ne \operatorname{sign} e$ 且 $\lvert\delta\rvert > \tau$ | 方向相反（可能同時動了別的東西）→ 異常（CRITICAL） |
 | $\operatorname{sign}\delta = \operatorname{sign} e$ 且 $\lvert\delta\rvert > \lvert e\rvert + \tau$ | 超出上限（拿了不只一件或拿錯）→ 異常 |
-| 其他 | 還在放／拿的過程中，繼續等；超過 `weight_match_timeout_sec`（5 秒）→ 異常 |
+| 其他 | 還在放／拿的過程中，繼續等；超過 `weight_match_timeout_sec`（8 秒）→ 異常 |
 
-購物中 $\lvert \tilde w - \text{穩定重量} \rvert$ 小於未掃碼門檻 $T$（`unscanned_change_threshold_g`，10 g）視為雜訊，並讓穩定重量跟上小幅漂移；
+購物中 $\lvert \tilde w - \text{穩定重量} \rvert$ 小於未掃碼門檻 $T$（`unscanned_change_threshold_g`，30 g）視為雜訊，並讓穩定重量跟上小幅漂移；
 超過 $T$ 就是「重量變了但沒掃碼」。比 $T$ 輕的商品不掃碼放進去偵測不到。
 
 ### 等讀數穩定才比
 
-令 $W_s$ = `settle_window_sec`（0.3 秒）、$B_s$ = `settle_band_g`（3 g），最近 $W_s$ 秒內的讀數為 $w_1, \dots, w_n$。若
+令 $W_s$ = `settle_window_sec`（0.5 秒）、$B_s$ = `settle_band_g`（20 g），最近 $W_s$ 秒內的讀數為 $w_1, \dots, w_n$。若
 
 $$n \ge 3,\qquad t_n - t_1 \ge 0.8\,W_s,\qquad \max_i w_i - \min_i w_i \le B_s$$
 
@@ -301,8 +305,8 @@ $$n \ge 3,\qquad t_n - t_1 \ge 0.8\,W_s,\qquad \max_i w_i - \min_i w_i \le B_s$$
 
 | 參數（`config.json`） | 預設 | 逾時後 |
 |---|---|---|
-| `weight.weight_match_timeout_sec` | 5 秒 | 掃碼後等不到正確的重量變化 → 異常 |
-| `weight.unscanned_change_timeout_sec` | 8 秒 | 重量變了沒掃碼 → 異常 |
+| `weight.weight_match_timeout_sec` | 8 秒 | 掃碼後等不到正確的重量變化 → 異常 |
+| `weight.unscanned_change_timeout_sec` | 12 秒 | 重量變了沒掃碼 → 異常 |
 | `state_machine.zone_entry_timeout_sec` | 120 秒 | 登入後一直沒進場 → 提醒一次 |
 | `state_machine.shopping_idle_timeout_sec` | 600 秒 | 購物中沒動作 → 每隔這麼久提醒 |
 | `state_machine.exit_timeout_after_checkout_sec` | 180 秒 | 付款後沒出場 → 提醒一次（結帳畫面顯示倒數） |
@@ -450,11 +454,11 @@ python3 -m tools.product_admin tx-list [--member MEMBER-0001] [--limit 20]
 
 所有指令都可以加 `--db <路徑>`；`add`、`edit` 可以加 `--port`、`--baud` 指定秤的 UART。
 
-- **重量只能現場量**：`add`、`edit` 會請你把商品放上推車的秤（同一顆 HX711、同一份校正值），量到的值當標準重量，容差預設 10%。
+- **重量只能現場量**：`add`、`edit` 會請你把商品放上推車的秤（同一顆 HX711、同一份校正值），量到的值當標準重量，容差預設 $\max(\rho\,w,\ \Delta_{\min})$（`weight.auto_tolerance_ratio`、`min_tolerance_g`，目前 15%、25 g）。
   秤連不上就報錯結束，沒有手打的退路——手打的數字跟這台秤量出來的差多少沒人知道。
 - **會員代碼**要以 `state_machine.login_barcode_prefix`（`MEMBER-`）開頭，否則登入時會被當成「不是會員碼」。
 - **CSV**：`barcode,name,unit_price,standard_weight_g,weight_tolerance_g,tags,shelf,discount_pct,pairs_with`；後四欄可省略
-  （已設好的標籤等不會被清掉），`tags`、`pairs_with` 用分號隔開；CSV 的容差必填（沒有自動 10%）。
+  （已設好的標籤等不會被清掉），`tags`、`pairs_with` 用分號隔開；CSV 的容差必填（沒有自動容差）。
 
 ---
 
@@ -563,7 +567,8 @@ $$\mathbf{e} = (f_N - f^*,\ l_N - l^*),\qquad \frac{\lVert \mathbf{e} \rVert}{L}
 | 長廊 | −0.31 ~ +0.31 | 0 ~ 2.45 | 620 × 2450；左緣離左牆 1750、右緣離右牆 1780 |
 | 左架 `L` | −1.13 ~ −0.49 | 3.065 ~ 4.285 | 640 × 1220；離左牆 930 |
 | 右架 `R` | +0.53 ~ +1.17 | 3.065 ~ 4.285 | 640 × 1220；兩架間 1020、離右牆 920 |
-| 定位點 | 0 | 2.09 | 不在 CAD 圖上：11-26 實際貼的位置（`config.json` 的 `store.anchor`；程式內建建議值 2.20） |
+| 定位標記 #0 | 0 | 2.76 | 長廊出口和前走道的交叉口（11-26 從長廊裡的 2.09 移過來，設計位置待實量） |
+| 定位標記 #4 | 0.02 | 4.74 | 中間走道和後走道的交叉口（設計位置待實量） |
 
 兩座貨架前緣離大廳前緣 0.615 m、後緣離後牆 0.910 m。長廊比大廳中心偏左 15 mm，平面圖照實寫。
 
@@ -577,14 +582,28 @@ $$\mathbf{e} = (f_N - f^*,\ l_N - l^*),\qquad \frac{\lVert \mathbf{e} \rVert}{L}
 | 3 | 左側・前段 | (−1.43, 3.37) / (+0.23, 3.37) |
 | 4 | 右側・前段 | (−0.19, 3.37) / (+1.47, 3.37) |
 
-路線：門 → 定位點 → 直走出長廊到貨架前的走道（$y = 2.765$）→ 橫移到那一側 → 停車點（後面的話從近的那側繞過去）。
+**導航路線**（`core/store/navigation.py`）：在平面圖上鋪邊長 $r$ = 0.05 m 的格點（85 × 106 格），格子中心離牆與貨架至少
+$c$ = `nav_clearance_m`（0.2 m，推車中心到車身邊緣）才算可走（長廊入口是門，不算牆）；用 A* 找最短路徑，再拉直成幾段直線。
+8 方向走，直的代價 1、斜的 $\sqrt{2}$（單位：格），啟發函數用 octile 距離
+
+$$h(n) = \Delta_{\max} + (\sqrt{2} - 1)\,\Delta_{\min}$$
+
+$\Delta_{\max}, \Delta_{\min}$ 是格 $n$ 到終點在 $x$、$y$ 方向格數差的大者與小者；$h$ 不會高估真正剩下的距離，所以找到的是格點上的最短路。
+斜走時兩個相鄰的直格都要可走（不切角）。拉直：從起點每次直接連到「中間每一點都可走」的最遠那一格。
+起點或終點落在不可走區（推車貼著貨架）就先找最近的可走格。一條路線在 Pi 上 1~5 ms。
+
+- 還沒有推車位置：畫門口 → 停車點的路線（`route()`，每個位置算一次就記著）。
+- 有推車位置、選了導航商品（前端 `set_nav_target`）：每次推送推車位置（0.5 秒）都**從推車目前位置重算**，走偏了路線跟著改。
+- **到達自動結束**：推車參考點 $\mathbf{p}$ 與停車點 $G$ 的距離 $\lVert \mathbf{p} - G \rVert \le R$（$R$ = `arrive_radius_m`，預設 0.3 m）
+  時，結束導航、跳出「已到達：商品（位置），導航結束」（`Bridge._check_arrival()`，每 0.5 秒檢查一次）。
+- **手動取消**：找貨頁再點一次同一個商品。
 商品實際擺法不是這樣分的話改 `config.json`，程式不用動，例如每座貨架只分前後兩面：
 
 ```json
 "store": { "slots": { "F": {"name": "前面", "face": "前"}, "B": {"name": "後面", "face": "後"} } }
 ```
 
-`hall`、`corridor`、`anchor`、`entry_y`、`slot_margin_m`、`shelves` 也都可以覆蓋。app 啟動時 `validate()` 檢查：長廊接在大廳前緣、
+`hall`、`corridor`、`anchor`、`entry_y`、`slot_margin_m`、`arrive_radius_m`、`shelves` 也都可以覆蓋。app 啟動時 `validate()` 檢查：長廊接在大廳前緣、
 定位點在長廊裡、貨架在大廳裡、每個停車點都在大廳裡，不合理就報錯結束。
 
 **長廊與定位點**：長廊用來**鎖住移動方向**——推車在長廊裡只能朝店內直走，所以航向就是平面圖的 $+y$、
@@ -602,13 +621,24 @@ $$\begin{bmatrix} x \\ y \end{bmatrix} = \frac{1}{1000}\begin{bmatrix} \cos\alph
 | 時間點 | 做什麼 | 地圖上 |
 |---|---|---|
 | BLE 判定進場 | 推車在長廊、朝店內：$\alpha = 90^\circ - \psi$，$(x_0, y_0) = (0,\ \text{entry\_y})$；之後 $x$ 鎖在長廊中線 | 空心點（約略） |
-| 相機看到地上的定位點標記 | 航向固定成正向 $\alpha = 90^\circ - \psi$；$(x_0, y_0) = (x_a - \ell_r,\ y_a - \ell_f)$ | 實心點 |
+| 相機看到任何一張定位標記 | 由標記的位置與上緣方向定出推車的位置 $\mathbf{S}$ 與航向 $\theta$（下面「多張定位標記」），$\alpha = \theta - \psi$、$(x_0, y_0) = \mathbf{S}$ | 實心點 |
 | 之後一直 | 貨架邊緣的消失點修航向（下面） | |
 
 $(x_a, y_a) = (0, 2.20)$ 是定位點（標記）在平面圖上的位置，$\ell_f, \ell_r$ 是標記在推車前方、右方幾公尺。
 標記在視野裡的每一張影像都重新對齊一次，推車越靠近越準。`entry_y` 是 BLE 判定出進場時推車大約在長廊哪裡
 （判定比實際穿越晚 1~2 秒，預設 0.8 m）。登入時推車已經在店裡也一樣：推回長廊讓相機看到標記；
-標記被擋住的話，找貨頁有「**我在定位點**」按鈕（推車正好停在標記上時按）。走出門口、登出時位置作廢。
+標記被擋住的話，找貨頁有「**我在定位點**」按鈕（推車中間、也就是光流感測器正好在標記上時按）。走出門口、登出時位置作廢。
+
+**推車位置指的是哪一點**：里程計量的是**光流感測器**那一點的軌跡（11-26 起在 70 cm 推車的正中間，離後端 35 cm），
+所以地圖上的推車位置、導航路線都以它為準。相機在它前方 $f_c$ = `vision.camera_forward_m`、右方 $r_c$ = `vision.camera_right_m`，
+對齊時要扣掉（上表）。沒扣的話，對齊那一刻地圖上記的是相機那一點，之後卻用感測器的位移去推，推車轉了 $\Delta\psi$ 之後位置會差
+
+$$\lVert \mathbf{e} \rVert = 2\,d\,\sin\frac{\lvert\Delta\psi\rvert}{2},\qquad d = \sqrt{f_c^2 + r_c^2}$$
+
+例如 $d$ = 0.35 m、轉 90° 就差 0.49 m，差不多是走道寬的一半。
+
+**地圖上的推車圖示**：圓點 + 朝向箭頭，箭頭方向是平面圖航向 $\theta = \psi + \alpha$（$+x$ 為 0°、逆時針為正，朝店內 = 90°）。
+SVG 的 $y$ 軸朝下、旋轉以順時針為正，所以畫面上轉 $-\theta$。
 
 **標記 → 推車位置**（`core/store/vision.py`）：標記四個角 → `cv2.solvePnP`（`IPPE_SQUARE`）→ 標記在相機座標
 （$x$ 右、$y$ 下、$z$ 沿光軸）裡的旋轉 $R$、位置 $\mathbf{t}$（相機 → 標記中心）。標記貼在地上，所以 $R$ 的第三欄
@@ -621,6 +651,37 @@ $$\ell_f = \mathbf{g}\cdot\mathbf{f},\qquad \ell_r = \mathbf{g}\cdot\mathbf{r}$$
 - $h$：相機離地高度，跟 `vision.camera_height_m`（0.5）差超過 `height_tol_m`（0.15）就當誤判
 - $\mathbf{g}$：相機正下方 → 標記中心的水平向量；$\mathbf{f}$：光軸投影到地面 = 車頭方向；$\mathbf{r}$：車身右方
 - 不需要知道相機俯角，地面方向由標記本身量出來；水平距離 $\sqrt{\ell_f^2 + \ell_r^2} \le$ `anchor_trigger_m`（1.5 m）才採用
+
+**多張定位標記**（11-26）：原本只有長廊一張，而且假設「看到它時推車一定在長廊、車頭朝店內」。實際上推車在大廳裡（例如左架前往右走）
+也會斜斜看到它，程式就把推車拉回長廊；光流在這個地板上漂得又比預期多，一張標記不夠。
+
+ArUco 標記不是旋轉對稱的，從影像分得出它的**上緣**（印出來箭頭那一邊）。令 $\mathbf{u}$ = $R$ 的第二欄（標記上緣方向，相機座標）投影到地面，
+
+$$\varphi = \operatorname{atan2}(\mathbf{u}\cdot\mathbf{r},\ \mathbf{u}\cdot\mathbf{f})$$
+
+是標記上緣在車頭方向**右邊**幾度。每張標記在平面圖上的中心 $\mathbf{M}$、上緣方向 $\theta_m$（`up_deg`，$+x$ 為 0°、逆時針為正）寫在 `config.json`，
+看到任何一張就同時定出推車的航向與位置（`core/store/layout.pose_from_marker`）：
+
+$$\theta = \theta_m + \varphi,\qquad \mathbf{F} = (\cos\theta,\ \sin\theta),\qquad \mathbf{Q} = (\sin\theta,\ -\cos\theta)$$
+
+$$\mathbf{S} = \mathbf{M} - (\ell_f + f_c)\,\mathbf{F} - (\ell_r + r_c)\,\mathbf{Q}$$
+
+- $\theta$：推車航向；$\mathbf{F}$、$\mathbf{Q}$：平面圖上的車頭方向、車身右方
+- $\ell_f, \ell_r$：標記在相機前方、右方（m）；$f_c, r_c$：相機在光流感測器前方、右方（`vision.camera_forward_m`、`camera_right_m`）
+- $\mathbf{S}$：光流感測器（推車位置的參考點）
+
+推車從哪個方向看到標記都對，所以可以在每個轉角各貼一張（不同編號）。合成影像實測 $\varphi$ 誤差 < 0.5°；上緣方向**貼歪幾度，航向就歪幾度**，要貼正、量準。
+同時看到好幾張取最近的。編號不在 `config.json` 的標記不理會。
+
+```json
+"store": {
+  "anchor":  { "name": "定位點", "id": 0, "x": 0.0, "y": 2.09, "up_deg": 90 },
+  "markers": [ { "id": 1, "name": "左架前", "x": -0.81, "y": 2.75, "up_deg": 90 } ]
+}
+```
+
+產生：`python3 -m tools.make_anchor_marker --id 1 2 3`（圖上方有箭頭與「ID n  TOP」標出上緣）。貼好後用 `verify_store_vision` 確認：
+推車車頭朝店內擺正時，它印的「這張標記的 up_deg ≈ …」應該等於你寫的值，算出的推車位置應該跟捲尺量的一致。
 
 **消失點修航向**：貨架都跟平面圖座標軸平行，層板、上下緣、地磚縫在影像上交於一個消失點 $(u, v)$。相機往下俯 $\beta$，
 一個跟光軸水平夾角 $\gamma$（往右為正）的水平方向在相機座標是 $(\sin\gamma,\ -\cos\gamma\sin\beta,\ \cos\gamma\cos\beta)$，投影：
@@ -639,11 +700,12 @@ $f_x, f_y$ 焦距、$c_x, c_y$ 光心（像素），$\phi \in \{0^\circ, 90^\cir
 **設定**（`config.json`，沒寫的用預設值）：
 
 ```json
-"vision": { "anchor_marker_id": 0, "anchor_marker_size_m": 0.15, "anchor_trigger_m": 1.5,
-            "camera_height_m": 0.5, "height_tol_m": 0.15, "vp_yaw_weight": 0.2, "fps": 5, "proc_width": 640 }
+"vision": { "anchor_marker_size_m": 0.15, "anchor_trigger_m": 1.5, "camera_height_m": 0.52,
+            "camera_forward_m": 0.35, "camera_right_m": 0.0, "height_tol_m": 0.15, "vp_yaw_weight": 0.2,
+            "fps": 5, "proc_width": 1280 }
 ```
 
-`vision` 沒寫的欄位用 `core/config.py` 的 `VISION_DEFAULTS`；`config.json` 目前寫了標記編號、邊長與相機高度。
+`vision` 沒寫的欄位用 `core/config.py` 的 `VISION_DEFAULTS`。標記的編號、位置、上緣方向在 `store.anchor`、`store.markers`。
 
 前方相機是 app 的第 4 個必要硬體（`drivers/front_camera.py`），開不起來 app 就不啟動：
 
@@ -671,7 +733,7 @@ $f_x, f_y$ 是焦距、$(c_x, c_y)$ 是主點（像素）；畸變係數對正�
 
 **1. 貼定位點標記**：`python3 -m tools.make_anchor_marker`，印的時候保持正方形（縮放 100%、取消「符合框架」），推車會壓過去建議護貝。
 量黑色方框邊長 $s$（m，不含白邊），填 `vision.anchor_marker_size_m`（目前 0.15）。
-平貼在**長廊中線**、標記中心離門（閘門線）$d_a$ = 2.20 m 的地上，方向不拘。
+平貼在地上，**箭頭（上緣）朝店內**（`up_deg` = 90）。11-26 起主定位點 #0 在長廊出口與前走道的交叉口、#4 在中間走道與後走道的交叉口；交叉口最好，推車在那裡轉彎，轉之前剛好看到標記、把航向拉回來。
 
 **為什麼放在長廊裡**：相機在 `anchor_trigger_m`（1.5 m）以內才採用標記，放在 2.20 m 代表推車在 $y$ = 0.7 ~ 2.2 m 之間會看到它——
 這一段推車一定在長廊、車頭朝店內，「對齊時航向 = $+y$」的假設才成立。貼的位置跟 2.20 m 差超過 1~2 cm 的話，
@@ -933,6 +995,34 @@ $$T = \max\left(\lceil 1.5\,T_{\min}\rceil,\ \lceil 6\,\sigma_s \rceil,\ T_{\tex
 - `--quick`：只做空秤、砝碼、拿掉（秤台沒動、只想重定 scale），門檻沿用原本的。
 - 11-16 實測：198 g 與 581 g 各自的增量相加跟兩個一起放（779 g）只差 0.7 g，秤是線性的；`20261116-193855` 寫回 $a$ = −331970.43、$b$ = 397.392 count/g、$T$ = 10 g、$W_s$ = 0.3 秒、$B_s$ = 3 g。
 - 驗證：`python3 -m tools.verify_weight`。
+- `--from-data <目錄> --exclude load_3`：重算時不算某幾段（標示不準的砝碼、超過量程的點），結果另存 `result.exclude-<段>.json`。
+
+**11-26 機構改過後重新校正**（`20261126-075043`，排除 2000 g 那一點）：
+
+| 項目 | 11-16 | 11-26 |
+|---|---|---|
+| $b$（count/g） | 397.39 | 361.06 |
+| 靜止雜訊 $\sigma_s$ | < 1 g | 3.3 g（約 0.6 Hz 的慢速晃動，像籃子在擺） |
+| 推車震動 99% | 0.3 g | 10.6 g |
+| 線性殘差 | 0.7 g | 3.9 g（只到 392 g；2000 g 那一點讀成 1594 g，砝碼標示或荷重元量程待查） |
+| 放入 275 g × 3 | 3/3 | 3/3（+270、+286、+279 g） |
+
+第一次（`20261126-070428`）空秤讀數每次回不到同一點（跳動約 220 g、放上砝碼後只差 13 g）：典型的秤台被摩擦或接觸撐住，修好機構才重錄。
+
+**展示用放寬的參數**（11-26，寫在 `config.json`；重新跑 `calibrate_weight` 寫回會蓋掉前三項）：
+
+| 參數 | 校正建議 | 展示用 | 為什麼 |
+|---|---|---|---|
+| 未掃碼門檻 $T$ | 20 g | **30 g** | 手扶籃子、碰到推車不觸發 |
+| 穩定窗 $W_s$ | 0.3 秒 | **0.5 秒** | 放入後晃久一點也等到穩定才比（重播 0.2~0.6 秒都 3/3） |
+| 比對逾時 | 5 秒 | **8 秒** | 掃碼後慢慢放也來得及 |
+| 未掃碼逾時 | 8 秒 | **12 秒** | 拿出來再掃碼的時間 |
+| 自動容差 | 10% | **max(15%, 25 g)** | 秤本身的誤差跟重量無關，輕商品要有下限 |
+
+令 $w_A$ = 掃碼的商品 A 的標準重量、$w_B$ = 實際放進去的商品 B 的重量、$\tau_A = \max(0.15\,w_A,\ 25)$ g 為 A 的容差。
+放錯商品要被抓到，需要 $\lvert w_B - w_A \rvert > \tau_A$；再留實測誤差（這次最多 11 g），**展示商品彼此至少差 $\max(0.25\,w,\ 50)$ g**。
+用這份錄音重播（放進去的是 275 g）：掃 200 g、230 g 的商品會判重量不符，掃 250 g、320 g 的會被當成對的。
+商品也要比 $T$ 重得多（建議 ≥ 100 g），不然沒掃碼放進去偵測不到。
 
 ### 光流與航向（`tools/calibrate_optical_flow.py`，計算在 `core/positioning/flow_calibration.py`）
 
@@ -956,9 +1046,10 @@ $$T = \max\left(\lceil 1.5\,T_{\min}\rceil,\ \lceil 6\,\sigma_s \rceil,\ T_{\tex
 | | `timeout_sec`、`reconnect_backoff_sec` | pyserial 讀取逾時、斷線重連間隔 | 1.0、2.0 秒 |
 | `uart_protocol` | `stale_data_timeout_sec` | 多久沒封包算斷線 | 0.5 秒 |
 | `weight` | `hx711_offset`、`hx711_scale` | 讀數 → 公克 | 11-16 校正 |
-| | `weight_match_timeout_sec`、`unscanned_change_timeout_sec` | 比對、未掃碼逾時 | 5、8 秒 |
-| | `unscanned_change_threshold_g` | 未掃碼門檻 $T$ | 10 g |
-| | `settle_window_sec`、`settle_band_g` | 穩定窗 $W_s$、$B_s$ | 0.3 秒、3 g |
+| | `weight_match_timeout_sec`、`unscanned_change_timeout_sec` | 比對、未掃碼逾時 | 8、12 秒（展示用放寬） |
+| | `unscanned_change_threshold_g` | 未掃碼門檻 $T$ | 30 g（展示用放寬） |
+| | `auto_tolerance_ratio`、`min_tolerance_g` | 商品建檔的自動容差 $\max(\rho\,w,\ \Delta_{\min})$ | 15%、25 g |
+| | `settle_window_sec`、`settle_band_g` | 穩定窗 $W_s$、$B_s$ | 0.5 秒、20 g |
 | `odometry` | `optical_flow_px_to_mm`、`flow_rotation_deg`、`flow_mirror`、`yaw_sign` | 里程計 $k$、$\varphi$、$m$、$\sigma$ | 11-16 校正 |
 | `landmarks` | `points[]` | 每顆 Beacon 的 `beacon_id`、`address`、`rssi_offset_db` | 門內 +1.9、門外 0 |
 | | `gate_beacon_pair` | 哪顆是門內、哪顆是門外 | |
@@ -970,8 +1061,9 @@ $$T = \max\left(\lceil 1.5\,T_{\min}\rceil,\ \lceil 6\,\sigma_s \rceil,\ T_{\tex
 | | `zone_entry_timeout_sec`、`shopping_idle_timeout_sec`、`exit_timeout_after_checkout_sec` | 提醒用逾時 | 120、600、180 秒 |
 | `camera` | `resolution`、`format`、`framerate`、`calibration_file` | 相機（內參在這個解析度下量的） | 1280×720、RGB888、30 |
 | | `index`、`hflip`、`vflip` | 前方相機是第幾台、要不要翻轉（改了內參要跟著換） | 0（Camera Module 3）、true、true |
-| `store` | `hall`、`corridor`、`anchor`、`shelves`、`slots`… | 覆蓋程式內建的平面圖（m） | 不覆蓋，用 11-26 實際場地 |
-| `vision` | `anchor_marker_id`、`anchor_marker_size_m`、`camera_height_m`、`proc_width` | 定位點標記、相機高度、處理寬度；其他（`undistort_alpha` 等）見 `core/config.py` 的 `VISION_DEFAULTS` | 0、0.15 m、0.52 m、1280 |
+| `store` | `anchor`、`markers` | 定位標記：編號、位置、上緣方向 | 主定位點 #0 在 (0, 2.09)、朝店內 |
+| | `hall`、`corridor`、`shelves`、`slots`… | 覆蓋程式內建的平面圖（m） | 不覆蓋，用 11-26 實際場地 |
+| `vision` | `anchor_marker_size_m`、`camera_height_m`、`camera_forward_m`、`proc_width` | 標記邊長、相機高度、相機在感測器前方幾公尺、處理寬度；其他（`undistort_alpha` 等）見 `core/config.py` 的 `VISION_DEFAULTS` | 0.15 m、0.52 m、0.35 m、1280 |
 | `barcode_scanner` | `device_name_hint`、`key_timeout_sec` | 掃描器名稱關鍵字、一次掃碼的按鍵間隔上限 | `USBKey`、0.1 秒 |
 
 ---
@@ -1106,14 +1198,14 @@ python3 tests/run_all.py
 
 | 測試 | 內容 | 項目 |
 |---|---|---|
-| `test_app_gui_bridge.py` | Bridge 端對端：整趟購物流程、17 種錯誤情境、精靈、偏好、交易、店員、健康護照、錢包、優惠、平面圖、機器視覺（合成影像）、推送、JsApi、多執行緒 | 207 |
+| `test_app_gui_bridge.py` | Bridge 端對端：整趟購物流程、17 種錯誤情境、精靈、偏好、交易、店員、健康護照、錢包、優惠、平面圖、機器視覺（合成影像）、推送、JsApi、多執行緒 | 226 |
 | `test_gate_model.py` | 門口判定：即時 = 重播 = 記錄檔重播 | 23 |
 | `test_gate_monitor.py` | 門口判定的方向、門檻、確認、航向 | 34 |
 | `test_calibrate_gate_beacons.py` | 門口校正的計算與錄音流程 | 37 |
 | `test_calibrate_weight.py` | 秤重校正 | 30 |
 | `test_calibrate_optical_flow.py` | 光流校正、座標轉換 | 27 |
 | `test_odometry_track.py` | 行駛軌跡重播與誤差指標 | 22 |
-| `test_ui_layout.py` | 14 頁版面與前端互動（要 playwright，沒裝就略過） | 33 |
+| `test_ui_layout.py` | 14 頁版面與前端互動（要 playwright，沒裝就略過） | 35 |
 
 測試用的都是跟正式運作**同一個入口**（例如 `Bridge.on_hardware_barcode` / `on_weight_sample` / `on_gate_crossing`），不是另開一條測試旁路。
 `test_app_gui_bridge.py` 每次只餵一筆秤重讀數，所以把穩定窗關掉（其他參數照 `config.json`）；穩定窗由 `test_calibrate_weight.py` 用真實錄音重播驗證。
@@ -1126,7 +1218,7 @@ python3 tests/run_all.py
 
 **限制**
 
-- **推車位置只在定位點對齊一次**，之後靠里程計累積；店裡沒有第二個校正點，路線固定是「門 → 定位點 → 貨架」，不會依目前位置重新規劃。
+- **推車位置只在定位點對齊一次**，之後靠里程計累積（航向由消失點拉回）；店裡沒有第二個校正點，位置誤差會隨推的距離慢慢變大。
 - **相機視覺只在合成影像上測過**（俯角 25°~35°），還沒在實體貨架前驗證。相機假設跟車身同方向、沒有側傾；相機位置當成推車位置。
 - **航向交叉驗證不會啟用**（相對航向，見〈門口進出場判定〉）。
 - **開 app 時推車要在門外**，否則第一趟進場判不出來（登入時已在門內的情況另有處理）。
@@ -1138,7 +1230,7 @@ python3 tests/run_all.py
 
 - LLM：錢包管家的消費分析、健康護照的替代建議、優惠推薦（目前都是規則式）。
 - 異常偵測模型。
-- 室內導航的路徑規劃（例如 A*）與店內第二個校正點（例如貨架上的 Beacon）。
+- 店內第二個校正點（例如貨架上的 Beacon 或第二張地上標記）。
 
 ---
 
@@ -1156,7 +1248,7 @@ python3 tests/run_all.py
 | 10-29 | 觸控畫面花屏查到是 WebKitGTK 的 DMA-BUF，固定繪圖設定 |
 | 11-16 | 全部硬體裝上推車並重新校正（秤重、門口、光流）；加入「等讀數穩定才比」；BLE 版完整購物流程實機跑通 |
 | 11-23 | 健康護照、錢包管家、找貨（平面圖 + 推車位置）、優惠改成資料驅動；地上定位點與貨架消失點；行駛軌跡工具；專案整理（見下） |
-| 11-26 | 前方相機改裝成轉 180°（軟體翻回、內參換算）、加一台 USB 攝影機 C270；場地架好：平面圖照 CAD 圖改成實際尺寸（單位公尺、兩座貨架），拿掉「一格幾公尺」`store.unit_m`，啟動時改成檢查平面圖是否合理 |
+| 11-26 | 前方相機改裝成轉 180°（軟體翻回、內參換算）、加一台 USB 攝影機 C270；場地架好：平面圖照 CAD 圖改成實際尺寸（單位公尺、兩座貨架），拿掉「一格幾公尺」`store.unit_m`，啟動時改成檢查平面圖是否合理；導航 A*、地圖朝向箭頭；定位標記改成由標記方向定出完整位置與航向，可以貼多張 |
 
 ### 11-23 專案整理
 

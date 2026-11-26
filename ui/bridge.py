@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import functools
 import json
+import math
 import logging
 import sqlite3
 import threading
@@ -70,6 +71,7 @@ from core.shopping.state_machine import (
 from core.gate.detector import GATE_CROSSING_ENTERING
 from core.shopping import health_passport
 from core.store import layout as store_layout
+from core.store import navigation
 from core.store import vision as store_vision
 from database.db_manager import DBManager, Member, MemberPreferences, Transaction, TransactionItem
 
@@ -149,8 +151,16 @@ class Bridge:
         self._frame = store_layout.StoreFrame(self._layout)
         self._pose: Optional[tuple] = None      # 里程計最新一筆 (X mm, Y mm, yaw deg, t)
         self._pos_sent = None
+        self._nav_target: Optional[str] = None  # 找貨頁正在導航的商品條碼（前端 set_nav_target）
+        self._door_routes: dict = {}
+        self._nav_only = False                  # 定位實測模式（app_gui --nav-only）
+        self._last_marker: Optional[tuple] = None   # (編號, 名稱, time.time())：最近一次用來對齊的標記
         # 消失點修航向的互補濾波權重 w（config.json 的 vision.vp_yaw_weight）
-        self._vp_weight = float((vision or {}).get("vp_yaw_weight", config.VISION_DEFAULTS["vp_yaw_weight"]))
+        vcfg = {**config.VISION_DEFAULTS, **(vision or {})}
+        self._vp_weight = float(vcfg["vp_yaw_weight"])
+        # 相機相對光流感測器的位置（m），看到定位點時換算成感測器的位置
+        self._cam_forward = float(vcfg["camera_forward_m"])
+        self._cam_right = float(vcfg["camera_right_m"])
         self._warned_shelf: set = set()   # 貨架代碼不在平面圖上的商品，各警告一次
         # 錢包管家：上一次提醒到哪一級（0 沒提醒、1 已過 80%、2 已超過預算），往上跨才提醒一次
         self._budget_level = 0
@@ -236,6 +246,7 @@ class Bridge:
         self.sm.process_event(LogoutRequested(timestamp=time.time()))
         self._reset_wizard_profile()
         self._ui_stage = "main"
+        self._nav_target = None
 
     def _current_screen(self) -> str:
         state = self.sm.get_session().state
@@ -300,6 +311,8 @@ class Bridge:
             "catalog": self._catalog_payload(),
             "store": store_layout.to_client(self._layout),
             "cart_pos": self._cart_pos_payload(),
+            "nav_target": self._nav_target,
+            "nav_only": self._nav_only,
             "promotions": self._promotions_payload(),
             "pending_item_barcode": s.pending_item_barcode,
             "pending_item_mode": s.pending_item_mode,
@@ -378,20 +391,88 @@ class Bridge:
                 "health": summary_or_empty(self._health(p)),
                 "shelf_text": store_layout.describe(lay, shelf) if shelf else "",
                 "instruction": store_layout.instruction(lay, shelf) if shelf else "",
-                "route": [list(pt) for pt in store_layout.route(lay, shelf)] if shelf else [],
+                "route": self._door_route(shelf) if shelf else [],
                 "spot": list(store_layout.slot_point(lay, shelf)) if shelf else None,
             })
         return out
+
+    def _door_route(self, code: str) -> list:
+        """從門口到這個位置的路線（還沒有推車位置時畫這條）；平面圖不會變，算過就記著。"""
+        if code not in self._door_routes:
+            self._door_routes[code] = [list(pt) for pt in store_layout.route(self._layout, code)]
+        return self._door_routes[code]
 
     def _where(self, p) -> str:
         """優惠卡片上的「位置 左架・左側・前段」；沒設或代碼不在平面圖上就空字串。"""
         return store_layout.describe(self._layout, p.shelf) if store_layout.is_valid(self._layout, p.shelf) else ""
 
     def _cart_pos_payload(self) -> Optional[dict]:
+        """推車在平面圖上的位置（m）、朝向 heading（度，+x 為 0、逆時針為正，朝店內 = 90），
+        有導航目標時再加從推車目前位置出發的路線 route（core/store/navigation.py 的 A*）。"""
         pos, status = self._frame.last, self._frame.status
         if pos is None or status == store_layout.StoreFrame.NONE:
             return {"status": status}
-        return {"x": round(pos[0], 2), "y": round(pos[1], 2), "status": status}
+        out = {"x": round(pos[0], 2), "y": round(pos[1], 2), "status": status}
+        if self._pose is not None:
+            heading = self._frame.heading(self._pose[2])
+            if heading is not None:
+                out["heading"] = round(heading)
+        goal = self._nav_goal()
+        if goal is not None:
+            out["route"] = [list(pt) for pt in navigation.planner_for(self._layout).plan(pos, goal)]
+        if self._last_marker is not None and status == store_layout.StoreFrame.ANCHORED:
+            out["marker"] = {"id": self._last_marker[0], "name": self._last_marker[1],
+                             "age_s": round(time.time() - self._last_marker[2], 1)}
+        return out
+
+    def _nav_goal(self):
+        """導航目標商品的停車點；沒有目標、商品不見了或沒有貨架位置回 None。"""
+        if not self._nav_target:
+            return None
+        try:
+            p = self.db.get_product(self._nav_target)
+        except sqlite3.Error:
+            logger.exception("讀商品 %s 失敗", self._nav_target)
+            return None
+        if p is None or not store_layout.is_valid(self._layout, p.shelf):
+            return None
+        return store_layout.slot_point(self._layout, p.shelf)
+
+    @_locked
+    def start_nav_test(self) -> dict:
+        """定位實測模式（ui/app_gui.py --nav-only）：不用登入、不用門口 BLE、不用秤重，直接進找貨頁看推車位置與航向。
+
+        以訪客身分登入、精靈用預設值走完，直接告訴狀態機「已進管制區」，但**不做進場的暫時對齊**
+        （推車不一定從門口出發）：看到任何一張定位標記才對齊。秤重讀數不會餵進來，所以不會有秤重警告。
+        """
+        self.continue_as_guest()
+        self.loading_profile_choice("B")
+        for stage in ("diet", "religion", "budget"):
+            self.wizard_goto(stage)
+        self.set_budget("1000")
+        self._apply(GateEntryDetected(timestamp=time.time()))
+        self._nav_only = True
+        self._last_error = None
+        self._notice = "定位實測：推到任何一張定位標記前，相機看到就會對齊"
+        return self._state_payload()
+
+    @_locked
+    def set_nav_target(self, barcode=None) -> dict:
+        """找貨頁選了要導航的商品（None／空字串 = 關閉導航）。推車位置推送時會附上從目前位置過去的路線。"""
+        barcode = (barcode or "").strip() or None
+        if barcode is not None:
+            try:
+                p = self.db.get_product(barcode)
+            except sqlite3.Error:
+                logger.exception("讀商品 %s 失敗", barcode)
+                return self._fail("讀商品資料失敗")
+            if p is None or not store_layout.is_valid(self._layout, p.shelf):
+                return self._fail("這個商品沒有設定貨架位置，沒辦法導航")
+        with self._lock:
+            self._nav_target = barcode
+            self._pos_sent = None              # 下一次推送一定送（路線變了）
+        self._last_error = None
+        return self._state_payload()
 
     def _promotions_payload(self) -> list:
         """優惠頁的卡片，全部從資料庫算出來：
@@ -901,6 +982,7 @@ class Bridge:
         self._reset_wizard_profile()
         self._open_tx_id = None
         self._ui_stage = "main"
+        self._nav_target = None
         with self._lock:
             self._frame.clear()
         return self._state_payload()
@@ -995,30 +1077,42 @@ class Bridge:
                 return
             self._frame.feed(x_mm, y_mm)
 
-    def _anchor_locked(self, at=None) -> bool:
+    def _anchor_locked(self, at=None, heading=None) -> bool:
         """用最新的里程計位置對齊（呼叫端持有鎖）。回傳這次是不是從沒對齊變成對齊。"""
         was = self._frame.status
-        self._frame.anchor(*self._pose[:3], at=at)
+        self._frame.anchor(*self._pose[:3], at=at, heading=heading)
         self._frame.feed(*self._pose[:2])
         return was != store_layout.StoreFrame.ANCHORED
 
     @_locked
     def on_anchor_seen(self, sighting) -> None:
-        """相機看到地上的定位點標記（VisionConsumer，sighting 是 core/store/vision.AnchorSighting）：
-        推車位置 = 定位點 − (右方, 前方)（航向固定朝店內，右方 = +x、前方 = +y），正式對齊。"""
+        """相機看到地上的定位標記（VisionConsumer，sighting 是 core/store/vision.AnchorSighting）：
+        由標記在平面圖上的位置與上緣方向，加上它在推車的哪個方位、上緣朝哪，同時定出推車的位置與航向
+        （core/store/layout.pose_from_marker），重新對齊。推車在哪裡、朝哪個方向看到都對。
+        位置的參考點是光流感測器（里程計量的就是它的軌跡），相機在它前方 camera_forward_m、右方 camera_right_m。"""
         if self.sm.get_session().state in _OUT_OF_ZONE_STATES:
             return
-        a = self._layout["anchor"]
-        at = (float(a["x"]) - sighting.lateral_m, float(a["y"]) - sighting.forward_m)
+        mid = getattr(sighting, "marker_id", -1)
+        m = store_layout.markers(self._layout)[0] if mid < 0 else store_layout.marker_by_id(self._layout, mid)
+        if m is None:                                     # 不在 config 裡的編號：不知道它貼在哪，不理會
+            return
+        x, y, heading = store_layout.pose_from_marker(m, sighting.forward_m, sighting.lateral_m,
+                                                      getattr(sighting, "marker_dir_deg", 0.0),
+                                                      self._cam_forward, self._cam_right)
         with self._lock:
             if self._pose is None:
                 return
-            first = self._anchor_locked(at)
+            first = self._anchor_locked((x, y), heading)
+            self._last_marker = (m["id"], m["name"], time.time())
+            self._pos_sent = None                 # 下一次推送一定送（畫面顯示「剛看到標記」）
         if first:
-            self._notice = f"已在{a['name']}對齊地圖，推車位置會顯示在找貨頁"
-            logger.info("看到定位點標記（前方 %.2f m、右方 %.2f m、相機高 %.2f m），地圖對齊完成",
-                        sighting.forward_m, sighting.lateral_m, sighting.height_m)
+            self._notice = f"已在{m['name']}對齊地圖，推車位置會顯示在找貨頁"
+            logger.info("看到定位標記 %d（%s，前方 %.2f m、右方 %.2f m、相機高 %.2f m）→ 推車 (%.2f, %.2f)、航向 %.0f°，"
+                        "地圖對齊完成", m["id"], m["name"], sighting.forward_m, sighting.lateral_m,
+                        sighting.height_m, x, y, heading)
             self._push_state()
+        else:
+            logger.debug("標記 %d 重新對齊：推車 (%.2f, %.2f)、航向 %.0f°", m["id"], x, y, heading)
 
     @_locked
     def on_vp_heading(self, delta_deg: float) -> None:
@@ -1045,9 +1139,36 @@ class Bridge:
         self._notice = f"已在{self._layout['anchor']['name']}對齊地圖"
         return self._state_payload()
 
+    def _check_arrival(self) -> bool:
+        """推車到了導航目標的停車點（距離 ≤ store.arrive_radius_m）→ 結束導航並提示。回傳有沒有到達。
+        在 push_pos 的鎖裡呼叫。"""
+        goal = self._nav_goal()
+        pos, status = self._frame.last, self._frame.status
+        if goal is None or pos is None or status == store_layout.StoreFrame.NONE:
+            return False
+        r = float(self._layout.get("arrive_radius_m", 0.3))
+        if math.hypot(pos[0] - goal[0], pos[1] - goal[1]) > r:
+            return False
+        p = self.db.get_product(self._nav_target)
+        logger.info("到達導航目標 %s（推車 (%.2f, %.2f)，停車點 (%.2f, %.2f)），結束導航",
+                    self._nav_target, pos[0], pos[1], goal[0], goal[1])
+        self._nav_target = None
+        self._notice = f"已到達：{p.name}（{store_layout.describe(self._layout, p.shelf)}），導航結束"
+        return True
+
     def push_pos(self) -> None:
-        """把推車位置推給找貨頁地圖（PosPusher 定時呼叫，位置有變才推）。整頁重畫太重，只移動那一點。"""
+        """把推車位置推給找貨頁地圖（PosPusher 定時呼叫，位置有變才推）。整頁重畫太重，只移動那一點。
+        到達導航目標時改成整頁推送（清掉路線、跳出提示）。"""
         with self._lock:
+            try:
+                arrived = self._check_arrival()
+            except sqlite3.Error:
+                logger.exception("檢查是否到達導航目標時讀商品失敗")
+                arrived = False
+            if arrived:
+                self._pos_sent = None
+                self._push_state()
+                return
             pos = self._cart_pos_payload()
             if pos == self._pos_sent:
                 return
@@ -1099,4 +1220,5 @@ class JsApi:
     def retry_weight(self): return self._bridge.retry_weight()
     def void_pending(self): return self._bridge.void_pending()
     def anchor_here(self): return self._bridge.anchor_here()
+    def set_nav_target(self, barcode=None): return self._bridge.set_nav_target(barcode)
     def quit(self): self._bridge.quit()

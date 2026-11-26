@@ -230,20 +230,36 @@ async def main():
         await page.wait_for_timeout(150)
         route = await page.evaluate("(document.querySelector('#f-nav-map polyline')||{getAttribute:()=>''}).getAttribute('points')")
         info = await page.text_content("#f-nav-info")
-        if route and len(route.split()) == 5 and "右架・右側・後段" in info and "在貨架右側" in info and "健康護照" in info:
+        if route and len(route.split()) >= 3 and "右架・右側・後段" in info and "在貨架右側" in info and "健康護照" in info:
             print("  找貨：點商品 → 畫出路線（右架右側）、說明文字、健康護照  OK")
         else:
             failures.append(f"找貨目標不對：{route!r} {info!r}")
-        await page.evaluate("window.APP.setPos({x: 0, y: 2.2, status: 'anchored'})")
+        await page.evaluate("window.APP.setPos({x: 0, y: 2.2, status: 'anchored', heading: 90})")
         dot = await page.evaluate("""() => { const d = document.getElementById('f-cart-dot');
-            return [d.getAttribute('visibility'), d.getAttribute('cx'), d.getAttribute('cy')]; }""")
+            const m = /translate\\(([-\\d.]+),([-\\d.]+)\\)/.exec(d.getAttribute('transform') || '');
+            return [d.getAttribute('visibility'), m && m[1], m && m[2], d.getAttribute('transform'),
+                    document.getElementById('f-cart-arrow').getAttribute('visibility')]; }""")
         anchor = await page.evaluate("""() => { const t = Array.from(document.querySelectorAll('#f-nav-map text'))
-            .find(e => e.textContent === '定位點'); return t ? [+t.getAttribute('x'), +t.getAttribute('y')] : null; }""")
+            .find(e => e.textContent === '#0 定位點'); return t ? [+t.getAttribute('x'), +t.getAttribute('y')] : null; }""")
         pos_txt = await page.text_content("#f-nav-pos")
-        if dot[0] == "visible" and anchor and abs(float(dot[1]) + 16 - anchor[0]) < 1 and "已在定位點對齊" in pos_txt:
+        if dot[0] == "visible" and anchor and abs(float(dot[1]) + 16 - anchor[0]) < 1 and "(0.00, 2.20)" in pos_txt and "航向 90°" in pos_txt:
             print("  找貨：APP.setPos 把推車點移到定位點  OK")
         else:
             failures.append(f"推車點不對：{dot} {anchor} {pos_txt!r}")
+        if dot[3] and "rotate(-90)" in dot[3] and dot[4] == "visible":
+            print("  找貨：推車圖示有朝向箭頭（朝店內 = 畫面往上）  OK")
+        else:
+            failures.append(f"推車朝向不對：{dot}")
+        await page.evaluate("window.APP.setPos({x: 0.5, y: 2.8, status: 'anchored', heading: 0, route: [[0.5, 2.8], [1.47, 2.8], [1.47, 3.98]]})")
+        live = await page.evaluate("""() => [document.getElementById('f-route').getAttribute('points').split(' ').length,
+            document.getElementById('f-cart-dot').getAttribute('transform')]""")
+        if live[0] == 3 and "rotate(0)" in live[1]:
+            print("  找貨：有推車位置時路線改成從推車出發、箭頭跟著轉  OK")
+        else:
+            failures.append(f"即時路線不對：{live}")
+        await page.evaluate("window.APP.setPos({x: 0.6, y: 2.75, status: 'anchored', heading: 30, route: [[0.6, 2.75], [1.415, 2.825], [1.47, 3.98]]})")
+        await page.screenshot(path=str(OUT / "shot_navigation_cart.png"))
+        await page.evaluate("window.APP.setPos({x: 0, y: 2.2, status: 'anchored', heading: 90})")
         await page.click("#screen-navigation .nav-anchor-btn")
         await page.wait_for_timeout(100)
         called = await page.evaluate("window.__calls.map(c => c.name)")
@@ -251,6 +267,16 @@ async def main():
             print("  找貨：「我在定位點」呼叫 anchor_here  OK")
         else:
             failures.append("「我在定位點」沒有呼叫 anchor_here")
+        await page.click("#f-nav-list .nav-chip:nth-child(2)")       # 再點一次同一個商品 = 取消導航
+        await page.wait_for_timeout(150)
+        cancel = await page.evaluate("""() => [window.__calls.filter(c => c.name === 'set_nav_target').map(c => c.args[0]),
+            !!document.querySelector('#f-nav-map polyline'), document.querySelectorAll('#f-nav-list .nav-chip.selected').length]""")
+        if cancel[0][-2:] == ["PEANUT", ""] and not cancel[1] and cancel[2] == 0:
+            print("  找貨：再點一次同一個商品 → 取消導航（路線消失）  OK")
+        else:
+            failures.append(f"再點一次沒有取消導航：{cancel}")
+        await page.click("#f-nav-list .nav-chip:nth-child(2)")       # 恢復導航，後面截圖用
+        await page.wait_for_timeout(150)
         await page.screenshot(path=str(OUT / "shot_navigation.png"))
         await page.click("#screen-navigation .navitem[data-tab='promotions']")
         await page.wait_for_timeout(150)
@@ -282,6 +308,21 @@ async def main():
             failures.append(f"比對中區塊不對：{box!r} / {pct!r}")
         await page.screenshot(path=str(OUT / "shot_shopping_pending.png"))
 
+        # 定位實測模式（app_gui --nav-only）：直接是找貨頁、沒有「關閉導航」，位置文字有座標、航向、最近的標記
+        await page.evaluate("""() => window.pywebview.api.get_state().then(p => { p.screen = 'shopping';
+            p.pending_item_barcode = null; p.nav_only = true;
+            p.cart_pos = {x: 0.02, y: 3.74, status: 'anchored', heading: 90, marker: {id: 4, name: '後走道交叉口', age_s: 2.4}};
+            window.APP.showTab('shopping'); window.APP.render(p); })""")
+        await page.wait_for_timeout(200)
+        nav = await page.evaluate("""() => [document.querySelector('.screen.active').id,
+            getComputedStyle(document.querySelector('#screen-navigation .close-btn')).display
+              + getComputedStyle(document.querySelector('#screen-navigation .bottomnav')).display,
+            document.getElementById('f-nav-pos').textContent]""")
+        if nav[0] == "screen-navigation" and nav[1] == "nonenone" and "(0.02, 3.74)" in nav[2] and "航向 90°" in nav[2] and "#4" in nav[2]:
+            print("  定位實測模式：直接找貨頁、沒有關閉導航、顯示座標／航向／標記  OK")
+        else:
+            failures.append(f"定位實測模式不對：{nav}")
+        await page.screenshot(path=str(OUT / "shot_nav_only.png"))
         await browser.close()
 
     print("\n" + "=" * 50)
